@@ -1,0 +1,14 @@
+[package]
+name = "gates-core"
+description = "Telamon Gates without Qt: conversations, their files, Markdown and the chat backend interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+log = "0.4"
+pulldown-cmark = { version = "0.13", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

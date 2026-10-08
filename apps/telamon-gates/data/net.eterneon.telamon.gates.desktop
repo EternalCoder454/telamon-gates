@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Telamon Gates
+GenericName=AI Chat
+Comment=Chat with a local AI model
+Exec=telamon-gates
+Icon=dialog-messages
+Terminal=false
+Categories=Qt;KDE;Utility;
+Keywords=AI;chat;LLM;llama;assistant;
+StartupNotify=true
