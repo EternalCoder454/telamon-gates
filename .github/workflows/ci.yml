@@ -125,9 +125,9 @@ jobs:
   # a Telamon.Ui type), at the release the crates are pinned to.
   telamon:
     name: Telamon app checks
-    uses: EternalCoder454/atlas-framework/.github/workflows/app-checks.yml@b40693828d053ae59567529fdbac4bb3a397ca71 # v2.0.2
+    uses: EternalCoder454/atlas-framework/.github/workflows/app-checks.yml@f78ec18b566eeac724c76b0746147c7a178f8393 # v2.0.6
     with:
-      framework-ref: v2.0.2
+      framework-ref: v2.0.6
 
   # Telamon.Ui (telamon-ui), which the app builds against, is in no
   # repository: the framework's RPMs at the release the crates are pinned to,

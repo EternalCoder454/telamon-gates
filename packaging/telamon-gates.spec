@@ -39,10 +39,10 @@ BuildRequires:  cmake(KF6WindowSystem)
 # from the Telamon framework, which is in no repository: install its RPMs
 # first (scripts/dev.sh does, given ATLAS_LOCAL_RPMS).
 BuildRequires:  kf6-kirigami-devel
-BuildRequires:  telamon-ui >= 2.0.2
+BuildRequires:  telamon-ui >= 2.0.6
 
 Requires:       kf6-kirigami
-Requires:       telamon-ui >= 2.0.2
+Requires:       telamon-ui >= 2.0.6
 Requires:       kf6-qqc2-desktop-style
 Requires:       qt6-qtdeclarative
 Requires:       qt6-qtsvg

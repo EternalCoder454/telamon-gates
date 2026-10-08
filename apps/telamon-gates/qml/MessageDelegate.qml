@@ -39,8 +39,6 @@ Item {
     // and the muted colour of a quote.
     readonly property color rule: Qt.tint(Kirigami.Theme.backgroundColor, Qt.alpha(Kirigami.Theme.textColor, 0.18))
     readonly property color surface: Qt.tint(Kirigami.Theme.backgroundColor, Qt.alpha(Kirigami.Theme.textColor, 0.08))
-    // The error colour, lightened on a dark theme so it reads on its fill.
-    readonly property color errorText: Kirigami.Theme.backgroundColor.hslLightness < 0.5 ? Qt.lighter(TelamonStyle.error, 1.35) : TelamonStyle.error
     readonly property color muted: Qt.tint(Kirigami.Theme.backgroundColor, Qt.alpha(Kirigami.Theme.textColor, 0.72))
     readonly property string css: "a { color: " + linkColor + "; } " + "h3 { font-size: x-large; } h4 { font-size: large; } h5 { font-size: medium; } h3, h4, h5 { margin-top: 12px; margin-bottom: 4px; } " + "p { margin-top: 4px; margin-bottom: 4px; } " + "ul, ol { margin-top: 2px; margin-bottom: 2px; -qt-list-indent: 1; } li { margin-top: 2px; margin-bottom: 2px; } " + "code, pre { font-family: '" + TelamonStyle.monoFamily + "'; } code { background-color: " + message.surface + "; } " + "table.quote { margin-top: 6px; margin-bottom: 6px; } td.bar { background-color: " + TelamonStyle.accent + "; } td.quoted { padding-left: 10px; color: " + message.muted + "; } " + "table { border-collapse: collapse; border-color: " + message.rule + "; } th { text-align: left; } " + "pre { margin-top: 4px; margin-bottom: 4px; }"
 
@@ -175,10 +173,6 @@ Item {
                                     Layout.fillWidth: true
                                     text: block.content
                                     showCopy: true
-                                    // Long lines wrap: unwrapped, the view's
-                                    // sideways scroll bar covers the last line
-                                    // (all of it, for a one-line block).
-                                    wrap: true
                                     Accessible.name: block.lang.length > 0 ? qsTr("%1 code").arg(block.lang) : qsTr("Code")
                                 }
                             }
@@ -225,10 +219,10 @@ Item {
                         Symbol {
                             icon: Symbols.Error
                             size: Kirigami.Units.iconSizes.small
-                            color: message.errorText
+                            color: TelamonStyle.error
                         }
                         QQC2.Label {
-                            color: message.errorText
+                            color: TelamonStyle.error
                             text: qsTr("The reply stopped because of an error.")
                         }
                     }

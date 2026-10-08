@@ -12,7 +12,7 @@ rust-version = "1.89"
 [workspace.dependencies]
 # The Telamon framework crates (startup, settings, logging, crash reports).
 # Telamon.Ui is not pinned here: it is the installed telamon-ui package.
-telamon-framework-ui = { git = "https://github.com/EternalCoder454/atlas-framework", tag = "v2.0.2" }
+telamon-framework-ui = { git = "https://github.com/EternalCoder454/atlas-framework", tag = "v2.0.6" }
 
 [profile.release]
 lto = "thin"

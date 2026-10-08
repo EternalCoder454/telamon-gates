@@ -525,8 +525,8 @@ dependencies = [
 
 [[package]]
 name = "telamon-framework-core"
-version = "2.0.2"
-source = "git+https://github.com/EternalCoder454/atlas-framework?tag=v2.0.2#b40693828d053ae59567529fdbac4bb3a397ca71"
+version = "2.0.6"
+source = "git+https://github.com/EternalCoder454/atlas-framework?tag=v2.0.6#f78ec18b566eeac724c76b0746147c7a178f8393"
 dependencies = [
  "libc",
  "log",
@@ -535,8 +535,8 @@ dependencies = [
 
 [[package]]
 name = "telamon-framework-system"
-version = "2.0.2"
-source = "git+https://github.com/EternalCoder454/atlas-framework?tag=v2.0.2#b40693828d053ae59567529fdbac4bb3a397ca71"
+version = "2.0.6"
+source = "git+https://github.com/EternalCoder454/atlas-framework?tag=v2.0.6#f78ec18b566eeac724c76b0746147c7a178f8393"
 dependencies = [
  "getrandom 0.3.4",
  "libc",
@@ -549,8 +549,8 @@ dependencies = [
 
 [[package]]
 name = "telamon-framework-ui"
-version = "2.0.2"
-source = "git+https://github.com/EternalCoder454/atlas-framework?tag=v2.0.2#b40693828d053ae59567529fdbac4bb3a397ca71"
+version = "2.0.6"
+source = "git+https://github.com/EternalCoder454/atlas-framework?tag=v2.0.6#f78ec18b566eeac724c76b0746147c7a178f8393"
 dependencies = [
  "cxx-qt-build",
  "libc",

@@ -17,6 +17,6 @@ jobs:
   bundle:
     permissions:
       contents: write
-    uses: EternalCoder454/atlas-framework/.github/workflows/bundle.yml@08afb18cc7488154ae67d5ab2e3ee6767b761b2f # v2.0.4
+    uses: EternalCoder454/atlas-framework/.github/workflows/bundle.yml@f78ec18b566eeac724c76b0746147c7a178f8393 # v2.0.6
     with:
-      framework-ref: 08afb18cc7488154ae67d5ab2e3ee6767b761b2f
+      framework-ref: f78ec18b566eeac724c76b0746147c7a178f8393
