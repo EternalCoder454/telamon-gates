@@ -1,0 +1,23 @@
+# The CI dev image, ghcr.io/eternalcoder454/telamon-gates-dev (public): Fedora
+# 44 with everything CI installs, so its jobs skip dnf. telamon-ui is not in
+# it: each run installs the framework release Cargo.toml pins
+# (packaging/install-builddeps.sh), and installs with dnf whatever this image
+# lacks. CI's image job rebuilds it weekly and when this file or the spec
+# changes, and checks it for secrets before pushing (ci/check-image-secrets.sh).
+# Nothing secret goes in: no build arguments, no secrets.
+FROM registry.fedoraproject.org/fedora:44
+LABEL org.opencontainers.image.source=https://github.com/EternalCoder454/telamon-gates
+LABEL org.opencontainers.image.description="Telamon Gates CI build environment"
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+COPY telamon-gates.spec /tmp/telamon-gates.spec
+# The spec's BuildRequires but telamon-ui; telamon-ui's own dependencies
+# (Kirigami, Qt Quick, the fonts) so that installing it needs no dnf; and what
+# the headless smoke run needs (Xvfb, a session bus, xdotool, ImageMagick).
+RUN dnf -y install git-core tar zstd gzip rpm-build dnf5-plugins cargo clippy rustfmt \
+        kf6-kirigami kf6-kconfig qt6-qtdeclarative ibm-plex-sans-fonts jetbrains-mono-fonts \
+        xorg-x11-server-Xvfb dbus-daemon qt6-qtbase-gui kf6-qqc2-desktop-style breeze-icon-theme \
+        ImageMagick xdotool \
+    && rpmspec -q --buildrequires /tmp/telamon-gates.spec | grep -v '^telamon-ui[[:space:]]' | \
+        xargs -r -d '\n' dnf -y install \
+    && dnf clean all \
+    && rm -f /tmp/telamon-gates.spec

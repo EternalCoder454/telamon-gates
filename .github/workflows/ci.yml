@@ -1,0 +1,347 @@
+name: CI
+
+# Docs-only changes build nothing.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE', '.gitignore']
+  pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE', '.gitignore']
+  workflow_dispatch:
+  # Weekly on main: Fedora's updates, and a fresh dev image (the image job).
+  schedule:
+    - cron: '23 4 * * 1'
+
+permissions:
+  contents: read
+
+# A newer push cancels a branch's or PR's run, but not main's: its runs are
+# the release check, and the image job must not stop between its pushes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Every action and reusable workflow is pinned by commit. The framework's app
+# checks are at the commit of the release tag Cargo.toml pins the crates to;
+# the framework job checks that they agree.
+jobs:
+  # The CI dev image (ci/Containerfile), rebuilt from main only, when the
+  # Containerfile, the spec or the week changed. The only job that may write
+  # packages. It is public as soon as it is pushed, so it is built and loaded
+  # locally, checked for secrets (ci/check-image-secrets.sh), and only then is
+  # the token used, to log in and push.
+  image:
+    name: Dev image
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Which image this commit wants
+        id: stamp
+        run: |
+          stamp=f44-$(cat ci/Containerfile packaging/telamon-gates.spec | sha256sum | cut -c1-16)-$(date -u +%G-%V)
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+      # Anonymously: a built image is public. Built already (this week, from
+      # these files) and :f44 is it: nothing to do.
+      - name: Already pushed?
+        id: have
+        env:
+          STAMP: ${{ steps.stamp.outputs.stamp }}
+        run: |
+          image=ghcr.io/eternalcoder454/telamon-gates-dev
+          digest() {
+            local d
+            d=$(timeout 60 docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}' 2>/dev/null) || return 1
+            [[ $d =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+            printf '%s\n' "$d"
+          }
+          if built=$(digest "$image:$STAMP") && [ "$(digest "$image:f44" || true)" = "$built" ]; then
+            echo "$image:$STAMP is current"
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build (local only)
+        if: steps.have.outputs.current != 'true'
+        env:
+          STAMP: ${{ steps.stamp.outputs.stamp }}
+        run: |
+          image=ghcr.io/eternalcoder454/telamon-gates-dev
+          docker build --pull -f ci/Containerfile -t "$image:$STAMP" -t "$image:f44" packaging
+      - name: Check the image for secrets
+        if: steps.have.outputs.current != 'true'
+        env:
+          STAMP: ${{ steps.stamp.outputs.stamp }}
+        run: ci/check-image-secrets.sh "ghcr.io/eternalcoder454/telamon-gates-dev:$STAMP"
+      - name: Log in and push
+        if: steps.have.outputs.current != 'true'
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          STAMP: ${{ steps.stamp.outputs.stamp }}
+        run: |
+          image=ghcr.io/eternalcoder454/telamon-gates-dev
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          printf '%s\n' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker push "$image:$STAMP"
+          docker push "$image:f44"
+
+  # Which image the build jobs run in: the dev image when it can be pulled
+  # without credentials (it is public), by digest so one run uses one image;
+  # else plain Fedora 44, where they install everything with dnf. No token is
+  # sent to any registry.
+  devimage:
+    name: Dev image to use
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.probe.outputs.image }}
+    steps:
+      - name: Probe
+        id: probe
+        run: |
+          image=ghcr.io/eternalcoder454/telamon-gates-dev
+          # The digest is checked by pulling its manifest back by it.
+          if digest=$(timeout 60 docker buildx imagetools inspect "$image:f44" --format '{{.Manifest.Digest}}' 2>/dev/null) &&
+              [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] &&
+              timeout 60 docker buildx imagetools inspect "$image@$digest" >/dev/null 2>&1; then
+            echo "Using $image:f44, $digest"
+            echo "image=$image@$digest" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$image:f44 can't be pulled (not built yet, or not public): plain Fedora 44"
+            echo "image=registry.fedoraproject.org/fedora:44" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The framework's design rules (no default buttons, no QML file named like
+  # a Telamon.Ui type), at the release the crates are pinned to.
+  telamon:
+    name: Telamon app checks
+    uses: EternalCoder454/atlas-framework/.github/workflows/app-checks.yml@b40693828d053ae59567529fdbac4bb3a397ca71 # v2.0.2
+    with:
+      framework-ref: v2.0.2
+
+  # Telamon.Ui (telamon-ui), which the app builds against, is in no
+  # repository: the framework's RPMs at the release the crates are pinned to,
+  # built once per release and Fedora Qt version and cached.
+  framework:
+    name: Framework RPMs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: registry.fedoraproject.org/fedora:44
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+    steps:
+      - name: Tools for checkout and cache
+        run: dnf -y install git-core tar zstd
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            Cargo.toml
+            .github/workflows/ci.yml
+          sparse-checkout-cone-mode: false
+      - name: The release Cargo.toml pins
+        id: ref
+        run: |
+          refs=$(grep -oE 'github\.com/EternalCoder454/atlas-framework[^}]*tag = "v[0-9]+\.[0-9]+\.[0-9]+"' Cargo.toml |
+            grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | sort -u)
+          if [ "$(printf '%s\n' "$refs" | grep -c .)" != 1 ]; then
+            echo "::error::Cargo.toml must pin every framework crate to one release tag (found: ${refs:-none})"; exit 1
+          fi
+          # The tag's commit (peeled, for an annotated tag).
+          commit=$(git ls-remote https://github.com/EternalCoder454/atlas-framework "refs/tags/$refs" "refs/tags/$refs^{}" |
+            sort -k2 | awk 'END { print $1 }')
+          if ! [[ $commit =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::the framework has no tag $refs"; exit 1
+          fi
+          if ! grep -qF "app-checks.yml@$commit # $refs" .github/workflows/ci.yml || ! grep -qF "framework-ref: $refs" .github/workflows/ci.yml; then
+            echo "::error::the Telamon app checks job in ci.yml must use $refs: app-checks.yml@$commit # $refs and framework-ref: $refs"; exit 1
+          fi
+          echo "ref=$refs" >> "$GITHUB_OUTPUT"
+      # telamon-ui needs the Qt minor it was built with: a Fedora Qt update
+      # (today's metadata, loaded by the dnf install above) builds them again.
+      - name: Fedora's Qt
+        id: qt
+        run: |
+          qt=$(dnf -q repoquery --latest-limit=1 --qf '%{name}-%{evr}\n' qt6-qtbase qt6-qtdeclarative | sort | tr '\n' '_')
+          case $qt in qt6-qtbase-*_qt6-qtdeclarative-*_) ;; *) echo "::error::could not read Fedora's Qt version ($qt)"; exit 1 ;; esac
+          echo "qt=$qt" >> "$GITHUB_OUTPUT"
+      - name: Cached RPMs
+        id: cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out
+          key: telamon-framework-rpms-f44-${{ steps.ref.outputs.ref }}-${{ steps.qt.outputs.qt }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          repository: EternalCoder454/atlas-framework
+          ref: ${{ steps.ref.outputs.ref }}
+          path: telamon-framework
+          persist-credentials: false
+      - name: Build the RPMs
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: telamon-framework/packaging/build-rpm.sh "$GITHUB_WORKSPACE/out"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: framework-rpms
+          path: out/*.rpm
+          if-no-files-found: error
+          retention-days: 1
+
+  check:
+    name: fmt · clippy · tests
+    needs: [framework, devimage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: ${{ needs.devimage.outputs.image }}
+    env:
+      # No debug info: faster links and a smaller cache; tests don't need it.
+      CARGO_PROFILE_DEV_DEBUG: 0
+      QMAKE: /usr/bin/qmake6
+    steps:
+      - name: Tools for checkout and cache
+        run: rpm -q git-core tar zstd cargo rustfmt >/dev/null || dnf -y install git-core tar zstd cargo rustfmt
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # First: it needs nothing built, so a formatting slip fails in seconds.
+      - name: Format
+        run: cargo fmt --all --check
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: framework-rpms
+          # In the container: runner.temp would be the host's path.
+          path: /tmp/framework-rpms
+      - name: Build dependencies
+        run: ATLAS_LOCAL_RPMS=/tmp/framework-rpms packaging/install-builddeps.sh clippy
+      # cxx-qt's build scripts compile against Qt and telamon-ui without
+      # watching their versions: a cache from another toolchain is not used.
+      - name: Toolchain
+        id: toolchain
+        run: |
+          versions=$(rpm -q gcc-c++ qt6-qtbase-devel qt6-qtdeclarative-devel kf6-kirigami-devel telamon-ui)
+          echo "hash=$(sha256sum <<<"$versions" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      # The crate downloads and the dependencies' build output, keyed on
+      # Cargo.lock and the rustc version. Saved from main only, so pull
+      # requests can't evict them.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: f44-${{ steps.toolchain.outputs.hash }}
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
+      # --locked: also fails when Cargo.lock and the framework tag disagree.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --locked
+
+  # The app as a user runs it: the CMake build, qmllint (any warning fails),
+  # and the headless smoke run (send, stream, stop, open, Settings, delete),
+  # whose screenshots are kept as an artifact.
+  ui:
+    name: build · qmllint · smoke
+    needs: [framework, devimage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    container: ${{ needs.devimage.outputs.image }}
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - name: Tools for checkout and cache
+        run: rpm -q git-core tar zstd >/dev/null || dnf -y install git-core tar zstd
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: framework-rpms
+          path: /tmp/framework-rpms
+      - name: Build dependencies and the smoke run's tools
+        run: |
+          ATLAS_LOCAL_RPMS=/tmp/framework-rpms packaging/install-builddeps.sh \
+            xorg-x11-server-Xvfb dbus-daemon qt6-qtbase-gui kf6-qqc2-desktop-style breeze-icon-theme \
+            ImageMagick xdotool ibm-plex-sans-fonts jetbrains-mono-fonts
+      - name: Toolchain
+        id: toolchain
+        run: |
+          versions=$(rpm -q gcc-c++ cmake corrosion qt6-qtbase-devel qt6-qtdeclarative-devel kf6-kirigami-devel telamon-ui)
+          echo "hash=$(sha256sum <<<"$versions" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      # Corrosion's cargo target is inside the CMake build directory.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ui-f44-${{ steps.toolchain.outputs.hash }}
+          workspaces: ". -> build/ci/cargo/build"
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
+      - name: Build
+        run: cmake -S apps/telamon-gates -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build build/ci
+      - name: qmllint
+        run: |
+          cmake --build build/ci --target all_qmllint 2>&1 | tee qmllint.log
+          if grep -E '^(Warning|Error):' qmllint.log; then
+            echo "::error::qmllint found the problems above"; exit 1
+          fi
+      - name: Smoke run
+        run: timeout 300 scripts/smoke.sh build/ci/telamon-gates
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: smoke-screenshots
+          path: |
+            out/smoke/*.png
+            out/smoke/app.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  # The release build, as Telamon OS builds it. The desktop file is validated
+  # in the spec's %check.
+  rpm:
+    name: RPM
+    needs: [framework, devimage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    container: ${{ needs.devimage.outputs.image }}
+    env:
+      CARGO_HOME: /github/home/.cargo
+    steps:
+      - name: Tools for checkout and cache
+        run: rpm -q git-core tar zstd >/dev/null || dnf -y install git-core tar zstd
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: framework-rpms
+          path: /tmp/framework-rpms
+      # The crate downloads only; the build itself is a clean one.
+      - name: Cached crates
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            /github/home/.cargo/registry
+            /github/home/.cargo/git
+          key: rpm-crates-${{ hashFiles('Cargo.lock') }}
+      - name: Build the RPM
+        run: ATLAS_LOCAL_RPMS=/tmp/framework-rpms packaging/build-rpm.sh "$GITHUB_WORKSPACE/out"
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: (github.event_name == 'push' || github.event_name == 'schedule') && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            /github/home/.cargo/registry
+            /github/home/.cargo/git
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: telamon-gates-rpm
+          path: out/*.rpm
+          if-no-files-found: error
+          retention-days: 14
