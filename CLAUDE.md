@@ -35,7 +35,7 @@ When in doubt, do what it does.
 
 | Task | Command (from the repo root on the host) |
 |---|---|
-| First run (builds the dev image) | `ATLAS_LOCAL_RPMS=<dir with telamon-ui and telamon-symbols-fonts 2.0.6 RPMs> scripts/dev.sh true` |
+| First run (builds the dev image) | `ATLAS_LOCAL_RPMS=<dir with telamon-ui and telamon-symbols-fonts 2.0.7 RPMs> scripts/dev.sh true` |
 | Format | `scripts/dev.sh cargo fmt --all --check` |
 | Lint | `scripts/dev.sh env QMAKE=/usr/bin/qmake6 cargo clippy --workspace --all-targets --locked -- -D warnings` |
 | Tests | `scripts/dev.sh env QMAKE=/usr/bin/qmake6 cargo test --workspace --locked` |
@@ -48,7 +48,7 @@ When in doubt, do what it does.
 
 The framework RPMs come from the framework checkout's
 `packaging/build-rpm.sh <out>` run in `registry.fedoraproject.org/fedora:44`
-at the tag `Cargo.toml` pins (v2.0.6).
+at the tag `Cargo.toml` pins (v2.0.7).
 
 ## CI
 
