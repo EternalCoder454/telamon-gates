@@ -23,6 +23,8 @@ ColumnLayout {
             input.clear();
             composer.sent();
         }
+        // Back to the field after a click on Send, so Escape can stop.
+        input.forceActiveFocus();
     }
 
     spacing: Kirigami.Units.smallSpacing
@@ -73,7 +75,10 @@ ColumnLayout {
             visible: composer.chat.generating
             symbol: Symbols.Stop
             text: qsTr("Stop")
-            onClicked: composer.chat.stop()
+            onClicked: {
+                composer.chat.stop();
+                input.forceActiveFocus();
+            }
         }
     }
 

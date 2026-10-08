@@ -41,6 +41,9 @@ pub mod qobject {
         #[qproperty(QString, model)]
         #[qproperty(QString, system_prompt, cxx_name = "systemPrompt")]
         #[qproperty(i32, count)]
+        /// The last message is a failed reply, or a message with no reply:
+        /// Try Again asks for one.
+        #[qproperty(bool, retryable)]
         #[namespace = "telamon_gates"]
         type Chat = super::ChatRust;
     }
@@ -64,7 +67,8 @@ pub mod qobject {
         #[qinvokable]
         fn stop(self: Pin<&mut Chat>);
 
-        /// Asks again for the last reply, in place of the one there.
+        /// Asks again for the last reply, in place of the one there, or for
+        /// a reply to a last message that has none.
         #[qinvokable]
         fn regenerate(self: Pin<&mut Chat>);
 
@@ -210,6 +214,7 @@ pub struct ChatRust {
     model: QString,
     system_prompt: QString,
     count: i32,
+    retryable: bool,
 
     conversation: Option<Conversation>,
     rows: Vec<Row>,
@@ -305,6 +310,9 @@ impl qobject::Chat {
             self.as_mut().rust_mut().conversation = Some(c);
         }
         self.as_mut().set_error(QString::default());
+        if let Some(c) = self.as_mut().rust_mut().conversation.as_mut() {
+            c.touch();
+        }
         self.as_mut().push(Message::user(text));
         self.ask();
         true
@@ -318,24 +326,29 @@ impl qobject::Chat {
             cancel.store(true, Ordering::Relaxed);
         }
         self.as_mut().rust_mut().generation += 1;
-        self.finish_reply(String::new(), None);
+        self.finish_reply(String::new(), None, true);
     }
 
     pub fn regenerate(mut self: Pin<&mut Self>) {
         if *self.generating() || *self.loading() {
             return;
         }
-        let last_is_reply = self
+        let Some(last) = self
             .rust()
             .conversation
             .as_ref()
             .and_then(|c| c.messages.last())
-            .is_some_and(|m| m.role == Role::Assistant);
-        if !last_is_reply {
+            .map(|m| m.role)
+        else {
             return;
-        }
+        };
         self.as_mut().set_error(QString::default());
-        self.as_mut().pop();
+        if last == Role::Assistant {
+            self.as_mut().pop();
+        }
+        if let Some(c) = self.as_mut().rust_mut().conversation.as_mut() {
+            c.touch();
+        }
         self.ask();
     }
 
@@ -397,8 +410,11 @@ impl qobject::Chat {
     }
 
     /// The conversation `id` was deleted: leave it if it is open.
-    pub fn forget(self: Pin<&mut Self>, id: &str) {
+    pub fn forget(mut self: Pin<&mut Self>, id: &str) {
         if self.conversation_id().to_string() == id {
+            // Dropped first: stopping a reply saves the conversation, which
+            // would write the deleted file back.
+            self.as_mut().rust_mut().conversation = None;
             self.new_chat();
         }
     }
@@ -479,7 +495,8 @@ impl qobject::Chat {
         self.as_mut().set_count(count);
         self.as_mut()
             .set_conversation_id(QString::from(id.as_str()));
-        self.set_title(QString::from(title.as_str()));
+        self.as_mut().set_title(QString::from(title.as_str()));
+        self.update_retryable();
     }
 
     fn push(mut self: Pin<&mut Self>, message: Message) {
@@ -494,7 +511,8 @@ impl qobject::Chat {
             }
         }
         self.as_mut().end_insert_rows();
-        self.set_count(at + 1);
+        self.as_mut().set_count(at + 1);
+        self.update_retryable();
     }
 
     fn pop(mut self: Pin<&mut Self>) {
@@ -512,7 +530,18 @@ impl qobject::Chat {
             }
         }
         self.as_mut().end_remove_rows();
-        self.set_count(at);
+        self.as_mut().set_count(at);
+        self.update_retryable();
+    }
+
+    fn update_retryable(self: Pin<&mut Self>) {
+        let retryable = self
+            .rust()
+            .conversation
+            .as_ref()
+            .and_then(|c| c.messages.last())
+            .is_some_and(|m| m.role == Role::User || m.failed);
+        self.set_retryable(retryable);
     }
 
     /// The last row changed (a reply growing, or done).
@@ -534,7 +563,14 @@ impl qobject::Chat {
             .rust()
             .conversation
             .as_ref()
-            .map(|c| c.messages.clone())
+            // A failed or empty reply is not part of what the model said.
+            .map(|c| {
+                c.messages
+                    .iter()
+                    .filter(|m| m.role == Role::User || (!m.failed && !m.text.is_empty()))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
         else {
             return;
         };
@@ -581,7 +617,7 @@ impl qobject::Chat {
             };
             let _ = qt.queue(move |chat| {
                 if chat.rust().generation == generation {
-                    chat.finish_reply(pending, error);
+                    chat.finish_reply(pending, error, false);
                 }
             });
         });
@@ -609,8 +645,24 @@ impl qobject::Chat {
         self.last_changed();
     }
 
-    /// The reply ended: done, stopped, or failed with `error`.
-    fn finish_reply(mut self: Pin<&mut Self>, rest: String, error: Option<String>) {
+    /// The reply ended: done, `stopped`, or failed with `error`.
+    fn finish_reply(
+        mut self: Pin<&mut Self>,
+        rest: String,
+        mut error: Option<String>,
+        stopped: bool,
+    ) {
+        // A backend that ends without a word, and without saying why.
+        let nothing = rest.is_empty()
+            && self
+                .rust()
+                .conversation
+                .as_ref()
+                .and_then(|c| c.messages.last())
+                .is_some_and(|m| m.role == Role::Assistant && m.text.is_empty());
+        if nothing && !stopped && error.is_none() {
+            error = Some("The model sent an empty reply.".to_string());
+        }
         {
             let mut rust = self.as_mut().rust_mut();
             rust.cancel = None;
@@ -649,6 +701,7 @@ impl qobject::Chat {
         if let Some(c) = self.as_mut().rust_mut().conversation.as_mut() {
             c.touch();
         }
+        self.as_mut().update_retryable();
         self.save();
     }
 

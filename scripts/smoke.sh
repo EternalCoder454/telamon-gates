@@ -77,6 +77,16 @@ run() {
     xdotool mousemove 115 979 click 1
     sleep 1.5
     shot 7-settings
+    # Delete the oldest conversation: its menu, then the confirmation.
+    xdotool mousemove 184 379 click 3
+    sleep 1
+    shot 8-menu
+    xdotool key Down Return
+    sleep 1
+    shot 9-confirm
+    xdotool mousemove 998 596 click 1
+    sleep 1
+    shot 10-deleted
     kill "$app"
     wait "$app" || true
 }
@@ -88,3 +98,8 @@ echo "--- app log"
 cat "$out/app.log"
 echo "--- conversations"
 ls -la "$dir"
+if [ -e "$dir/000000000001-0000.json" ]; then
+    echo "FAIL: the deleted conversation's file is still there" >&2
+    exit 1
+fi
+echo "smoke: ok"

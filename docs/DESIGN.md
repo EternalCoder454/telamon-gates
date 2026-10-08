@@ -19,7 +19,8 @@ beside it.
   model) above the messages, in a centred column of at most 46 grid units.
   Your messages are accent-tinted bubbles on the trailing side; replies run
   the column's width beside a small avatar, as rich text, with each code
-  block in a `TelamonCodeView` with a Copy button. Under a finished reply:
+  block in a `TelamonCodeView` with a Copy button (a code block inside a list
+  or quote stays in the text, so the list isn't cut in two). Under a finished reply:
   Copy, and Regenerate on the last one. While a reply comes in, the view
   follows it unless you scroll away; "Thinking…" shows until its first words.
 - **Composer**: a `TelamonTextArea` that grows to about ten lines. Enter
@@ -42,7 +43,9 @@ beside it.
     `newChat`, `open`, `send`, `stop`, `regenerate`, `pickModel`,
     `saveSystemPrompt`, `refreshModels`, `dismissError`; properties
     `conversationId`, `title`, `generating`, `loading`, `error`, `demo`,
-    `backendName`, `models`, `model`, `systemPrompt`, `count`.
+    `backendName`, `models`, `model`, `systemPrompt`, `count`, `retryable`
+    (the last reply failed or never came: Try Again and Regenerate ask for
+    one; a good reply is never discarded from the banner).
   - `Library` (the sidebar's list as string lists `ids`, `titles`,
     `sections`): `reload`, `setDayStart`, `remove`; `loaded`, `folder`.
   - `io.rs`: the one file thread; `settings.rs`: the settings file.
@@ -81,7 +84,10 @@ serde; one that doesn't parse is skipped and logged.
 
 - The backend can't be reached, or refuses: the error banner says what it
   said, with Try Again; the user's message is kept.
-- A reply fails half-way: what came is kept and marked failed.
+- A reply fails half-way: what came is kept and marked failed. Failed and
+  empty replies are not sent back to the model.
+- A reply ends with no text and no error: shown as "The model sent an empty
+  reply.", with Try Again.
 - A conversation file can't be read: it is left out of the list (logged);
   opening one that vanished shows an error and a new chat.
 - A save fails: logged; the conversation stays in the window.
@@ -94,6 +100,9 @@ composer under 16 ms.
 
 ## Phase
 
-Functionable. Not yet: a real backend (see `docs/BACKEND.md`), renaming a
+Functionable. Known gaps for later phases: deleting a conversation while it
+is still being opened can show it once more (rare); the file thread is not
+joined on quit, so a save queued in the last instant can be lost (writes are
+atomic, so never half a file). Not yet: a real backend (see `docs/BACKEND.md`), renaming a
 conversation, editing a sent message, attachments, CI, the RPM's icon and
 metainfo.

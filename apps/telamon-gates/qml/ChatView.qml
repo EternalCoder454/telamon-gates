@@ -71,7 +71,9 @@ Item {
             actions: [
                 QQC2.Action {
                     text: qsTr("Try Again")
-                    enabled: view.chat.count > 0 && !view.chat.generating
+                    // Only when the last reply failed or never came: a
+                    // good one is never thrown away from here.
+                    enabled: view.chat.retryable && !view.chat.generating
                     onTriggered: view.chat.regenerate()
                 }
             ]
@@ -92,7 +94,10 @@ Item {
                 boundsBehavior: Flickable.StopAtBounds
                 // Each message is laid out once and kept: replies are long.
                 reuseItems: false
-                QQC2.ScrollBar.vertical: TelamonScrollBar {}
+                QQC2.ScrollBar.vertical: TelamonScrollBar {
+                    // Dragging the bar during a reply stops following it.
+                    onPressedChanged: list.follow = pressed ? false : list.atYEnd
+                }
 
                 // Follows a growing reply while the view is at the end; a
                 // scroll away from it stops that until the end is reached
@@ -121,6 +126,20 @@ Item {
                     follow = true;
                     Qt.callLater(pin);
                 }
+
+                // Another conversation opens at its end, wherever this one was.
+                Connections {
+                    target: view.chat
+                    function onConversationIdChanged() {
+                        list.follow = true;
+                        Qt.callLater(list.pin);
+                    }
+                    function onLoadingChanged() {
+                        list.follow = true;
+                        Qt.callLater(list.pin);
+                    }
+                }
+
 
                 delegate: MessageDelegate {
                     width: list.width

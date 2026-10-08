@@ -81,7 +81,8 @@ TelamonPage {
             SecondaryButton {
                 text: qsTr("Open Folder")
                 symbol: Symbols.FolderOpen
-                onClicked: Qt.openUrlExternally("file://" + page.library.folder)
+                // Each part encoded: a # or % in the path is a name, not URL syntax.
+                onClicked: Qt.openUrlExternally("file://" + page.library.folder.split("/").map(encodeURIComponent).join("/"))
             }
         }
     }

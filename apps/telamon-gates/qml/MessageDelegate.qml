@@ -33,7 +33,7 @@ Item {
     // made safe in Rust (gates-core's markdown.rs): nothing in it is raw.
     // Links in the accent, lighter on a dark theme so they read.
     readonly property color linkColor: Kirigami.Theme.backgroundColor.hslLightness < 0.5 ? Qt.lighter(TelamonStyle.accent, 1.25) : TelamonStyle.accent
-    readonly property string css: "a { color: " + linkColor + "; } " + "h3 { font-size: large; } h4 { font-size: medium; } h3, h4, h5 { margin-top: 10px; margin-bottom: 4px; } " + "p { margin-top: 4px; margin-bottom: 4px; } " + "ul, ol { margin-top: 2px; margin-bottom: 2px; -qt-list-indent: 1; } li { margin-top: 2px; margin-bottom: 2px; } " + "code { font-family: '" + TelamonStyle.monoFamily + "'; } " + "blockquote { margin-left: 8px; color: " + Qt.alpha(Kirigami.Theme.textColor, 0.7) + "; } " + "table { border-color: " + Qt.alpha(Kirigami.Theme.textColor, 0.25) + "; }"
+    readonly property string css: "a { color: " + linkColor + "; } " + "h3 { font-size: large; } h4 { font-size: medium; } h3, h4, h5 { margin-top: 10px; margin-bottom: 4px; } " + "p { margin-top: 4px; margin-bottom: 4px; } " + "ul, ol { margin-top: 2px; margin-bottom: 2px; -qt-list-indent: 1; } li { margin-top: 2px; margin-bottom: 2px; } " + "code, pre { font-family: '" + TelamonStyle.monoFamily + "'; } " + "blockquote { margin-left: 8px; color: " + Qt.alpha(Kirigami.Theme.textColor, 0.7) + "; } " + "table { border-color: " + Qt.alpha(Kirigami.Theme.textColor, 0.25) + "; }"
 
     implicitHeight: column.implicitHeight
 
@@ -178,10 +178,12 @@ Item {
                 }
 
                 RowLayout {
-                    visible: !message.streaming && message.text.length > 0
+                    // A failed reply with no text still offers Regenerate.
+                    visible: !message.streaming && (message.text.length > 0 || message.failed)
                     spacing: 2
 
                     TelamonCopyButton {
+                        visible: message.text.length > 0
                         text: message.text
                     }
                     ToolbarButton {

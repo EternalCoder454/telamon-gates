@@ -48,6 +48,12 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
     let store = Store::at(Store::default_dir());
     let folder = store.dir().to_string_lossy().into_owned();
     let io = io::Io::start(store);
+    // There from the start, so Settings' Open Folder always opens it.
+    io.run(|store| {
+        if let Err(e) = std::fs::create_dir_all(store.dir()) {
+            log::warn!("cannot make {}: {e}", store.dir().display());
+        }
+    });
 
     let mut chat = chat::qobject::chat_make_unique();
     let mut library = library::qobject::library_make_unique();

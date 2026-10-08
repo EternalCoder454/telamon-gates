@@ -27,25 +27,33 @@ pub fn blocks(text: &str) -> Vec<Block> {
 
     let mut out = Vec::new();
     let mut html = String::new();
-    // Inside a code block: its language and text so far.
-    let mut code: Option<(String, String)> = None;
+    // Inside a code block: its language, its text so far, and whether it
+    // stays in the prose (see `nest`).
+    let mut code: Option<(String, String, bool)> = None;
+    // Open lists and quotes. A code block inside one stays in the prose, as
+    // <pre>: splitting it out would cut the list or quote in two.
+    let mut nest = 0u32;
     // Whether each open link was written as <a> (only safe targets are).
     let mut links: Vec<bool> = Vec::new();
     // In a table's head row: cells are <th>.
     let mut in_head = false;
 
     for event in Parser::new_ext(text, options) {
-        if let Some((_, buf)) = code.as_mut() {
+        if let Some((_, buf, _)) = code.as_mut() {
             match event {
                 Event::End(TagEnd::CodeBlock) => {
-                    let (lang, mut code_text) = code.take().unwrap_or_default();
+                    let (lang, mut code_text, inline) = code.take().unwrap_or_default();
                     if code_text.ends_with('\n') {
                         code_text.pop();
                     }
-                    out.push(Block::Code {
-                        lang,
-                        code: code_text,
-                    });
+                    if inline {
+                        pre_into(&mut html, &code_text);
+                    } else {
+                        out.push(Block::Code {
+                            lang,
+                            code: code_text,
+                        });
+                    }
                 }
                 Event::Text(t) | Event::Code(t) | Event::Html(t) | Event::InlineHtml(t) => {
                     buf.push_str(&t)
@@ -57,22 +65,34 @@ pub fn blocks(text: &str) -> Vec<Block> {
         match event {
             Event::Start(tag) => match tag {
                 Tag::CodeBlock(kind) => {
-                    flush(&mut out, &mut html);
+                    let inline = nest > 0;
+                    if !inline {
+                        flush(&mut out, &mut html);
+                    }
                     let lang = match kind {
                         CodeBlockKind::Fenced(info) => {
                             info.split_whitespace().next().unwrap_or("").to_string()
                         }
                         CodeBlockKind::Indented => String::new(),
                     };
-                    code = Some((lang, String::new()));
+                    code = Some((lang, String::new(), inline));
                 }
                 Tag::Paragraph => html.push_str("<p>"),
                 Tag::Heading { level, .. } => {
                     html.push_str(heading(level).0);
                 }
-                Tag::BlockQuote(_) => html.push_str("<blockquote>"),
-                Tag::List(Some(start)) => html.push_str(&format!("<ol start=\"{start}\">")),
-                Tag::List(None) => html.push_str("<ul>"),
+                Tag::BlockQuote(_) => {
+                    nest += 1;
+                    html.push_str("<blockquote>")
+                }
+                Tag::List(Some(start)) => {
+                    nest += 1;
+                    html.push_str(&format!("<ol start=\"{start}\">"))
+                }
+                Tag::List(None) => {
+                    nest += 1;
+                    html.push_str("<ul>")
+                }
                 Tag::Item => html.push_str("<li>"),
                 Tag::Emphasis => html.push_str("<i>"),
                 Tag::Strong => html.push_str("<b>"),
@@ -101,9 +121,14 @@ pub fn blocks(text: &str) -> Vec<Block> {
             Event::End(tag) => match tag {
                 TagEnd::Paragraph => html.push_str("</p>"),
                 TagEnd::Heading(level) => html.push_str(heading(level).1),
-                TagEnd::BlockQuote(_) => html.push_str("</blockquote>"),
-                TagEnd::List(true) => html.push_str("</ol>"),
-                TagEnd::List(false) => html.push_str("</ul>"),
+                TagEnd::BlockQuote(_) => {
+                    nest = nest.saturating_sub(1);
+                    html.push_str("</blockquote>")
+                }
+                TagEnd::List(ordered) => {
+                    nest = nest.saturating_sub(1);
+                    html.push_str(if ordered { "</ol>" } else { "</ul>" })
+                }
                 TagEnd::Item => html.push_str("</li>"),
                 TagEnd::Emphasis => html.push_str("</i>"),
                 TagEnd::Strong => html.push_str("</b>"),
@@ -141,14 +166,25 @@ pub fn blocks(text: &str) -> Vec<Block> {
             _ => {}
         }
     }
-    if let Some((lang, code_text)) = code {
-        out.push(Block::Code {
-            lang,
-            code: code_text.trim_end_matches('\n').to_string(),
-        });
+    if let Some((lang, code_text, inline)) = code {
+        let code_text = code_text.trim_end_matches('\n');
+        if inline {
+            pre_into(&mut html, code_text);
+        } else {
+            out.push(Block::Code {
+                lang,
+                code: code_text.to_string(),
+            });
+        }
     }
     flush(&mut out, &mut html);
     out
+}
+
+fn pre_into(html: &mut String, code: &str) {
+    html.push_str("<pre>");
+    escape_into(html, code);
+    html.push_str("</pre>");
 }
 
 fn flush(out: &mut Vec<Block>, html: &mut String) {
@@ -287,6 +323,17 @@ mod tests {
         assert!(h.contains("<blockquote><p>quoted</p></blockquote>"));
         assert!(h.contains("<tr><th>A</th><th>B</th></tr>"));
         assert!(h.contains("<tr><td>1</td><td>2</td></tr>"));
+    }
+
+    #[test]
+    fn code_in_a_list_stays_in_the_list() {
+        let b = blocks("1. Install:\n\n   ```sh\n   dnf install <x>\n   ```\n\n2. Run");
+        assert_eq!(b.len(), 1, "{b:?}");
+        let Block::Prose(h) = &b[0] else {
+            panic!("{b:?}")
+        };
+        assert!(h.contains("<pre>dnf install &lt;x&gt;</pre>"));
+        assert!(h.contains("<li><p>Run</p></li></ol>"));
     }
 
     #[test]
