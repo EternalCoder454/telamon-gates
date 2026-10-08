@@ -42,8 +42,22 @@ When in doubt, do what it does.
 | App build | `scripts/dev.sh bash -c 'cmake -S apps/telamon-gates -B build/dev -G Ninja && cmake --build build/dev'` |
 | qmllint | `scripts/dev.sh cmake --build build/dev --target all_qmllint` |
 | Smoke run + screenshots | `scripts/dev.sh scripts/smoke.sh` (`SMOKE_DARK=1` for a dark scheme) |
+| RPM | `podman run --rm --security-opt label=disable -v "$PWD":/src:ro -v <framework rpms>:/fw:ro -v <out>:/out -e ATLAS_LOCAL_RPMS=/fw registry.fedoraproject.org/fedora:44 /src/packaging/build-rpm.sh /out` |
 | Telamon checks | `<framework checkout>/tools/lint-app.sh apps/telamon-gates` and `tools/check-app-names.sh apps/telamon-gates` |
 
 The framework RPMs come from the framework checkout's
 `packaging/build-rpm.sh <out>` run in `registry.fedoraproject.org/fedora:44`
 at the tag `Cargo.toml` pins (v2.0.2).
+
+## CI
+
+`.github/workflows/ci.yml`: the framework's app checks, the framework RPMs
+(built once per release and Fedora Qt, cached), fmt · clippy · tests,
+build · qmllint · smoke (screenshots kept as an artifact) and the RPM. Jobs
+run in the public dev image `ghcr.io/eternalcoder454/telamon-gates-dev`
+(`ci/Containerfile`), which a main-only job builds weekly or when the
+Containerfile or spec changes, checks with `ci/check-image-secrets.sh`
+before logging in, and pushes; without it they fall back to fedora:44.
+Actions are pinned by commit. Moving the framework tag means changing
+`Cargo.toml` and the `telamon` job (`app-checks.yml@<tag commit> # <tag>`
+and `framework-ref`) together: the framework job fails when they disagree.

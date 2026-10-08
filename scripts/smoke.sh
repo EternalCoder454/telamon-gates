@@ -1,5 +1,5 @@
 #!/bin/bash
-# A headless run of the built app, inside the dev container:
+# A headless run of the built app, inside the dev container (or CI):
 #   scripts/dev.sh scripts/smoke.sh [binary]      (default build/dev/telamon-gates)
 # Xvfb and a private session bus; every XDG dir under out/smoke, with two
 # saved conversations to start from. Types a message, waits for the demo
@@ -7,8 +7,9 @@
 # or files.
 set -euo pipefail
 
-bin=${1:-build/dev/telamon-gates}
-out=/src/out/smoke
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+bin=$(realpath "${1:-$repo/build/dev/telamon-gates}")
+out=$repo/out/smoke
 rm -rf "$out"
 mkdir -p "$out"/{config,data,cache,runtime,home}
 chmod 700 "$out/runtime"
@@ -98,6 +99,15 @@ echo "--- app log"
 cat "$out/app.log"
 echo "--- conversations"
 ls -la "$dir"
+replied=0
+for f in "$dir"/*.json; do
+    case $f in */00000000000[12]-0000.json) continue ;; esac
+    grep -q '"role": "assistant"' "$f" && replied=1
+done
+if [ "$replied" != 1 ]; then
+    echo "FAIL: no new conversation with a reply was saved" >&2
+    exit 1
+fi
 if [ -e "$dir/000000000001-0000.json" ]; then
     echo "FAIL: the deleted conversation's file is still there" >&2
     exit 1
