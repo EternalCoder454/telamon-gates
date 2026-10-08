@@ -7,6 +7,8 @@ mod chat;
 mod io;
 mod library;
 mod settings;
+mod user;
+mod vram;
 
 use cxx_qt::{CxxQtType, Threading};
 use gates_core::{Backend, Store};
@@ -33,6 +35,7 @@ telamon_framework_ui::app! {
 pub struct TelamonObjects {
     pub chat: *mut c_void,
     pub library: *mut c_void,
+    pub vram: *mut c_void,
 }
 
 /// The backend replies come from. This is the one line to change to connect
@@ -76,9 +79,11 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
     }
     chat.pin_mut().start();
     library.pin_mut().reload();
+    let vram = vram::qobject::vram_make_unique();
 
     TelamonObjects {
         chat: chat.into_raw().cast(),
         library: library.into_raw().cast(),
+        vram: vram.into_raw().cast(),
     }
 }

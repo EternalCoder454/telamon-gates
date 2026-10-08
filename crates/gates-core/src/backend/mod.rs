@@ -14,13 +14,26 @@ use std::fmt;
 use std::sync::atomic::AtomicBool;
 
 /// What to answer: the conversation so far, ending with the user's message.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Request {
     /// The model picked in the window; "" when the backend has none to pick.
     pub model: String,
     /// Sent first, as the system message; "" for none.
     pub system_prompt: String,
     pub messages: Vec<Message>,
+}
+
+/// What a backend streams while it answers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Event<'a> {
+    /// The next piece of the reply, in order. Send one per token, as
+    /// servers stream them: the window counts these for its tokens per
+    /// second until the backend says otherwise with `Speed`.
+    Text(&'a str),
+    /// The server's own measure of how fast it generates, in tokens per
+    /// second (llama-server's `timings.predicted_per_second`). Once sent, it
+    /// is shown in place of the window's count.
+    Speed(f64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,13 +73,14 @@ pub trait Backend: Send + Sync {
     fn models(&self) -> Result<Vec<String>, BackendError>;
 
     /// Streams the reply to `request`: each piece of text as it comes, in
-    /// order, to `emit`. Returns when the reply is complete, when it fails, or
-    /// soon after `cancel` turns true (then with `Ok`: what was emitted is
-    /// kept as the reply).
+    /// order, to `emit` (and, if the server measures it, its speed).
+    /// Returns when the reply is complete, when it fails, or soon after
+    /// `cancel` turns true (then with `Ok`: what was emitted is kept as the
+    /// reply).
     fn complete(
         &self,
         request: &Request,
         cancel: &AtomicBool,
-        emit: &mut dyn FnMut(&str),
+        emit: &mut dyn FnMut(Event<'_>),
     ) -> Result<(), BackendError>;
 }

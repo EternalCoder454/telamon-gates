@@ -20,6 +20,8 @@ Item {
     required property list<string> langs
     required property bool streaming
     required property bool failed
+    // Tokens per second, 0 when not known.
+    required property real speed
 
     required property var chat
     required property real columnWidth
@@ -36,6 +38,24 @@ Item {
     readonly property string css: "a { color: " + linkColor + "; } " + "h3 { font-size: large; } h4 { font-size: medium; } h3, h4, h5 { margin-top: 10px; margin-bottom: 4px; } " + "p { margin-top: 4px; margin-bottom: 4px; } " + "ul, ol { margin-top: 2px; margin-bottom: 2px; -qt-list-indent: 1; } li { margin-top: 2px; margin-bottom: 2px; } " + "code, pre { font-family: '" + TelamonStyle.monoFamily + "'; } " + "blockquote { margin-left: 8px; color: " + Qt.alpha(Kirigami.Theme.textColor, 0.7) + "; } " + "table { border-color: " + Qt.alpha(Kirigami.Theme.textColor, 0.25) + "; }"
 
     implicitHeight: column.implicitHeight
+
+    // "38.2 tokens/s", small and muted.
+    component SpeedLabel: RowLayout {
+        spacing: Kirigami.Units.smallSpacing
+        Accessible.role: Accessible.StaticText
+        Accessible.name: speedText.text
+
+        Symbol {
+            icon: Symbols.Speed
+            size: Kirigami.Units.iconSizes.small
+            color: Kirigami.Theme.disabledTextColor
+        }
+        TelamonLabel {
+            id: speedText
+            textStyle: TelamonLabel.Caption
+            text: qsTr("%1 tokens/s").arg(Qt.locale().toString(message.speed, "f", 1))
+        }
+    }
 
     ColumnLayout {
         id: column
@@ -154,6 +174,11 @@ Item {
                     }
                 }
 
+                // How fast it comes, while it comes.
+                SpeedLabel {
+                    visible: message.streaming && message.speed > 0
+                }
+
                 RowLayout {
                     visible: message.streaming && message.kinds.length === 0
                     spacing: Kirigami.Units.smallSpacing
@@ -192,6 +217,10 @@ Item {
                         symbol: Symbols.Refresh
                         text: qsTr("Regenerate")
                         onClicked: message.chat.regenerate()
+                    }
+                    SpeedLabel {
+                        Layout.leftMargin: Kirigami.Units.smallSpacing
+                        visible: message.speed > 0
                     }
                 }
             }

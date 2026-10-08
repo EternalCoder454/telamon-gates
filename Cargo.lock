@@ -568,6 +568,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "gates-core",
+ "libc",
  "log",
  "telamon-framework-ui",
 ]

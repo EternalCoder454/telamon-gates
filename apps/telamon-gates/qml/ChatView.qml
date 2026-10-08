@@ -15,6 +15,59 @@ Item {
     // The column messages and the field share, centred in the view.
     readonly property real columnWidth: Math.min(width - Kirigami.Units.gridUnit * 3, Kirigami.Units.gridUnit * 46)
 
+    // An empty chat greets the user by the time of day: morning from 5,
+    // afternoon from noon, evening from 5 pm, night from 8 pm. Each has a
+    // few ways of saying it; one is picked for every new chat.
+    property int hour: new Date().getHours()
+    property int pick: Math.floor(Math.random() * 1000)
+    readonly property string period: hour >= 5 && hour < 12 ? "morning" : hour >= 12 && hour < 17 ? "afternoon" : hour >= 17 && hour < 20 ? "evening" : "night"
+    readonly property string name: view.chat.userName.length > 0 ? view.chat.userName : qsTr("friend")
+    readonly property var greetings: ({
+            "morning": [qsTr("Good morning, %1"), qsTr("Morning, %1. Coffee first?"), qsTr("Rise and shine, %1"), qsTr("A fresh start, %1"), qsTr("Top of the morning, %1")],
+            "afternoon": [qsTr("Good afternoon, %1"), qsTr("Afternoon, %1. What's next?"), qsTr("Hey %1, how's the day going?"), qsTr("Back at it, %1?")],
+            "evening": [qsTr("Good evening, %1"), qsTr("Evening, %1. Winding down?"), qsTr("Hello again, %1"), qsTr("The day's almost done, %1")],
+            "night": [qsTr("Cool midnight, %1"), qsTr("Burning the midnight oil, %1?"), qsTr("Quiet hours, %1"), qsTr("Night owl mode, %1"), qsTr("Still up, %1?")]
+        })
+    readonly property string greeting: {
+        const list = view.greetings[view.period];
+        return list[view.pick % list.length].arg(view.name);
+    }
+    readonly property string greetingText: {
+        switch (view.period) {
+        case "morning":
+            return qsTr("What's first on today's list?");
+        case "afternoon":
+            return qsTr("What can I help you get done?");
+        case "evening":
+            return qsTr("Anything to wrap up before the day ends?");
+        }
+        return qsTr("Everything's quiet. What's on your mind?");
+    }
+    readonly property int greetingSymbol: view.period === "morning" ? Symbols.WbSunny : view.period === "afternoon" ? Symbols.LightMode : view.period === "evening" ? Symbols.WbTwilight : Symbols.Bedtime
+
+    function regreet() {
+        view.hour = new Date().getHours();
+        view.pick = Math.floor(Math.random() * 1000);
+    }
+
+    // The hour moves on while an empty chat waits.
+    Timer {
+        interval: 60 * 1000
+        running: view.visible && view.chat.count === 0
+        repeat: true
+        onTriggered: view.hour = new Date().getHours()
+    }
+    onPeriodChanged: view.pick = Math.floor(Math.random() * 1000)
+
+    Connections {
+        target: view.chat
+        function onConversationIdChanged() {
+            if (view.chat.conversationId.length === 0) {
+                view.regreet();
+            }
+        }
+    }
+
     function focusComposer() {
         composer.focusInput();
     }
@@ -151,11 +204,11 @@ Item {
 
             TelamonEmptyState {
                 anchors.centerIn: parent
-                width: Math.min(parent.width, Kirigami.Units.gridUnit * 24)
+                width: Math.min(parent.width, Kirigami.Units.gridUnit * 26)
                 visible: view.chat.count === 0 && !view.chat.loading
-                symbol: Symbols.Forum
-                title: qsTr("How Can I Help?")
-                text: qsTr("Ask anything. Conversations are kept on this computer.")
+                symbol: view.greetingSymbol
+                title: view.greeting
+                text: view.greetingText
             }
 
             TelamonSpinner {

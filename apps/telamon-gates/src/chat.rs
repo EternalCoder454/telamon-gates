@@ -44,6 +44,8 @@ pub mod qobject {
         /// The last message is a failed reply, or a message with no reply:
         /// Try Again asks for one.
         #[qproperty(bool, retryable)]
+        /// The user's first name, for the greeting; "" when unknown.
+        #[qproperty(QString, user_name, cxx_name = "userName")]
         #[namespace = "telamon_gates"]
         type Chat = super::ChatRust;
     }
@@ -149,7 +151,7 @@ use cxx_qt_lib::{
     QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex, QString, QStringList, QVariant,
 };
 use gates_core::markdown::{self, Block};
-use gates_core::{Backend, Conversation, Message, Request, Role};
+use gates_core::{Backend, Conversation, Event, Message, Request, Role};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -159,7 +161,7 @@ use std::time::{Duration, Instant};
 const BATCH: Duration = Duration::from_millis(33);
 
 const FIRST_ROLE: i32 = 0x0100; // Qt::UserRole
-const ROLES: [&str; 7] = [
+const ROLES: [&str; 8] = [
     "role",      // "user" or "assistant"
     "text",      // the message as written (Markdown for a reply)
     "kinds",     // each block's kind: "prose" or "code"
@@ -167,6 +169,7 @@ const ROLES: [&str; 7] = [
     "langs",     // each code block's language, "" for prose
     "streaming", // the reply is still coming in
     "failed",    // the reply stopped on an error
+    "speed",     // tokens per second of a reply, 0 when not known
 ];
 
 /// A message as the view shows it, made once per change.
@@ -215,6 +218,7 @@ pub struct ChatRust {
     system_prompt: QString,
     count: i32,
     retryable: bool,
+    user_name: QString,
 
     conversation: Option<Conversation>,
     rows: Vec<Row>,
@@ -234,6 +238,36 @@ pub struct ChatRust {
     pub library: Option<Box<CxxQtThread<library::qobject::Library>>>,
 }
 
+/// Tokens per second of a reply: the server's own figure once it sends
+/// one, else the pieces counted since the first came (each is a token).
+#[derive(Default)]
+struct Rate {
+    tokens: u64,
+    first: Option<Instant>,
+    reported: Option<f64>,
+}
+
+impl Rate {
+    fn token(&mut self) {
+        self.tokens += 1;
+        self.first.get_or_insert_with(Instant::now);
+    }
+
+    fn reported(&mut self, speed: f64) {
+        if speed.is_finite() && speed > 0.0 {
+            self.reported = Some(speed);
+        }
+    }
+
+    fn speed(&self) -> Option<f64> {
+        self.reported.or_else(|| {
+            let seconds = self.first?.elapsed().as_secs_f64();
+            // The first token's time is the wait for it, not generation.
+            (self.tokens >= 2 && seconds > 0.0).then(|| (self.tokens - 1) as f64 / seconds)
+        })
+    }
+}
+
 fn int(n: usize) -> i32 {
     i32::try_from(n).unwrap_or(i32::MAX)
 }
@@ -249,6 +283,8 @@ impl qobject::Chat {
         self.as_mut().set_demo(demo);
         self.as_mut()
             .set_model(QString::from(settings::get(settings::MODEL).as_str()));
+        self.as_mut()
+            .set_user_name(QString::from(crate::user::first_name().as_str()));
         self.as_mut().set_system_prompt(QString::from(
             settings::get(settings::SYSTEM_PROMPT).as_str(),
         ));
@@ -326,7 +362,7 @@ impl qobject::Chat {
             cancel.store(true, Ordering::Relaxed);
         }
         self.as_mut().rust_mut().generation += 1;
-        self.finish_reply(String::new(), None, true);
+        self.finish_reply(String::new(), None, None, true);
     }
 
     pub fn regenerate(mut self: Pin<&mut Self>) {
@@ -445,6 +481,7 @@ impl qobject::Chat {
             4 => QVariant::from(&row.langs),
             5 => QVariant::from(&(last && self.rust().streaming)),
             6 => QVariant::from(&message.failed),
+            7 => QVariant::from(&message.speed.unwrap_or(0.0)),
             _ => QVariant::default(),
         }
     }
@@ -597,16 +634,25 @@ impl qobject::Chat {
         std::thread::spawn(move || {
             let mut pending = String::new();
             let mut sent = Instant::now();
+            let mut rate = Rate::default();
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                backend.complete(&request, &cancel, &mut |piece| {
-                    pending.push_str(piece);
+                backend.complete(&request, &cancel, &mut |event| {
+                    match event {
+                        Event::Text(piece) => {
+                            pending.push_str(piece);
+                            rate.token();
+                        }
+                        Event::Speed(s) => rate.reported(s),
+                    }
                     if sent.elapsed() >= BATCH {
                         sent = Instant::now();
                         let text = std::mem::take(&mut pending);
-                        let _ = qt.queue(move |chat| chat.append_reply(generation, &text));
+                        let speed = rate.speed();
+                        let _ = qt.queue(move |chat| chat.append_reply(generation, &text, speed));
                     }
                 })
             }));
+            let speed = rate.speed();
             let error = match result {
                 Ok(Ok(())) => None,
                 Ok(Err(e)) => Some(e.to_string()),
@@ -617,14 +663,14 @@ impl qobject::Chat {
             };
             let _ = qt.queue(move |chat| {
                 if chat.rust().generation == generation {
-                    chat.finish_reply(pending, error, false);
+                    chat.finish_reply(pending, error, speed, false);
                 }
             });
         });
     }
 
-    fn append_reply(mut self: Pin<&mut Self>, generation: u64, text: &str) {
-        if self.rust().generation != generation || text.is_empty() {
+    fn append_reply(mut self: Pin<&mut Self>, generation: u64, text: &str, speed: Option<f64>) {
+        if self.rust().generation != generation || (text.is_empty() && speed.is_none()) {
             return;
         }
         {
@@ -637,6 +683,9 @@ impl qobject::Chat {
                 return;
             };
             message.text.push_str(text);
+            if speed.is_some() {
+                message.speed = speed;
+            }
             let row = Row::of(message);
             if let Some(last) = rust.rows.last_mut() {
                 *last = row;
@@ -650,6 +699,7 @@ impl qobject::Chat {
         mut self: Pin<&mut Self>,
         rest: String,
         mut error: Option<String>,
+        speed: Option<f64>,
         stopped: bool,
     ) {
         // A backend that ends without a word, and without saying why.
@@ -675,6 +725,9 @@ impl qobject::Chat {
             {
                 message.text.push_str(&rest);
                 message.failed = error.is_some();
+                if speed.is_some() {
+                    message.speed = speed;
+                }
                 let row = Row::of(message);
                 if let Some(last) = rust.rows.last_mut() {
                     *last = row;

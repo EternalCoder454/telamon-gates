@@ -2,7 +2,7 @@
 //! at a time, so the window can be used and tested before a real backend is
 //! connected. Nothing leaves the computer.
 
-use super::{Backend, BackendError, Request};
+use super::{Backend, BackendError, Event, Request};
 use crate::conversation::Role;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -69,7 +69,7 @@ impl Backend for Demo {
         &self,
         request: &Request,
         cancel: &AtomicBool,
-        emit: &mut dyn FnMut(&str),
+        emit: &mut dyn FnMut(Event<'_>),
     ) -> Result<(), BackendError> {
         let reply = Demo::reply(request);
         // Word by word, each with the space before it, as a model streams.
@@ -79,13 +79,13 @@ impl Backend for Demo {
                 if cancel.load(Ordering::Relaxed) {
                     return Ok(());
                 }
-                emit(&reply[start..i]);
+                emit(Event::Text(&reply[start..i]));
                 start = i;
                 std::thread::sleep(self.delay);
             }
         }
         if !cancel.load(Ordering::Relaxed) {
-            emit(&reply[start..]);
+            emit(Event::Text(&reply[start..]));
         }
         Ok(())
     }
@@ -110,8 +110,10 @@ mod tests {
             delay: Duration::ZERO,
         };
         let mut pieces = Vec::new();
-        demo.complete(&request(), &AtomicBool::new(false), &mut |t| {
-            pieces.push(t.to_string())
+        demo.complete(&request(), &AtomicBool::new(false), &mut |e| {
+            if let Event::Text(t) = e {
+                pieces.push(t.to_string())
+            }
         })
         .unwrap();
         assert!(pieces.len() > 10);

@@ -7,7 +7,8 @@ pub mod backend;
 pub mod conversation;
 pub mod markdown;
 pub mod store;
+pub mod vram;
 
-pub use backend::{Backend, BackendError, Request};
+pub use backend::{Backend, BackendError, Event, Request};
 pub use conversation::{Conversation, Message, Role, Summary};
 pub use store::Store;

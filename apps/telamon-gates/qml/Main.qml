@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
+import QtQml.Models
 import org.kde.kirigami as Kirigami
 import Telamon.Ui
 
@@ -13,6 +14,7 @@ TelamonWindow {
     // Set from main.cpp through setInitialProperties(); see src/lib.rs.
     required property var chat
     required property var library
+    required property var vram
 
     // "chat", "settings" or "about".
     property string page: "chat"
@@ -69,20 +71,76 @@ TelamonWindow {
         onTriggered: root.updateDayStart()
     }
 
-    // The list's rows by section, newest first in each.
-    readonly property var bySection: {
-        const m = {
-            today: [],
-            yesterday: [],
-            week: [],
-            month: [],
-            older: []
-        };
-        const s = root.library.sections;
-        for (let i = 0; i < s.length; ++i) {
-            (m[s[i]] ?? m.older).push(i);
+    // What the sidebar lists under New Chat, in order: a heading where the
+    // section changes, then that section's conversations. One flat list,
+    // since TelamonSidebar looks for its entries among its own children.
+    ListModel {
+        id: entries
+    }
+
+    // A row's heading: Today, Yesterday and Previous 7 Days, then its date
+    // up to 30 days back, then its month.
+    function heading(i) {
+        const when = new Date(root.library.updates[i] ?? 0);
+        switch (root.library.sections[i]) {
+        case "today":
+            return qsTr("Today");
+        case "yesterday":
+            return qsTr("Yesterday");
+        case "week":
+            return qsTr("Previous 7 Days");
+        case "day":
+            return Qt.locale().toString(when, "MMMM d, yyyy");
         }
-        return m;
+        return Qt.locale().toString(when, "MMMM yyyy");
+    }
+
+    function rebuildEntries() {
+        entries.clear();
+        let last = "";
+        for (let i = 0; i < root.library.ids.length; ++i) {
+            const h = root.heading(i);
+            if (h !== last) {
+                entries.append({
+                    kind: "heading",
+                    label: h,
+                    row: -1
+                });
+                last = h;
+            }
+            entries.append({
+                kind: "conversation",
+                label: "",
+                row: i
+            });
+        }
+    }
+
+    Connections {
+        target: root.library
+        function onIdsChanged() {
+            Qt.callLater(root.rebuildEntries);
+        }
+        function onSectionsChanged() {
+            Qt.callLater(root.rebuildEntries);
+        }
+        function onUpdatesChanged() {
+            Qt.callLater(root.rebuildEntries);
+        }
+    }
+
+    // The graphics card's memory, read every few seconds while the window
+    // can be seen.
+    Timer {
+        interval: 3000
+        running: root.visible && root.visibility !== Window.Minimized
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: root.vram.refresh()
+    }
+
+    function gib(bytes, decimals) {
+        return Qt.locale().toString(bytes / 1073741824, "f", decimals);
     }
 
     Shortcut {
@@ -90,29 +148,74 @@ TelamonWindow {
         onActivated: root.newChat()
     }
 
-    // A section's name above its conversations; hidden while filtering and
-    // when the sidebar is icons only.
+    // A heading above its conversations; hidden while filtering and when
+    // the sidebar is icons only.
     component NavHeading: QQC2.Label {
-        required property var rows
         Layout.fillWidth: true
         Layout.topMargin: Kirigami.Units.largeSpacing
         Layout.bottomMargin: Kirigami.Units.smallSpacing
         Layout.leftMargin: Kirigami.Units.largeSpacing
-        visible: rows.length > 0 && !sidebar.compact && sidebar.filterText.length === 0
+        visible: !sidebar.compact && sidebar.filterText.length === 0
         font: Kirigami.Theme.smallFont
         opacity: 0.6
         elide: Text.ElideRight
+        textFormat: Text.PlainText
     }
 
-    // One saved conversation; `modelData` is its row in the library.
+    // One saved conversation; `row` is its row in the library.
     component ConversationItem: SidebarItem {
-        required property int modelData
-        readonly property string conversationId: root.library.ids[modelData] ?? ""
+        required property int row
+        readonly property string conversationId: root.library.ids[row] ?? ""
         Layout.fillWidth: true
-        text: root.library.titles[modelData] ?? ""
+        text: root.library.titles[row] ?? ""
         symbol: Symbols.ChatBubble
         selected: root.page === "chat" && root.chat.conversationId === conversationId
         onClicked: root.openChat(conversationId)
+    }
+
+    // How much of the graphics card's memory is in use: what a local model
+    // has room for. Hidden when no card reports it, and when icons only.
+    component VramMeter: ColumnLayout {
+        id: meter
+        readonly property real fraction: root.vram.total > 0 ? root.vram.used / root.vram.total : 0
+
+        Layout.fillWidth: true
+        Layout.leftMargin: Kirigami.Units.largeSpacing
+        Layout.rightMargin: Kirigami.Units.largeSpacing
+        Layout.bottomMargin: Kirigami.Units.largeSpacing
+        visible: root.vram.available && !sidebar.compact
+        spacing: Kirigami.Units.smallSpacing
+        Accessible.role: Accessible.ProgressBar
+        Accessible.name: qsTr("Video memory: %1 of %2 GiB used").arg(root.gib(root.vram.used, 1)).arg(root.gib(root.vram.total, 0))
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Kirigami.Units.smallSpacing
+
+            Symbol {
+                icon: Symbols.Memory
+                size: Kirigami.Units.iconSizes.small
+                color: TelamonStyle.accent
+            }
+            QQC2.Label {
+                Layout.fillWidth: true
+                text: qsTr("VRAM")
+                font: Kirigami.Theme.smallFont
+                elide: Text.ElideRight
+            }
+            QQC2.Label {
+                text: qsTr("%1 / %2 GiB").arg(root.gib(root.vram.used, 1)).arg(root.gib(root.vram.total, 0))
+                font: Kirigami.Theme.smallFont
+                opacity: 0.7
+            }
+        }
+        UsageBar {
+            Layout.fillWidth: true
+            total: root.vram.total
+            values: [root.vram.used]
+            legend: false
+            colors: [meter.fraction > 0.9 ? TelamonStyle.error : TelamonStyle.accent]
+        }
     }
 
     RowLayout {
@@ -154,48 +257,26 @@ TelamonWindow {
                 onClicked: root.newChat()
             }
 
-            NavHeading {
-                rows: root.bySection.today
-                text: qsTr("Today")
-            }
             Repeater {
-                model: root.bySection.today
-                ConversationItem {}
-            }
-            NavHeading {
-                rows: root.bySection.yesterday
-                text: qsTr("Yesterday")
-            }
-            Repeater {
-                model: root.bySection.yesterday
-                ConversationItem {}
-            }
-            NavHeading {
-                rows: root.bySection.week
-                text: qsTr("Previous 7 Days")
-            }
-            Repeater {
-                model: root.bySection.week
-                ConversationItem {}
-            }
-            NavHeading {
-                rows: root.bySection.month
-                text: qsTr("Previous 30 Days")
-            }
-            Repeater {
-                model: root.bySection.month
-                ConversationItem {}
-            }
-            NavHeading {
-                rows: root.bySection.older
-                text: qsTr("Older")
-            }
-            Repeater {
-                model: root.bySection.older
-                ConversationItem {}
+                model: entries
+                delegate: DelegateChooser {
+                    role: "kind"
+                    DelegateChoice {
+                        roleValue: "heading"
+                        NavHeading {
+                            required property string label
+                            text: label
+                        }
+                    }
+                    DelegateChoice {
+                        roleValue: "conversation"
+                        ConversationItem {}
+                    }
+                }
             }
 
             footer: [
+                VramMeter {},
                 SidebarItem {
                     Layout.fillWidth: true
                     text: qsTr("Settings")
