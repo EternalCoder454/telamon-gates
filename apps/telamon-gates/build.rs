@@ -6,5 +6,6 @@ fn main() {
     CxxQtBuilder::new()
         .file("src/chat.rs")
         .file("src/library.rs")
+        .file("src/vram.rs")
         .build();
 }

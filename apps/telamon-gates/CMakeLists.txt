@@ -58,3 +58,7 @@ target_link_libraries(telamon-gates-app PRIVATE
 install(TARGETS telamon-gates-app RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES data/net.eterneon.telamon.gates.desktop
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+install(FILES data/net.eterneon.telamon.gates.svg
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+install(FILES data/net.eterneon.telamon.gates.metainfo.xml
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)

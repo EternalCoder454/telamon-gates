@@ -15,6 +15,59 @@ Item {
     // The column messages and the field share, centred in the view.
     readonly property real columnWidth: Math.min(width - Kirigami.Units.gridUnit * 3, Kirigami.Units.gridUnit * 46)
 
+    // An empty chat greets the user by the time of day: morning from 5,
+    // afternoon from noon, evening from 5 pm, night from 8 pm. Each has a
+    // few ways of saying it; one is picked for every new chat.
+    property int hour: new Date().getHours()
+    property int pick: Math.floor(Math.random() * 1000)
+    readonly property string period: hour >= 5 && hour < 12 ? "morning" : hour >= 12 && hour < 17 ? "afternoon" : hour >= 17 && hour < 20 ? "evening" : "night"
+    readonly property string name: view.chat.userName.length > 0 ? view.chat.userName : qsTr("friend")
+    readonly property var greetings: ({
+            "morning": [qsTr("Good morning, %1"), qsTr("Morning, %1. Coffee first?"), qsTr("Rise and shine, %1"), qsTr("A fresh start, %1"), qsTr("Top of the morning, %1")],
+            "afternoon": [qsTr("Good afternoon, %1"), qsTr("Afternoon, %1. What's next?"), qsTr("Hey %1, how's the day going?"), qsTr("Back at it, %1?")],
+            "evening": [qsTr("Good evening, %1"), qsTr("Evening, %1. Winding down?"), qsTr("Hello again, %1"), qsTr("The day's almost done, %1")],
+            "night": [qsTr("Cool midnight, %1"), qsTr("Burning the midnight oil, %1?"), qsTr("Quiet hours, %1"), qsTr("Night owl mode, %1"), qsTr("Still up, %1?")]
+        })
+    readonly property string greeting: {
+        const list = view.greetings[view.period];
+        return list[view.pick % list.length].arg(view.name);
+    }
+    readonly property string greetingText: {
+        switch (view.period) {
+        case "morning":
+            return qsTr("What's first on today's list?");
+        case "afternoon":
+            return qsTr("What can I help you get done?");
+        case "evening":
+            return qsTr("Anything to wrap up before the day ends?");
+        }
+        return qsTr("Everything's quiet. What's on your mind?");
+    }
+    readonly property int greetingSymbol: view.period === "morning" ? Symbols.WbSunny : view.period === "afternoon" ? Symbols.LightMode : view.period === "evening" ? Symbols.WbTwilight : Symbols.Bedtime
+
+    function regreet() {
+        view.hour = new Date().getHours();
+        view.pick = Math.floor(Math.random() * 1000);
+    }
+
+    // The hour moves on while an empty chat waits.
+    Timer {
+        interval: 60 * 1000
+        running: view.visible && view.chat.count === 0
+        repeat: true
+        onTriggered: view.hour = new Date().getHours()
+    }
+    onPeriodChanged: view.pick = Math.floor(Math.random() * 1000)
+
+    Connections {
+        target: view.chat
+        function onConversationIdChanged() {
+            if (view.chat.conversationId.length === 0) {
+                view.regreet();
+            }
+        }
+    }
+
     function focusComposer() {
         composer.focusInput();
     }
@@ -28,7 +81,8 @@ Item {
             Layout.fillWidth: true
             Layout.maximumWidth: view.columnWidth
             Layout.alignment: Qt.AlignHCenter
-            Layout.topMargin: Kirigami.Units.largeSpacing * 2
+            // Level with TelamonPage's titles (Settings, About).
+            Layout.topMargin: TelamonStyle.spacingXLarge + TelamonStyle.spacingLarge
             Layout.bottomMargin: Kirigami.Units.largeSpacing
             spacing: Kirigami.Units.largeSpacing
 
@@ -149,13 +203,82 @@ Item {
                 }
             }
 
-            TelamonEmptyState {
+            // The greeting: the hour's symbol in a soft accent circle, then
+            // the words.
+            ColumnLayout {
                 anchors.centerIn: parent
-                width: Math.min(parent.width, Kirigami.Units.gridUnit * 24)
+                width: Math.min(parent.width - Kirigami.Units.gridUnit * 2, Kirigami.Units.gridUnit * 28)
                 visible: view.chat.count === 0 && !view.chat.loading
-                symbol: Symbols.Forum
-                title: qsTr("How Can I Help?")
-                text: qsTr("Ask anything. Conversations are kept on this computer.")
+                spacing: TelamonStyle.spacing
+
+                Rectangle {
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.bottomMargin: TelamonStyle.spacingSmall
+                    implicitWidth: Kirigami.Units.gridUnit * 3.5
+                    implicitHeight: implicitWidth
+                    radius: width / 2
+                    color: Qt.alpha(TelamonStyle.accent, 0.14)
+
+                    Symbol {
+                        anchors.centerIn: parent
+                        icon: view.greetingSymbol
+                        size: Kirigami.Units.gridUnit * 2
+                        color: TelamonStyle.accent
+                    }
+                }
+                TelamonLabel {
+                    Layout.fillWidth: true
+                    textStyle: TelamonLabel.Title
+                    textFormat: Text.PlainText
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                    text: view.greeting
+                }
+                TelamonLabel {
+                    Layout.fillWidth: true
+                    textFormat: Text.PlainText
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                    opacity: 0.7
+                    text: view.greetingText
+                }
+            }
+
+            // Messages fade out under the banner and the field rather than
+            // being cut off at a hard edge.
+            Rectangle {
+                anchors.top: list.top
+                anchors.left: list.left
+                anchors.right: list.right
+                height: Kirigami.Units.gridUnit
+                visible: !list.atYBeginning
+                gradient: Gradient {
+                    GradientStop {
+                        position: 0
+                        color: Kirigami.Theme.backgroundColor
+                    }
+                    GradientStop {
+                        position: 1
+                        color: Qt.alpha(Kirigami.Theme.backgroundColor, 0)
+                    }
+                }
+            }
+            Rectangle {
+                anchors.bottom: list.bottom
+                anchors.left: list.left
+                anchors.right: list.right
+                height: Kirigami.Units.gridUnit
+                visible: !list.atYEnd
+                gradient: Gradient {
+                    GradientStop {
+                        position: 0
+                        color: Qt.alpha(Kirigami.Theme.backgroundColor, 0)
+                    }
+                    GradientStop {
+                        position: 1
+                        color: Kirigami.Theme.backgroundColor
+                    }
+                }
             }
 
             TelamonSpinner {

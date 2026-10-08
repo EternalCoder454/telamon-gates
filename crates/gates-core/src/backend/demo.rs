@@ -2,12 +2,14 @@
 //! at a time, so the window can be used and tested before a real backend is
 //! connected. Nothing leaves the computer.
 
-use super::{Backend, BackendError, Request};
+use super::{Backend, BackendError, Event, Request};
 use crate::conversation::Role;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 pub struct Demo {
+    /// Before the first piece, as a model takes to start answering.
+    pub think: Duration,
     /// Between two pieces of text.
     pub delay: Duration,
 }
@@ -15,6 +17,7 @@ pub struct Demo {
 impl Default for Demo {
     fn default() -> Self {
         Demo {
+            think: Duration::from_millis(700),
             delay: Duration::from_millis(25),
         }
     }
@@ -69,9 +72,19 @@ impl Backend for Demo {
         &self,
         request: &Request,
         cancel: &AtomicBool,
-        emit: &mut dyn FnMut(&str),
+        emit: &mut dyn FnMut(Event<'_>),
     ) -> Result<(), BackendError> {
         let reply = Demo::reply(request);
+        // Thinking, in short steps so Stop is quick.
+        let mut waited = Duration::ZERO;
+        while waited < self.think {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            let step = (self.think - waited).min(Duration::from_millis(50));
+            std::thread::sleep(step);
+            waited += step;
+        }
         // Word by word, each with the space before it, as a model streams.
         let mut start = 0;
         for (i, c) in reply.char_indices() {
@@ -79,13 +92,13 @@ impl Backend for Demo {
                 if cancel.load(Ordering::Relaxed) {
                     return Ok(());
                 }
-                emit(&reply[start..i]);
+                emit(Event::Text(&reply[start..i]));
                 start = i;
                 std::thread::sleep(self.delay);
             }
         }
         if !cancel.load(Ordering::Relaxed) {
-            emit(&reply[start..]);
+            emit(Event::Text(&reply[start..]));
         }
         Ok(())
     }
@@ -107,11 +120,14 @@ mod tests {
     #[test]
     fn streams_the_whole_reply_in_pieces() {
         let demo = Demo {
+            think: Duration::ZERO,
             delay: Duration::ZERO,
         };
         let mut pieces = Vec::new();
-        demo.complete(&request(), &AtomicBool::new(false), &mut |t| {
-            pieces.push(t.to_string())
+        demo.complete(&request(), &AtomicBool::new(false), &mut |e| {
+            if let Event::Text(t) = e {
+                pieces.push(t.to_string())
+            }
         })
         .unwrap();
         assert!(pieces.len() > 10);
@@ -122,6 +138,7 @@ mod tests {
     #[test]
     fn stops_when_cancelled() {
         let demo = Demo {
+            think: Duration::ZERO,
             delay: Duration::ZERO,
         };
         let cancel = AtomicBool::new(false);

@@ -11,7 +11,11 @@ Like Telamon Monitor: a `TelamonWindow` with a `TelamonSidebar` and the page
 beside it.
 
 - **Sidebar**: New Chat on top, then the saved conversations, newest first,
-  under Today, Yesterday, Previous 7 Days, Previous 30 Days and Older. The
+  under Today, Yesterday and Previous 7 Days, then under their date
+  ("September 30, 2026") up to 30 days back, then under their month
+  ("October 2025"). Above Settings and About, a VRAM meter: the graphics
+  card's memory used and its size (amdgpu's sysfs files, read every 3 s while
+  the window shows; hidden when no card reports it). The
   built-in filter searches titles. Right click (or the Menu key) offers
   Delete, after a confirmation. Settings and About are pinned at the bottom.
   At compact widths the sidebar folds to icons.
@@ -21,11 +25,19 @@ beside it.
   the column's width beside a small avatar, as rich text, with each code
   block in a `TelamonCodeView` with a Copy button (a code block inside a list
   or quote stays in the text, so the list isn't cut in two). Under a finished reply:
-  Copy, and Regenerate on the last one. While a reply comes in, the view
+  Copy, Regenerate on the last one, and its speed in tokens per second
+  (also shown live while it comes). While a reply comes in, the view
   follows it unless you scroll away; "Thinking…" shows until its first words.
-- **Composer**: a `TelamonTextArea` that grows to about ten lines. Enter
-  sends, Shift+Enter is a new line, Escape stops a reply; Send turns into
-  Stop while one comes in. Ctrl+N starts a new chat.
+- **Empty chat**: a greeting by the time of day with the user's first name
+  (from the account's full name): morning from 5, afternoon from noon,
+  evening from 5 pm, night from 8 pm, each said a few ways, one picked per
+  new chat.
+- **Composer**: one rounded field (a hairline border, the accent while
+  writing) holding a `TelamonTextArea` that grows to about ten lines and,
+  centred on its first line, a square accent Send button (faded while there
+  is nothing to send; Stop while a reply comes in). Under it, the keys in small boxes (Enter
+  Send, Shift+Enter New Line) and "Always double-check the answer." Escape
+  stops a reply; Ctrl+N starts a new chat.
 - **Banners**: an info banner while the demo backend is in use; an error
   banner with Try Again when a reply fails.
 - **Settings**: the backend, the model, the system prompt (saved as you
@@ -46,8 +58,9 @@ beside it.
     `backendName`, `models`, `model`, `systemPrompt`, `count`, `retryable`
     (the last reply failed or never came: Try Again and Regenerate ask for
     one; a good reply is never discarded from the banner).
-  - `Library` (the sidebar's list as string lists `ids`, `titles`,
-    `sections`): `reload`, `setDayStart`, `remove`; `loaded`, `folder`.
+  - `Library` (the sidebar's list as lists `ids`, `titles`, `sections`,
+    `updates`): `reload`, `setDayStart`, `remove`; `loaded`, `folder`.
+  - `Vram`: `available`, `used`, `total` (bytes), `refresh`.
   - `io.rs`: the one file thread; `settings.rs`: the settings file.
 - `cpp/main.cpp` only starts Qt (framework startup, single instance) and
   hands the two objects to `qml/Main.qml`.

@@ -17,14 +17,23 @@ pub trait Backend: Send + Sync {
         &self,
         request: &Request,                    // model, system prompt, messages
         cancel: &AtomicBool,                  // true when the user pressed Stop
-        emit: &mut dyn FnMut(&str),           // each piece of the reply, in order
+        emit: &mut dyn FnMut(Event<'_>),      // the reply as it comes
     ) -> Result<(), BackendError>;
+}
+
+pub enum Event<'a> {
+    Text(&'a str),  // the next piece of the reply: one per token
+    Speed(f64),     // the server's tokens per second, if it measures it
 }
 ```
 
 - Both methods are called on a **worker thread** and may block: plain
   blocking HTTP is fine. The app batches what `emit` gets (about 30 times a
   second) and hands it to the window.
+- Tokens per second: the window shows the count of `Text` events per second
+  since the first, so emit one per token (as llama-server streams them). A
+  backend that gets the server's own figure sends it with `Speed`, which
+  then replaces the count. It is saved with the reply.
 - `complete` returns when the reply is done, on an error, or soon after
   `cancel` turns true (then `Ok`: what was emitted stays as the reply).
   Check `cancel` between chunks.
@@ -59,7 +68,9 @@ OpenAI-compatible. Then:
 - `complete()`: `POST {base}/v1/chat/completions` with
   `{"model", "messages": [{"role": "system"|"user"|"assistant", "content"}], "stream": true}`.
   The answer is server-sent events: each `data: {...}` line carries
-  `choices[0].delta.content`; `data: [DONE]` ends it. Emit each `content`.
+  `choices[0].delta.content`; `data: [DONE]` ends it. Emit each `content`
+  as `Event::Text`, and the last chunk's `timings.predicted_per_second` (when
+  present) as `Event::Speed`.
 - The base address (for example `http://127.0.0.1:8080`) is the backend's own
   setting. The settings file is `~/.config/telamon-gatesrc`; the app reads it
   with `settings::get` in `apps/telamon-gates/src/settings.rs`.

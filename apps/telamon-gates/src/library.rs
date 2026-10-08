@@ -8,6 +8,8 @@ pub mod qobject {
         type QString = cxx_qt_lib::QString;
         include!("cxx-qt-lib/qstringlist.h");
         type QStringList = cxx_qt_lib::QStringList;
+        include!("cxx-qt-lib/qlist.h");
+        type QList_f64 = cxx_qt_lib::QList<f64>;
     }
 
     extern "RustQt" {
@@ -15,9 +17,13 @@ pub mod qobject {
         /// Each conversation's id, newest first.
         #[qproperty(QStringList, ids)]
         #[qproperty(QStringList, titles)]
-        /// Each one's section: "today", "yesterday", "week", "month" or
-        /// "older", by when it last changed.
+        /// Each one's section: "today", "yesterday", "week" (the 7 days
+        /// before), "day" (up to 30 days ago: headed by its date) or "older"
+        /// (headed by its month), by when it last changed.
         #[qproperty(QStringList, sections)]
+        /// When each last changed, in milliseconds since the epoch, for the
+        /// date and month headings QML writes in the local time zone.
+        #[qproperty(QList_f64, updates)]
         /// The list has been read once.
         #[qproperty(bool, loaded)]
         /// Where the conversations are kept, for Settings.
@@ -58,7 +64,7 @@ use crate::chat;
 use crate::io::Io;
 use core::pin::Pin;
 use cxx_qt::{CxxQtThread, CxxQtType, Threading};
-use cxx_qt_lib::{QString, QStringList};
+use cxx_qt_lib::{QList, QString, QStringList};
 use gates_core::Summary;
 
 const DAY_MS: i64 = 86_400_000;
@@ -68,6 +74,7 @@ pub struct LibraryRust {
     ids: QStringList,
     titles: QStringList,
     sections: QStringList,
+    updates: QList<f64>,
     loaded: bool,
     folder: QString,
 
@@ -88,7 +95,7 @@ pub fn section(updated: i64, day_start: i64) -> &'static str {
     } else if updated >= day_start - 7 * DAY_MS {
         "week"
     } else if updated >= day_start - 30 * DAY_MS {
-        "month"
+        "day"
     } else {
         "older"
     }
@@ -167,8 +174,13 @@ impl qobject::Library {
         let ids = strings(rows.iter().map(|r| r.id.as_str()));
         let titles = strings(rows.iter().map(|r| r.title.as_str()));
         let sections = strings(rows.iter().map(|r| section(r.updated, day_start)));
-        // Sections first: QML groups the ids by them.
+        let mut updates = QList::default();
+        for r in rows {
+            updates.append(r.updated as f64);
+        }
+        // Sections and times first: QML groups the ids by them.
         self.as_mut().set_sections(sections);
+        self.as_mut().set_updates(updates);
         self.as_mut().set_titles(titles);
         self.set_ids(ids);
     }
@@ -184,7 +196,7 @@ mod tests {
         assert_eq!(section(today + 5, today), "today");
         assert_eq!(section(today - 1, today), "yesterday");
         assert_eq!(section(today - 3 * DAY_MS, today), "week");
-        assert_eq!(section(today - 20 * DAY_MS, today), "month");
+        assert_eq!(section(today - 20 * DAY_MS, today), "day");
         assert_eq!(section(0, today), "older");
     }
 }

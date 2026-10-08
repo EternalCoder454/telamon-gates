@@ -21,13 +21,16 @@ impl Role {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub text: String,
     /// The reply stopped on an error; `text` is what came before it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub failed: bool,
+    /// How fast the reply came, in tokens per second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f64>,
 }
 
 impl Message {
@@ -36,6 +39,7 @@ impl Message {
             role: Role::User,
             text: text.into(),
             failed: false,
+            speed: None,
         }
     }
 
@@ -44,11 +48,12 @@ impl Message {
             role: Role::Assistant,
             text: text.into(),
             failed: false,
+            speed: None,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Conversation {
     pub id: String,
     pub title: String,
@@ -161,6 +166,10 @@ mod tests {
         c.messages.push(Message {
             failed: true,
             ..Message::assistant("partial")
+        });
+        c.messages.push(Message {
+            speed: Some(41.5),
+            ..Message::assistant("fast")
         });
         let json = serde_json::to_string(&c).unwrap();
         assert!(json.contains(r#""role":"assistant""#));

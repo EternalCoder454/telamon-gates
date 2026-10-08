@@ -1,0 +1,22 @@
+name: Telamon bundle
+
+# Builds Telamon Gates as a native Telamon app bundle (the framework's
+# docs/BUNDLES.md) and, for a v* tag, attaches it to that tag's release, where
+# Telamon Store finds it. The framework's reusable workflow is pinned by the
+# commit of a release; move both lines below together. The tag must equal the
+# CMake project version.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    permissions:
+      contents: write
+    uses: EternalCoder454/atlas-framework/.github/workflows/bundle.yml@3ed2ad20c1038c9d29b8e18149d68c156f1ecdea # v2.0.7
+    with:
+      framework-ref: 3ed2ad20c1038c9d29b8e18149d68c156f1ecdea
