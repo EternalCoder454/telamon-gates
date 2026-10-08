@@ -148,27 +148,30 @@ TelamonWindow {
         onActivated: root.newChat()
     }
 
-    // A heading above its conversations; hidden while filtering and when
-    // the sidebar is icons only.
+    // A heading above its conversations, level with their titles; hidden
+    // while filtering and when the sidebar is icons only.
     component NavHeading: QQC2.Label {
         Layout.fillWidth: true
-        Layout.topMargin: Kirigami.Units.largeSpacing
-        Layout.bottomMargin: Kirigami.Units.smallSpacing
-        Layout.leftMargin: Kirigami.Units.largeSpacing
+        Layout.topMargin: TelamonStyle.spacing
+        Layout.bottomMargin: 0
+        // Where a SidebarItem's title starts: past its icon slot.
+        Layout.leftMargin: TelamonStyle.spacingLarge * 2 + Kirigami.Units.iconSizes.smallMedium
         visible: !sidebar.compact && sidebar.filterText.length === 0
         font: Kirigami.Theme.smallFont
-        opacity: 0.6
+        opacity: 0.72
         elide: Text.ElideRight
         textFormat: Text.PlainText
     }
 
-    // One saved conversation; `row` is its row in the library.
+    // One saved conversation; `row` is its row in the library. Denser than
+    // the pages and without an icon: there are many, all alike, and the
+    // heading above says what they are. The title lines up with the pages'.
     component ConversationItem: SidebarItem {
         required property int row
         readonly property string conversationId: root.library.ids[row] ?? ""
         Layout.fillWidth: true
+        density: TelamonStyle.Compact
         text: root.library.titles[row] ?? ""
-        symbol: Symbols.ChatBubble
         selected: root.page === "chat" && root.chat.conversationId === conversationId
         onClicked: root.openChat(conversationId)
     }
@@ -180,27 +183,35 @@ TelamonWindow {
         readonly property real fraction: root.vram.total > 0 ? root.vram.used / root.vram.total : 0
 
         Layout.fillWidth: true
-        Layout.leftMargin: Kirigami.Units.largeSpacing
-        Layout.rightMargin: Kirigami.Units.largeSpacing
-        Layout.bottomMargin: Kirigami.Units.largeSpacing
+        // As a SidebarItem lays out its icon and title, so the meter lines
+        // up with Settings and About under it.
+        Layout.leftMargin: TelamonStyle.spacingLarge
+        Layout.rightMargin: TelamonStyle.spacingLarge
+        Layout.topMargin: TelamonStyle.spacingSmall
+        Layout.bottomMargin: TelamonStyle.spacing
         visible: root.vram.available && !sidebar.compact
-        spacing: Kirigami.Units.smallSpacing
+        spacing: TelamonStyle.spacingSmall
         Accessible.role: Accessible.ProgressBar
         Accessible.name: qsTr("Video memory: %1 of %2 GiB used").arg(root.gib(root.vram.used, 1)).arg(root.gib(root.vram.total, 0))
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: Kirigami.Units.smallSpacing
+            spacing: TelamonStyle.spacingLarge
 
-            Symbol {
-                icon: Symbols.Memory
-                size: Kirigami.Units.iconSizes.small
-                color: TelamonStyle.accent
+            Item {
+                Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
+                Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
+
+                Symbol {
+                    anchors.centerIn: parent
+                    icon: Symbols.Memory
+                    size: Math.round(Kirigami.Units.iconSizes.smallMedium * 1.2)
+                    color: TelamonStyle.accent
+                }
             }
             QQC2.Label {
                 Layout.fillWidth: true
                 text: qsTr("VRAM")
-                font: Kirigami.Theme.smallFont
                 elide: Text.ElideRight
             }
             QQC2.Label {
@@ -229,7 +240,9 @@ TelamonWindow {
             compact: root.sidebarCollapsed
             padding: Kirigami.Units.largeSpacing
             spacing: 2
-            showFilter: !compact && root.library.ids.length > 0
+            // Always there, so New Chat doesn't move when the first
+            // conversation arrives.
+            showFilter: !compact
             placeholderText: qsTr("No Matching Conversations")
             placeholderSymbol: Symbols.SearchOff
 
@@ -257,8 +270,23 @@ TelamonWindow {
                 onClicked: root.newChat()
             }
 
+            // Icons only, a column of identical bubbles would say nothing:
+            // the conversations show when the sidebar has room for titles.
+            // Before the first conversation, what will be here.
+            QQC2.Label {
+                Layout.fillWidth: true
+                Layout.topMargin: TelamonStyle.spacing
+                Layout.leftMargin: TelamonStyle.spacingLarge * 2 + Kirigami.Units.iconSizes.smallMedium
+                Layout.rightMargin: TelamonStyle.spacingLarge
+                visible: root.library.loaded && root.library.ids.length === 0 && !sidebar.compact
+                wrapMode: Text.Wrap
+                font: Kirigami.Theme.smallFont
+                opacity: 0.72
+                text: qsTr("No conversations yet.")
+            }
+
             Repeater {
-                model: entries
+                model: sidebar.compact ? null : entries
                 delegate: DelegateChooser {
                     role: "kind"
                     DelegateChoice {

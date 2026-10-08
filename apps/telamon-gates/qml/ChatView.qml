@@ -81,7 +81,8 @@ Item {
             Layout.fillWidth: true
             Layout.maximumWidth: view.columnWidth
             Layout.alignment: Qt.AlignHCenter
-            Layout.topMargin: Kirigami.Units.largeSpacing * 2
+            // Level with TelamonPage's titles (Settings, About).
+            Layout.topMargin: TelamonStyle.spacingXLarge + TelamonStyle.spacingLarge
             Layout.bottomMargin: Kirigami.Units.largeSpacing
             spacing: Kirigami.Units.largeSpacing
 
@@ -202,13 +203,82 @@ Item {
                 }
             }
 
-            TelamonEmptyState {
+            // The greeting: the hour's symbol in a soft accent circle, then
+            // the words.
+            ColumnLayout {
                 anchors.centerIn: parent
-                width: Math.min(parent.width, Kirigami.Units.gridUnit * 26)
+                width: Math.min(parent.width - Kirigami.Units.gridUnit * 2, Kirigami.Units.gridUnit * 28)
                 visible: view.chat.count === 0 && !view.chat.loading
-                symbol: view.greetingSymbol
-                title: view.greeting
-                text: view.greetingText
+                spacing: TelamonStyle.spacing
+
+                Rectangle {
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.bottomMargin: TelamonStyle.spacingSmall
+                    implicitWidth: Kirigami.Units.gridUnit * 3.5
+                    implicitHeight: implicitWidth
+                    radius: width / 2
+                    color: Qt.alpha(TelamonStyle.accent, 0.14)
+
+                    Symbol {
+                        anchors.centerIn: parent
+                        icon: view.greetingSymbol
+                        size: Kirigami.Units.gridUnit * 2
+                        color: TelamonStyle.accent
+                    }
+                }
+                TelamonLabel {
+                    Layout.fillWidth: true
+                    textStyle: TelamonLabel.Title
+                    textFormat: Text.PlainText
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                    text: view.greeting
+                }
+                TelamonLabel {
+                    Layout.fillWidth: true
+                    textFormat: Text.PlainText
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                    opacity: 0.7
+                    text: view.greetingText
+                }
+            }
+
+            // Messages fade out under the banner and the field rather than
+            // being cut off at a hard edge.
+            Rectangle {
+                anchors.top: list.top
+                anchors.left: list.left
+                anchors.right: list.right
+                height: Kirigami.Units.gridUnit
+                visible: !list.atYBeginning
+                gradient: Gradient {
+                    GradientStop {
+                        position: 0
+                        color: Kirigami.Theme.backgroundColor
+                    }
+                    GradientStop {
+                        position: 1
+                        color: Qt.alpha(Kirigami.Theme.backgroundColor, 0)
+                    }
+                }
+            }
+            Rectangle {
+                anchors.bottom: list.bottom
+                anchors.left: list.left
+                anchors.right: list.right
+                height: Kirigami.Units.gridUnit
+                visible: !list.atYEnd
+                gradient: Gradient {
+                    GradientStop {
+                        position: 0
+                        color: Qt.alpha(Kirigami.Theme.backgroundColor, 0)
+                    }
+                    GradientStop {
+                        position: 1
+                        color: Kirigami.Theme.backgroundColor
+                    }
+                }
             }
 
             TelamonSpinner {

@@ -35,7 +35,14 @@ Item {
     // made safe in Rust (gates-core's markdown.rs): nothing in it is raw.
     // Links in the accent, lighter on a dark theme so they read.
     readonly property color linkColor: Kirigami.Theme.backgroundColor.hslLightness < 0.5 ? Qt.lighter(TelamonStyle.accent, 1.25) : TelamonStyle.accent
-    readonly property string css: "a { color: " + linkColor + "; } " + "h3 { font-size: large; } h4 { font-size: medium; } h3, h4, h5 { margin-top: 10px; margin-bottom: 4px; } " + "p { margin-top: 4px; margin-bottom: 4px; } " + "ul, ol { margin-top: 2px; margin-bottom: 2px; -qt-list-indent: 1; } li { margin-top: 2px; margin-bottom: 2px; } " + "code, pre { font-family: '" + TelamonStyle.monoFamily + "'; } " + "blockquote { margin-left: 8px; color: " + Qt.alpha(Kirigami.Theme.textColor, 0.7) + "; } " + "table { border-color: " + Qt.alpha(Kirigami.Theme.textColor, 0.25) + "; }"
+    // Opaque, as Qt's rich text takes no alpha: a hairline for table rules
+    // and the muted colour of a quote.
+    readonly property color rule: Qt.tint(Kirigami.Theme.backgroundColor, Qt.alpha(Kirigami.Theme.textColor, 0.18))
+    readonly property color surface: Qt.tint(Kirigami.Theme.backgroundColor, Qt.alpha(Kirigami.Theme.textColor, 0.08))
+    // The error colour, lightened on a dark theme so it reads on its fill.
+    readonly property color errorText: Kirigami.Theme.backgroundColor.hslLightness < 0.5 ? Qt.lighter(TelamonStyle.error, 1.35) : TelamonStyle.error
+    readonly property color muted: Qt.tint(Kirigami.Theme.backgroundColor, Qt.alpha(Kirigami.Theme.textColor, 0.72))
+    readonly property string css: "a { color: " + linkColor + "; } " + "h3 { font-size: x-large; } h4 { font-size: large; } h5 { font-size: medium; } h3, h4, h5 { margin-top: 12px; margin-bottom: 4px; } " + "p { margin-top: 4px; margin-bottom: 4px; } " + "ul, ol { margin-top: 2px; margin-bottom: 2px; -qt-list-indent: 1; } li { margin-top: 2px; margin-bottom: 2px; } " + "code, pre { font-family: '" + TelamonStyle.monoFamily + "'; } code { background-color: " + message.surface + "; } " + "table.quote { margin-top: 6px; margin-bottom: 6px; } td.bar { background-color: " + TelamonStyle.accent + "; } td.quoted { padding-left: 10px; color: " + message.muted + "; } " + "table { border-collapse: collapse; border-color: " + message.rule + "; } th { text-align: left; } " + "pre { margin-top: 4px; margin-bottom: 4px; }"
 
     implicitHeight: column.implicitHeight
 
@@ -47,7 +54,8 @@ Item {
 
         Symbol {
             icon: Symbols.Speed
-            size: Kirigami.Units.iconSizes.small
+            // As the Copy and Regenerate buttons size theirs.
+            size: Math.round(Kirigami.Units.iconSizes.small * 1.2)
             color: Kirigami.Theme.disabledTextColor
         }
         TelamonLabel {
@@ -167,6 +175,10 @@ Item {
                                     Layout.fillWidth: true
                                     text: block.content
                                     showCopy: true
+                                    // Long lines wrap: unwrapped, the view's
+                                    // sideways scroll bar covers the last line
+                                    // (all of it, for a one-line block).
+                                    wrap: true
                                     Accessible.name: block.lang.length > 0 ? qsTr("%1 code").arg(block.lang) : qsTr("Code")
                                 }
                             }
@@ -181,11 +193,11 @@ Item {
 
                 RowLayout {
                     visible: message.streaming && message.kinds.length === 0
-                    spacing: Kirigami.Units.smallSpacing
+                    spacing: TelamonStyle.spacing
 
                     TelamonSpinner {
-                        implicitWidth: Kirigami.Units.gridUnit
-                        implicitHeight: Kirigami.Units.gridUnit
+                        Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                        Layout.preferredHeight: Kirigami.Units.iconSizes.small
                         animated: parent.visible
                     }
                     QQC2.Label {
@@ -194,18 +206,41 @@ Item {
                     }
                 }
 
-                QQC2.Label {
+                // A small error chip under what came.
+                Rectangle {
                     visible: message.failed
-                    Layout.fillWidth: true
-                    wrapMode: Text.Wrap
-                    color: TelamonStyle.error
-                    text: qsTr("The reply stopped because of an error.")
+                    Layout.topMargin: TelamonStyle.spacingXSmall
+                    implicitWidth: failedRow.implicitWidth + TelamonStyle.spacing * 2
+                    implicitHeight: failedRow.implicitHeight + TelamonStyle.spacingSmall * 2
+                    radius: TelamonStyle.radiusSmall
+                    color: TelamonStyle.errorFill
+                    border.width: 1
+                    border.color: Qt.alpha(TelamonStyle.error, 0.35)
+
+                    RowLayout {
+                        id: failedRow
+                        anchors.centerIn: parent
+                        spacing: TelamonStyle.spacingSmall
+
+                        Symbol {
+                            icon: Symbols.Error
+                            size: Kirigami.Units.iconSizes.small
+                            color: message.errorText
+                        }
+                        QQC2.Label {
+                            color: message.errorText
+                            text: qsTr("The reply stopped because of an error.")
+                        }
+                    }
                 }
 
                 RowLayout {
                     // A failed reply with no text still offers Regenerate.
                     visible: !message.streaming && (message.text.length > 0 || message.failed)
                     spacing: 2
+                    // The buttons' symbols, not their padding, line up with
+                    // the text above.
+                    Layout.leftMargin: -TelamonStyle.spacing
 
                     TelamonCopyButton {
                         visible: message.text.length > 0

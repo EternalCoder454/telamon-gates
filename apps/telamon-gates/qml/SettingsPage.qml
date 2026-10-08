@@ -17,11 +17,23 @@ TelamonPage {
         SectionRow {
             title: qsTr("Backend")
             subtitle: page.chat.backendName
+            leading: [
+                Symbol {
+                    icon: Symbols.Hub
+                    color: TelamonStyle.accent
+                }
+            ]
         }
         SectionRow {
             visible: page.chat.models.length > 0
             title: qsTr("Model")
             subtitle: qsTr("Used for new replies")
+            leading: [
+                Symbol {
+                    icon: Symbols.Psychology
+                    color: TelamonStyle.accent
+                }
+            ]
 
             TelamonComboBox {
                 model: page.chat.models
@@ -77,6 +89,12 @@ TelamonPage {
         SectionRow {
             title: qsTr("Folder")
             subtitle: page.library.folder
+            leading: [
+                Symbol {
+                    icon: Symbols.Folder
+                    color: TelamonStyle.accent
+                }
+            ]
 
             SecondaryButton {
                 text: qsTr("Open Folder")

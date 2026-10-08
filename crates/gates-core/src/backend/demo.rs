@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 pub struct Demo {
+    /// Before the first piece, as a model takes to start answering.
+    pub think: Duration,
     /// Between two pieces of text.
     pub delay: Duration,
 }
@@ -15,6 +17,7 @@ pub struct Demo {
 impl Default for Demo {
     fn default() -> Self {
         Demo {
+            think: Duration::from_millis(700),
             delay: Duration::from_millis(25),
         }
     }
@@ -72,6 +75,16 @@ impl Backend for Demo {
         emit: &mut dyn FnMut(Event<'_>),
     ) -> Result<(), BackendError> {
         let reply = Demo::reply(request);
+        // Thinking, in short steps so Stop is quick.
+        let mut waited = Duration::ZERO;
+        while waited < self.think {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            let step = (self.think - waited).min(Duration::from_millis(50));
+            std::thread::sleep(step);
+            waited += step;
+        }
         // Word by word, each with the space before it, as a model streams.
         let mut start = 0;
         for (i, c) in reply.char_indices() {
@@ -107,6 +120,7 @@ mod tests {
     #[test]
     fn streams_the_whole_reply_in_pieces() {
         let demo = Demo {
+            think: Duration::ZERO,
             delay: Duration::ZERO,
         };
         let mut pieces = Vec::new();
@@ -124,6 +138,7 @@ mod tests {
     #[test]
     fn stops_when_cancelled() {
         let demo = Demo {
+            think: Duration::ZERO,
             delay: Duration::ZERO,
         };
         let cancel = AtomicBool::new(false);

@@ -32,9 +32,10 @@ beside it.
   (from the account's full name): morning from 5, afternoon from noon,
   evening from 5 pm, night from 8 pm, each said a few ways, one picked per
   new chat.
-- **Composer**: one rounded field holding a `TelamonTextArea` that grows to
-  about ten lines and, at its trailing corner, a square accent Send button
-  (Stop while a reply comes in). Under it, the keys in small boxes (Enter
+- **Composer**: one rounded field (a hairline border, the accent while
+  writing) holding a `TelamonTextArea` that grows to about ten lines and,
+  centred on its first line, a square accent Send button (faded while there
+  is nothing to send; Stop while a reply comes in). Under it, the keys in small boxes (Enter
   Send, Shift+Enter New Line) and "Always double-check the answer." Escape
   stops a reply; Ctrl+N starts a new chat.
 - **Banners**: an info banner while the demo backend is in use; an error

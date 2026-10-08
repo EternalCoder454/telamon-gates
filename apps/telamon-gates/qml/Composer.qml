@@ -33,14 +33,29 @@ ColumnLayout {
     Rectangle {
         id: field
 
-        readonly property real inset: Kirigami.Units.smallSpacing
+        readonly property real inset: TelamonStyle.spacingSmall
+        // One line of text with the field's padding: the button centres on
+        // it, so it sits level with the first line and stays at the bottom
+        // as the text grows.
+        readonly property real line: Math.ceil(metrics.height) + input.topPadding + input.bottomPadding
 
         Layout.fillWidth: true
-        implicitHeight: Math.max(scroll.implicitHeight, action.implicitHeight) + field.inset * 2
+        implicitHeight: Math.max(scroll.implicitHeight, field.line) + field.inset * 2
         radius: TelamonStyle.radiusLarge
-        color: TelamonStyle.control
-        border.width: input.activeFocus ? 2 : 1
-        border.color: input.activeFocus ? TelamonStyle.focus : TelamonStyle.controlBorder
+        color: hover.hovered && !input.activeFocus ? Qt.tint(TelamonStyle.control, TelamonStyle.hover) : TelamonStyle.control
+        // A hairline, the accent while writing: the field is the page's main
+        // control, and the violet sits with the Send button beside it.
+        border.width: 1
+        border.color: input.activeFocus ? TelamonStyle.accent : TelamonStyle.controlBorder
+
+        FontMetrics {
+            id: metrics
+            font: input.font
+        }
+        HoverHandler {
+            id: hover
+            cursorShape: Qt.IBeamCursor
+        }
 
         // A click anywhere in the field writes in it.
         TapHandler {
@@ -63,6 +78,8 @@ ColumnLayout {
                 // One line to start with, not TelamonTextArea's six; the
                 // field draws the frame.
                 implicitHeight: contentHeight + topPadding + bottomPadding
+                topPadding: TelamonStyle.spacing
+                bottomPadding: TelamonStyle.spacing
                 background: null
                 wrapMode: TextEdit.Wrap
                 placeholderText: qsTr("Message Telamon Gates")
@@ -84,57 +101,80 @@ ColumnLayout {
         }
 
         // Send, or Stop while a reply comes in: a square accent button with
-        // only its symbol, at the field's trailing bottom corner.
+        // only its symbol, at the field's trailing end. With nothing to send
+        // it stays accent, faded, rather than turning into a grey outline.
         TelamonButton {
             id: action
 
             readonly property bool stopping: composer.chat.generating
+            readonly property bool ready: input.text.trim().length > 0 && !composer.chat.loading
 
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            anchors.margins: field.inset + Kirigami.Units.smallSpacing / 2
+            anchors.rightMargin: field.inset + Math.round((field.line - height) / 2)
+            anchors.bottomMargin: field.inset + Math.round((field.line - height) / 2)
             implicitWidth: implicitHeight
-            // The row keeps a gap after the symbol for a text there is none
-            // of: as much padding on the leading side keeps it centred.
-            leftPadding: TelamonStyle.spacingSmall
+            // Only the symbol, centred: Row lays out no gap for the empty
+            // label (a zero-width item), so no padding either side.
+            leftPadding: 0
             rightPadding: 0
-            variant: action.stopping ? TelamonButton.Default : TelamonButton.Prominent
+            // The symbol font draws its glyphs about a pixel above the
+            // middle of their line: this lowers them to the button's centre.
+            topPadding: 2
+            bottomPadding: 0
+            variant: TelamonButton.Prominent
             symbol: action.stopping ? Symbols.Stop : Symbols.ArrowUpward
-            enabled: action.stopping || (input.text.trim().length > 0 && !composer.chat.loading)
+            opacity: action.stopping || action.ready ? 1 : 0.55
+            hoverEnabled: action.stopping || action.ready
+            focusPolicy: Qt.NoFocus
             Accessible.name: action.stopping ? qsTr("Stop") : qsTr("Send")
             onClicked: {
                 if (action.stopping) {
                     composer.chat.stop();
                     input.forceActiveFocus();
-                } else {
+                } else if (action.ready) {
                     composer.submit();
+                } else {
+                    input.forceActiveFocus();
+                }
+            }
+
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: TelamonStyle.durationShort
                 }
             }
         }
     }
 
-    // A key and what it does, in a small box.
+    // A key and what it does, as a small pill: "Enter → Send".
     component KeyHint: Rectangle {
         id: hint
         required property string keys
         required property string action
 
-        implicitWidth: hintRow.implicitWidth + Kirigami.Units.smallSpacing * 2
-        implicitHeight: hintRow.implicitHeight + Kirigami.Units.smallSpacing
+        implicitWidth: hintRow.implicitWidth + TelamonStyle.spacing * 2
+        implicitHeight: hintRow.implicitHeight + TelamonStyle.spacingXSmall * 2
         radius: TelamonStyle.radiusSmall
-        color: "transparent"
-        border.width: 1
-        border.color: TelamonStyle.controlBorder
+        color: Qt.alpha(Kirigami.Theme.textColor, 0.06)
         Accessible.role: Accessible.StaticText
         Accessible.name: qsTr("%1: %2").arg(hint.keys).arg(hint.action)
 
-        RowLayout {
+        Row {
             id: hintRow
             anchors.centerIn: parent
-            spacing: Kirigami.Units.smallSpacing
+            spacing: TelamonStyle.spacingSmall
 
-            TelamonShortcutLabel {
-                sequence: hint.keys
+            TelamonLabel {
+                textStyle: TelamonLabel.Caption
+                textFormat: Text.PlainText
+                font.weight: Font.DemiBold
+                text: hint.keys
+            }
+            TelamonLabel {
+                textStyle: TelamonLabel.Caption
+                textFormat: Text.PlainText
+                text: "→"
             }
             TelamonLabel {
                 textStyle: TelamonLabel.Caption
@@ -144,21 +184,37 @@ ColumnLayout {
         }
     }
 
-    RowLayout {
-        Layout.alignment: Qt.AlignHCenter
-        spacing: Kirigami.Units.largeSpacing
+    // Asks for no width of its own, so a narrow window keeps the field (and
+    // its Send button) inside; the reminder goes first when there's no room.
+    Item {
+        Layout.fillWidth: true
+        implicitHeight: hints.implicitHeight
+        clip: true
 
-        KeyHint {
-            keys: "Enter"
-            action: qsTr("Send")
-        }
-        KeyHint {
-            keys: "Shift+Enter"
-            action: qsTr("New Line")
-        }
-        TelamonLabel {
-            textStyle: TelamonLabel.Caption
-            text: qsTr("Always double-check the answer.")
+        RowLayout {
+            id: hints
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: TelamonStyle.spacing
+
+            KeyHint {
+                id: sendHint
+                //: The Enter key, as printed on it
+                keys: qsTr("Enter")
+                action: qsTr("Send")
+            }
+            KeyHint {
+                id: lineHint
+                //: The keys Shift and Enter together
+                keys: qsTr("Shift+Enter")
+                action: qsTr("New Line")
+            }
+            TelamonLabel {
+                id: reminder
+                Layout.leftMargin: TelamonStyle.spacingSmall
+                visible: hints.parent.width >= sendHint.implicitWidth + lineHint.implicitWidth + reminder.implicitWidth + hints.spacing * 2 + TelamonStyle.spacingSmall
+                textStyle: TelamonLabel.Caption
+                text: qsTr("Always double-check the answer.")
+            }
         }
     }
 }

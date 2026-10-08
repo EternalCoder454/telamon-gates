@@ -72,14 +72,14 @@ run() {
     sleep 1
     shot 5-stopped
     # A saved conversation, from the sidebar (window coordinates at 1.5x).
-    xdotool mousemove 138 272 click 1
+    xdotool mousemove 138 244 click 1
     sleep 1.5
     shot 6-opened
     xdotool mousemove 115 979 click 1
     sleep 1.5
     shot 7-settings
     # Delete the oldest conversation: its menu, then the confirmation.
-    xdotool mousemove 184 379 click 3
+    xdotool mousemove 184 329 click 3
     sleep 1
     shot 8-menu
     xdotool key Down Return

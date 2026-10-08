@@ -24,6 +24,7 @@ BuildRequires:  corrosion
 # Cargo fetches the telamon-framework crates from GitHub.
 BuildRequires:  git-core
 BuildRequires:  desktop-file-utils
+BuildRequires:  libappstream-glib
 BuildRequires:  cmake(Qt6Core)
 BuildRequires:  cmake(Qt6Gui)
 BuildRequires:  cmake(Qt6Qml)
@@ -68,11 +69,15 @@ export CARGO_PROFILE_RELEASE_STRIP=none
 
 %check
 desktop-file-validate %{buildroot}%{_datadir}/applications/net.eterneon.telamon.gates.desktop
+appstream-util validate-relax --nonet \
+    %{buildroot}%{_datadir}/metainfo/net.eterneon.telamon.gates.metainfo.xml
 
 %files
 %license LICENSE
 %{_bindir}/telamon-gates
 %{_datadir}/applications/net.eterneon.telamon.gates.desktop
+%{_datadir}/icons/hicolor/scalable/apps/net.eterneon.telamon.gates.svg
+%{_datadir}/metainfo/net.eterneon.telamon.gates.metainfo.xml
 
 %changelog
 * Thu Oct 08 2026 EternalHell <77252745+EternalCoder454@users.noreply.github.com> - 0.1.0-1

@@ -81,9 +81,14 @@ pub fn blocks(text: &str) -> Vec<Block> {
                 Tag::Heading { level, .. } => {
                     html.push_str(heading(level).0);
                 }
+                // A one-row table: a thin cell the window paints as a bar
+                // (class "bar"), then the quote. Qt's rich text draws no
+                // border on one side of a block.
                 Tag::BlockQuote(_) => {
                     nest += 1;
-                    html.push_str("<blockquote>")
+                    html.push_str(
+                        "<table class=\"quote\" cellspacing=\"0\" cellpadding=\"0\"><tr><td class=\"bar\" width=\"3\"></td><td class=\"quoted\">",
+                    )
                 }
                 Tag::List(Some(start)) => {
                     nest += 1;
@@ -123,7 +128,7 @@ pub fn blocks(text: &str) -> Vec<Block> {
                 TagEnd::Heading(level) => html.push_str(heading(level).1),
                 TagEnd::BlockQuote(_) => {
                     nest = nest.saturating_sub(1);
-                    html.push_str("</blockquote>")
+                    html.push_str("</td></tr></table>")
                 }
                 TagEnd::List(ordered) => {
                     nest = nest.saturating_sub(1);
@@ -320,7 +325,7 @@ mod tests {
         );
         assert!(h.contains("<ol start=\"1\"><li>one</li>"));
         assert!(h.contains("<li>☑ done</li>"));
-        assert!(h.contains("<blockquote><p>quoted</p></blockquote>"));
+        assert!(h.contains("<td class=\"quoted\"><p>quoted</p></td></tr></table>"));
         assert!(h.contains("<tr><th>A</th><th>B</th></tr>"));
         assert!(h.contains("<tr><td>1</td><td>2</td></tr>"));
     }
