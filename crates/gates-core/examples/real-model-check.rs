@@ -144,6 +144,7 @@ fn stream(setup: &Setup, r: &mut Report) {
 
     let started = Instant::now();
     let (mut first, mut pieces, mut text, mut speed, mut calls) = (None, 0, String::new(), None, 0);
+    let mut notices = Vec::new();
     let result = llama.complete(
         &ask(vec![Message::user("Say hello in five words.")]),
         &AtomicBool::new(false),
@@ -155,6 +156,7 @@ fn stream(setup: &Setup, r: &mut Report) {
             }
             Event::Speed(s) => speed = Some(s),
             Event::ToolCalls(_) => calls += 1,
+            Event::Notice(n) => notices.push(n.to_string()),
         },
     );
     let total = started.elapsed();
@@ -175,6 +177,10 @@ fn stream(setup: &Setup, r: &mut Report) {
         format!("the server's speed arrives ({speed:?})"),
     );
     r.check(calls == 0, "no tool calls without tools");
+    r.check(
+        notices.is_empty(),
+        format!("a server that starts well gives no notice ({notices:?})"),
+    );
     r.check(
         llama.context_size() == Some(2048),
         format!(
