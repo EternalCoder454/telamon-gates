@@ -5,7 +5,7 @@
 %global debug_package %{nil}
 
 Name:           telamon-gates
-Version:        1.0.1
+Version:        1.1.0
 Release:        1%{?dist}
 Summary:        Telamon Gates, the AI chat of Telamon OS
 License:        MIT
@@ -87,6 +87,11 @@ appstream-util validate-relax --nonet \
 %{_datadir}/metainfo/net.eterneon.telamon.gates.metainfo.xml
 
 %changelog
+* Fri Oct 09 2026 EternalHell <77252745+EternalCoder454@users.noreply.github.com> - 1.1.0-1
+- Recommended models for coding, chat and stories, and small cards
+- Model for Code: Code and Agent mode can use their own model
+- Brief reasoning in Chat and Story
+
 * Fri Oct 09 2026 EternalHell <77252745+EternalCoder454@users.noreply.github.com> - 1.0.1-1
 - Faster start: the agent's sandbox is checked when Agent mode is first used
 
