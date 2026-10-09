@@ -41,7 +41,7 @@ pub struct ModelFile {
     pub sha256: String,
 }
 
-fn https_agent() -> ureq::Agent {
+pub(crate) fn https_agent() -> ureq::Agent {
     use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
     ureq::Agent::config_builder()
         .https_only(true)

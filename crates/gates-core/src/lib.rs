@@ -12,6 +12,7 @@ pub mod export;
 pub mod fleet;
 pub mod gguf;
 pub mod hub;
+pub mod leaderboard;
 pub mod markdown;
 pub mod modes;
 pub mod preflight;

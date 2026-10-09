@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
+import org.kde.kirigami as Kirigami
 import Telamon.Ui
 
 // The models on this computer, and Hugging Face to get more from.
@@ -19,7 +20,11 @@ TelamonPage {
 
     // Deletes partial downloads older than 30 days, then lists the rest and
     // reads the free space (on a worker thread).
-    Component.onCompleted: page.models.refreshPartials()
+    Component.onCompleted: {
+        page.models.refreshPartials();
+        // The saved copy of the leaderboard, if there is one: no network.
+        page.models.openLeaderboard();
+    }
 
     // The leftovers worth showing: not the file being downloaded now.
     readonly property var leftovers: page.models.partials.map((name, i) => i).filter(i => page.models.partials[i] !== page.models.downloading)
@@ -378,7 +383,347 @@ TelamonPage {
         }
     }
 
+    // The UGI Leaderboard (docs/BACKEND.md → The UGI Leaderboard): browse
+    // models by score, then Find GGUF puts the model's name in Get Models'
+    // search below. The rows come from Rust as JSON, already filtered and
+    // sorted; every string in them is the file's, so it is shown as plain text.
+    readonly property string leaderboardUrl: "https://huggingface.co/spaces/DontPlanToEnd/UGI-Leaderboard"
+    readonly property var boardKinds: ["", "Base", "Finetune", "Merge"]
+    readonly property var boardSorts: ["ugi", "writing", "knowledge", "willingness", "newest"]
+    readonly property var boardWillingness: [0, 5, 6, 7, 8, 9]
+    readonly property int boardPage: 50
+    property string boardSearch: ""
+    property string boardKind: ""
+    property string boardSort: "ugi"
+    property real boardMinWillingness: 0
+    property bool boardFits: false
+    property bool boardHideThinking: false
+    // How many of the matches are shown; Show More adds a page.
+    property int boardLimit: page.boardPage
+    readonly property var board: page.models.ugiCount > 0 ? JSON.parse(page.models.leaderboardRows(JSON.stringify({
+        "search": page.boardSearch,
+        "kind": page.boardKind,
+        "hideThinking": page.boardHideThinking,
+        "minWillingness": page.boardMinWillingness,
+        "fitsVram": page.boardFits && page.vram.available ? page.vram.total : 0,
+        "vram": page.vram.available ? page.vram.total : 0,
+        "sort": page.boardSort,
+        "limit": page.boardLimit
+    }), page.models.ugiVersion)) : {
+        "total": 0,
+        "rows": []
+    }
+
+    // A filter changed: back to the first page.
+    function filterBoard(change) {
+        change();
+        page.boardLimit = page.boardPage;
+    }
+
+    // "Updated 3 hours ago", from the copy's time.
+    function updated(millis) {
+        const minutes = Math.max(0, Math.floor((Date.now() - millis) / 60000));
+        const hours = Math.floor(minutes / 60);
+        const days = Math.floor(minutes / (60 * 24));
+        if (minutes < 1) {
+            return qsTr("Updated just now");
+        }
+        if (minutes < 60) {
+            return minutes === 1 ? qsTr("Updated 1 minute ago") : qsTr("Updated %1 minutes ago").arg(minutes);
+        }
+        if (minutes < 60 * 24) {
+            return hours === 1 ? qsTr("Updated 1 hour ago") : qsTr("Updated %1 hours ago").arg(hours);
+        }
+        return days === 1 ? qsTr("Updated 1 day ago") : qsTr("Updated %1 days ago").arg(days);
+    }
+
+    // A score for a badge: one decimal, or "" when the leaderboard has none.
+    function score(label, value) {
+        return value === null || value === undefined ? "" : qsTr("%1 %2").arg(label).arg(Number(value).toLocaleString(Qt.locale(), "f", 1));
+    }
+
+    // Only Hugging Face: a link from the file that points anywhere else is
+    // not opened (Rust drops them already).
+    function hubUrl(url) {
+        return /^https:\/\/huggingface\.co\/[^\s]+$/.test(url) ? url : "";
+    }
+
+    // Find GGUF is waiting for its search's results to show them.
+    property bool revealResults: false
+
+    // Puts a model's name in Get Models' search, at once: the results, and a
+    // quant to download, follow from there. The search field comes into view
+    // now, and Get Models as a whole (its top at the top, the results below
+    // it) once the search is done.
+    function findGguf(query) {
+        const same = getSearch.query === query;
+        getSearch.text = query;
+        getSearch.query = query;
+        if (same) {
+            Qt.callLater(() => page.ensureVisible(getSection));
+        } else {
+            page.revealResults = true;
+            Qt.callLater(() => page.ensureVisible(getSearch));
+        }
+    }
+
+    Connections {
+        target: page.models
+        function onSearchingChanged() {
+            if (page.revealResults && !page.models.searching) {
+                page.revealResults = false;
+                Qt.callLater(() => page.ensureVisible(getSection));
+            }
+        }
+    }
+
     Section {
+        title: qsTr("Leaderboard")
+        footer: qsTr("UGI is the overall score out of 100. W/10 is how willing the model is to answer, out of 10. Knowledge is NatInt, and Writing is the writing score. Fit assumes a Q4 file of about 0.6 GB for each billion parameters. Models without downloadable weights are left out.")
+
+        SectionRow {
+            title: qsTr("Scores from the UGI Leaderboard by DontPlanToEnd")
+            subtitle: qsTr("Fetched from Hugging Face when you load it, and kept on this computer for a day.")
+            leading: [
+                Symbol {
+                    icon: Symbols.Leaderboard
+                    color: TelamonStyle.accent
+                }
+            ]
+
+            SecondaryButton {
+                text: qsTr("Open Leaderboard")
+                symbol: Symbols.OpenInNew
+                onClicked: Qt.openUrlExternally(page.leaderboardUrl)
+            }
+        }
+
+        SectionRow {
+            title: page.models.ugiCount > 1 ? qsTr("%1 Open Models").arg(Number(page.models.ugiCount).toLocaleString(Qt.locale(), "f", 0)) : page.models.ugiCount === 1 ? qsTr("1 Open Model") : qsTr("Not Loaded")
+            subtitle: page.models.ugiLoading ? qsTr("Loading…") : page.models.ugiCount > 0 ? [page.updated(page.models.ugiUpdated), page.models.ugiNote].filter(s => s.length > 0).join(" · ") : qsTr("Load it to find models by score, size and type.")
+            busy: page.models.ugiLoading
+            leading: [
+                Symbol {
+                    icon: Symbols.Cloud
+                    color: TelamonStyle.accent
+                }
+            ]
+
+            SecondaryButton {
+                text: page.models.ugiCount > 0 ? qsTr("Refresh") : qsTr("Load Leaderboard")
+                symbol: page.models.ugiCount > 0 ? Symbols.Refresh : Symbols.CloudDownload
+                enabled: !page.models.ugiLoading
+                onClicked: page.models.loadLeaderboard(page.models.ugiCount > 0)
+            }
+        }
+
+        SectionRow {
+            visible: page.models.ugiError.length > 0
+            title: page.models.ugiError
+            leading: [
+                Symbol {
+                    icon: Symbols.Error
+                    color: Kirigami.Theme.negativeTextColor
+                }
+            ]
+        }
+
+        SectionRow {
+            visible: page.models.ugiCount > 0
+            content: [
+                SearchField {
+                    Layout.fillWidth: true
+                    placeholderText: qsTr("Search the leaderboard, such as Llama or Qwen")
+                    Accessible.name: qsTr("Search the Leaderboard")
+                    onQueryChanged: page.filterBoard(() => page.boardSearch = query)
+                }
+            ]
+        }
+
+        SectionRow {
+            visible: page.models.ugiCount > 0 && page.vram.available
+            title: qsTr("Fits My Graphics Card")
+            subtitle: qsTr("Hides models too big for its %1 GiB. Mixtures of experts stay, as Tight.").arg(Number(page.vram.total / (1024 * 1024 * 1024)).toLocaleString(Qt.locale(), "f", 0))
+            leading: [
+                Symbol {
+                    icon: Symbols.Memory
+                    color: TelamonStyle.accent
+                }
+            ]
+            showSwitch: true
+            switchChecked: page.boardFits
+            onSwitchToggled: checked => page.filterBoard(() => page.boardFits = checked)
+        }
+
+        SectionRow {
+            visible: page.models.ugiCount > 0
+            title: qsTr("Hide Thinking Models")
+            subtitle: qsTr("Those that reason at length before they answer")
+            leading: [
+                Symbol {
+                    icon: Symbols.Psychology
+                    color: TelamonStyle.accent
+                }
+            ]
+            showSwitch: true
+            switchChecked: page.boardHideThinking
+            onSwitchToggled: checked => page.filterBoard(() => page.boardHideThinking = checked)
+        }
+
+        SectionRow {
+            visible: page.models.ugiCount > 0
+            title: qsTr("Type")
+            subtitle: qsTr("A base model, a finetune of one, or a merge of several")
+            leading: [
+                Symbol {
+                    icon: Symbols.FilterList
+                    color: TelamonStyle.accent
+                }
+            ]
+
+            TelamonComboBox {
+                model: [qsTr("Any"), qsTr("Base"), qsTr("Finetune"), qsTr("Merge")]
+                currentIndex: Math.max(0, page.boardKinds.indexOf(page.boardKind))
+                onActivated: index => page.filterBoard(() => page.boardKind = page.boardKinds[index])
+                Accessible.name: qsTr("Type")
+            }
+        }
+
+        SectionRow {
+            visible: page.models.ugiCount > 0
+            title: qsTr("Minimum Willingness")
+            subtitle: qsTr("W/10: models that score lower are hidden")
+            leading: [
+                Symbol {
+                    icon: Symbols.Tune
+                    color: TelamonStyle.accent
+                }
+            ]
+
+            TelamonComboBox {
+                model: page.boardWillingness.map(w => w === 0 ? qsTr("Any") : qsTr("%1 or More").arg(w))
+                currentIndex: Math.max(0, page.boardWillingness.indexOf(page.boardMinWillingness))
+                onActivated: index => page.filterBoard(() => page.boardMinWillingness = page.boardWillingness[index])
+                Accessible.name: qsTr("Minimum Willingness")
+            }
+        }
+
+        SectionRow {
+            visible: page.models.ugiCount > 0
+            title: qsTr("Sort By")
+            leading: [
+                Symbol {
+                    icon: Symbols.Sort
+                    color: TelamonStyle.accent
+                }
+            ]
+
+            TelamonComboBox {
+                model: [qsTr("Overall (UGI)"), qsTr("Writing"), qsTr("Knowledge"), qsTr("Willingness"), qsTr("Newest")]
+                currentIndex: Math.max(0, page.boardSorts.indexOf(page.boardSort))
+                onActivated: index => page.filterBoard(() => page.boardSort = page.boardSorts[index])
+                Accessible.name: qsTr("Sort By")
+            }
+        }
+
+        SectionRow {
+            visible: page.models.ugiCount > 0 && page.board.total === 0
+            title: qsTr("No models match these filters")
+            subtitle: qsTr("Loosen a filter or clear the search.")
+        }
+
+        Repeater {
+            model: page.board.rows
+
+            SectionRow {
+                id: entry
+                required property var modelData
+                readonly property string link: page.hubUrl(modelData.link)
+
+                title: modelData.name
+                content: [
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: TelamonStyle.spacingSmall
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 0
+
+                            QQC2.Label {
+                                Layout.fillWidth: true
+                                text: entry.modelData.name
+                                textFormat: Text.PlainText
+                                elide: Text.ElideMiddle
+                                Accessible.ignored: true
+                            }
+                            QQC2.Label {
+                                Layout.fillWidth: true
+                                text: [entry.modelData.active.length > 0 ? qsTr("%1 · %2 active").arg(entry.modelData.params).arg(entry.modelData.active) : entry.modelData.params, entry.modelData.kind, entry.modelData.thinking ? qsTr("Thinking") : "", entry.modelData.released].filter(s => s.length > 0).join(" · ")
+                                textFormat: Text.PlainText
+                                elide: Text.ElideRight
+                                font.family: TelamonStyle.fontFamily
+                                font.pointSize: TelamonStyle.fontSizeCaption
+                                opacity: 0.65
+                                Accessible.ignored: true
+                            }
+                        }
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: TelamonStyle.spacingSmall
+
+                            TelamonBadge {
+                                visible: text.length > 0
+                                type: "accent"
+                                text: page.score(qsTr("UGI"), entry.modelData.ugi)
+                            }
+                            TelamonBadge {
+                                visible: text.length > 0
+                                text: page.score(qsTr("W/10"), entry.modelData.willingness)
+                            }
+                            TelamonBadge {
+                                visible: text.length > 0
+                                text: page.score(qsTr("Knowledge"), entry.modelData.knowledge)
+                            }
+                            TelamonBadge {
+                                visible: text.length > 0
+                                text: page.score(qsTr("Writing"), entry.modelData.writing)
+                            }
+                        }
+                    }
+                ]
+
+                FitBadge {
+                    fit: entry.modelData.fit
+                }
+                SecondaryButton {
+                    text: qsTr("Find GGUF")
+                    symbol: Symbols.Search
+                    onClicked: page.findGguf(entry.modelData.query)
+                }
+                ToolbarButton {
+                    y: parent ? Math.round((parent.height - height) / 2) : 0
+                    visible: entry.link.length > 0
+                    symbol: Symbols.OpenInNew
+                    text: qsTr("Open %1 on Hugging Face").arg(entry.modelData.name)
+                    toolTipText: qsTr("Open on Hugging Face")
+                    focusable: true
+                    onClicked: Qt.openUrlExternally(entry.link)
+                }
+            }
+        }
+
+        SectionRow {
+            visible: page.board.total > page.board.rows.length
+            title: qsTr("Show More")
+            subtitle: qsTr("Showing %1 of %2").arg(page.board.rows.length).arg(page.board.total)
+            chevron: true
+            onClicked: page.boardLimit += page.boardPage
+        }
+    }
+
+    Section {
+        id: getSection
         title: qsTr("Get Models")
         footer: qsTr("From Hugging Face. Each download is checked against the hash Hugging Face publishes.")
 
@@ -420,7 +765,7 @@ TelamonPage {
         SectionRow {
             content: [
                 SearchField {
-                    id: search
+                    id: getSearch
                     Layout.fillWidth: true
                     placeholderText: qsTr("Search models, such as Qwen or Gemma")
                     Accessible.name: qsTr("Search Hugging Face")
@@ -436,8 +781,8 @@ TelamonPage {
         }
 
         SectionRow {
-            visible: !page.models.searching && search.query.trim().length > 0 && page.models.results.length === 0 && page.models.error.length === 0
-            title: qsTr("No GGUF models match “%1”").arg(search.query.trim())
+            visible: !page.models.searching && getSearch.query.trim().length > 0 && page.models.results.length === 0 && page.models.error.length === 0
+            title: qsTr("No GGUF models match “%1”").arg(getSearch.query.trim())
         }
 
         Repeater {

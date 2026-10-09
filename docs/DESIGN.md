@@ -115,6 +115,37 @@ beside it.
   coding pick the Model for Code and the others the Model, and In Use marks
   the current one (the coding pick too when it is the Model and Code uses
   that).
+  *Leaderboard* (between Recommended and Get Models) browses open models by
+  the UGI Leaderboard's scores (`docs/BACKEND.md` → The UGI Leaderboard):
+  - **Load:** a first row names the source ("Scores from the UGI Leaderboard
+    by DontPlanToEnd", with Open Leaderboard to the Space) and a second says
+    "Not Loaded" with *Load Leaderboard*, or how many open models it lists
+    and how old the copy is ("Updated 5 hours ago") with *Refresh*. Opening
+    the page shows the saved copy, if there is one, and never asks the
+    network by itself; Load uses a copy under a day old, Refresh always asks
+    the Hub. A failure is a row in the section, and a stale copy is kept and
+    shown with a note.
+  - **Filters** (the leaderboard is filtered and sorted in Rust, on the GUI
+    thread: about 1,200 rows, a small job): a search by name
+    (every word must match); *Fits My Graphics Card* (shown when the card is
+    known), which hides Too Big, with the Q4 size taken as 0.6 GB for each
+    billion parameters and a mixture of experts (active under total) Tight at
+    worst, as in Recommended; *Hide Thinking Models*; *Type*: Any, Base,
+    Finetune or Merge; *Minimum Willingness*: Any, or 5 to 9 on W/10 (a model
+    with no score is hidden once a minimum is set). Models without
+    downloadable weights (no parameter count) are never listed.
+  - **Sort By:** Overall (UGI), Writing, Knowledge (NatInt), Willingness or
+    Newest, best first; a model without that score goes last.
+  - **Rows:** the name, then "30B · 3B active · Finetune · Thinking · Mar 17,
+    2025", then small badges for UGI, W/10, Knowledge and Writing (left out
+    when the file says NA); a fit badge; *Find GGUF*; and a button that opens
+    the model's page, only when its link is on `https://huggingface.co/`.
+    Only 50 rows are made, with *Show More* ("Showing 50 of 312") adding 50;
+    a changed filter goes back to 50.
+  - **Find GGUF** puts the model's repository name and "GGUF" in Get Models'
+    search (and runs it at once), and scrolls it into view: the results, the
+    quants of one, and the checked download are the ones already there. With
+    no match the existing "No GGUF models match" row says so.
 - **Attachments**:
   - **Adding them:** Attach Files… under the message field, or drop files on
     the chat. Up to 8 a message, shown as removable chips above the field.
@@ -424,6 +455,10 @@ piece of text, shows raw HTML as text, shows images as their description
 (nothing is fetched), keeps link targets only for http, https and mailto,
 and code blocks reach QML as plain text. Conversation files are parsed with
 serde; one that doesn't parse is set aside in `damaged/` and logged.
+The UGI Leaderboard's file is untrusted too: fetched over https only, at
+most 5 MB, parsed by column names with bad rows skipped, every string cleaned
+of control characters and cut short, shown as plain text, and a link opened
+only when it is `https://huggingface.co/...`.
 
 ## Failure modes
 
