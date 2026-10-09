@@ -12,6 +12,7 @@ Item {
     id: view
 
     required property var chat
+    required property var library
 
     // The column messages and the field share, centred in the view.
     readonly property real columnWidth: Math.min(width - Kirigami.Units.gridUnit * 3, Kirigami.Units.gridUnit * 46)
@@ -138,6 +139,26 @@ Item {
             defaultSuffix: saver.format === "json" ? "json" : "md"
             selectedFile: "file:///" + encodeURIComponent((view.chat.title.length > 0 ? view.chat.title : qsTr("Conversation")).replace(/[\/:*?"<>|]/g, "-")) + (saver.format === "json" ? ".json" : ".md")
             onAccepted: view.chat.exportTo(decodeURIComponent(selectedFile.toString().replace(/^file:\/\//, "")), saver.format)
+        }
+
+        // Conversation files that couldn't be read, or came from a newer
+        // Gates: what was done with them, said once.
+        InfoBanner {
+            Layout.fillWidth: true
+            Layout.maximumWidth: view.columnWidth
+            Layout.alignment: Qt.AlignHCenter
+            Layout.topMargin: Kirigami.Units.smallSpacing
+            type: "warning"
+            shown: view.library.notice.length > 0
+            closable: true
+            text: view.library.notice
+            onClosed: view.library.dismissNotice()
+            actions: [
+                QQC2.Action {
+                    text: qsTr("Open Folder")
+                    onTriggered: Qt.openUrlExternally("file://" + view.library.noticeFolder.split("/").map(encodeURIComponent).join("/"))
+                }
+            ]
         }
 
         // The first-run check (off the window's thread) found no model

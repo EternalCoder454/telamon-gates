@@ -55,6 +55,13 @@ cat >"$dir/000000000002-0000.json" <<EOF
  "messages":[{"role":"user","text":"What is a lifetime?"},{"role":"assistant","text":"A *lifetime* names how long a reference is valid."}]}
 EOF
 
+# One conversation file that can't be read (with text the log must never
+# repeat), and one from a newer Gates than this build: the first is set aside
+# in damaged/, the second is left exactly as it is.
+printf 'NOT-JSON-SECRET-TEXT {' >"$dir/0000000000a0-0000.json"
+printf '{"version":99,"id":"0000000000a2-0000","title":"From the future","created":1,"updated":1,"messages":[]}' >"$dir/0000000000a2-0000.json"
+cp "$dir/0000000000a2-0000.json" "$out/newer.json"
+
 shot() {
     import -window root "$out/$1.png"
     echo "saved $out/$1.png"
@@ -151,6 +158,35 @@ if [ "$replied" != 1 ]; then
 fi
 if [ -e "$dir/000000000001-0000.json" ]; then
     echo "FAIL: the deleted conversation's file is still there" >&2
+    exit 1
+fi
+# Data safety: the unreadable file is set aside (0600) and logged without its
+# text, the newer one is untouched, files are saved with a version and keep a
+# backup, and the log holds events, never what was said.
+glog=$out/state/telamon-gates/telamon-gates.log
+if [ -e "$dir/0000000000a0-0000.json" ]; then
+    echo "FAIL: the unreadable conversation file was not set aside" >&2
+    exit 1
+fi
+set -- "$dir"/damaged/0000000000a0-0000.*.json
+if [ ! -e "$1" ] || [ "$(stat -c %a "$1")" != 600 ] || [ "$(cat "$1")" != 'NOT-JSON-SECRET-TEXT {' ]; then
+    echo "FAIL: the unreadable file is not in damaged/ (0600) as it was" >&2
+    exit 1
+fi
+if ! cmp -s "$dir/0000000000a2-0000.json" "$out/newer.json"; then
+    echo "FAIL: the file from a newer version was changed" >&2
+    exit 1
+fi
+if ! grep -q ' set aside as .*0000000000a0-0000' "$glog" || ! grep -q '0000000000a2-0000 is from a newer version' "$glog"; then
+    echo "FAIL: the log does not say what was done with the unreadable and newer files" >&2
+    exit 1
+fi
+if grep -q -e 'SECRET' -e 'Alfama' -e 'lifetime' -e 'Explain Rust' "$glog"; then
+    echo "FAIL: the log has conversation text in it" >&2
+    exit 1
+fi
+if ! grep -q '"version": 1' "$dir"/*.json 2>/dev/null || ! ls "$dir"/*.json.bak >/dev/null 2>&1; then
+    echo "FAIL: no saved conversation has a version and a backup" >&2
     exit 1
 fi
 echo "smoke: ok"
