@@ -6,6 +6,7 @@
 mod chat;
 mod io;
 mod library;
+mod models;
 mod settings;
 mod user;
 mod vram;
@@ -36,12 +37,25 @@ pub struct TelamonObjects {
     pub chat: *mut c_void,
     pub library: *mut c_void,
     pub vram: *mut c_void,
+    pub models: *mut c_void,
 }
 
-/// The backend replies come from. This is the one line to change to connect
-/// a real model: see `docs/BACKEND.md`.
+/// The backend replies come from: llama.cpp when telamon-llama (or a
+/// `llama-server` on `$PATH`) is installed or a server address is set, else
+/// the built-in demo. See `docs/BACKEND.md`.
 fn backend() -> Arc<dyn Backend> {
-    Arc::new(gates_core::backend::Demo::default())
+    let options = settings::backend_options();
+    let binary = gates_core::backend::llama::find_server();
+    if binary.is_none() && options.server_url.is_empty() {
+        log::info!("no llama-server: the demo backend answers");
+        return Arc::new(gates_core::backend::Demo::default());
+    }
+    Arc::new(gates_core::backend::Llama::new(
+        gates_core::store::data_dir().join("models"),
+        binary,
+        gates_core::store::state_dir().join("llama-server.log"),
+        options,
+    ))
 }
 
 /// Called once from `main.cpp`: makes every QObject and starts reading the
@@ -80,10 +94,18 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
     chat.pin_mut().start();
     library.pin_mut().reload();
     let vram = vram::qobject::vram_make_unique();
+    let mut models = models::qobject::model_library_make_unique();
+    let models_dir = gates_core::store::data_dir().join("models");
+    models.pin_mut().set_folder(cxx_qt_lib::QString::from(
+        models_dir.to_string_lossy().as_ref(),
+    ));
+    models.pin_mut().rust_mut().dir = models_dir;
+    models.pin_mut().refresh();
 
     TelamonObjects {
         chat: chat.into_raw().cast(),
         library: library.into_raw().cast(),
         vram: vram.into_raw().cast(),
+        models: models.into_raw().cast(),
     }
 }

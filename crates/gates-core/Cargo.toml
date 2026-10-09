@@ -8,7 +8,12 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+libc = "0.2"
 log = "0.4"
 pulldown-cmark = { version = "0.13", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+# HTTP to llama-server (127.0.0.1, or an address on the LAN) and HTTPS to
+# Hugging Face for model downloads.
+ureq = { version = "3", default-features = false, features = ["rustls"] }

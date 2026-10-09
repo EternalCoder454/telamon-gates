@@ -1,0 +1,349 @@
+//! The Models page: the GGUF models in the models folder, Hugging Face
+//! search, a repository's model files, and one download at a time. All file
+//! and network work runs on worker threads; results come back through
+//! `qt_thread().queue`, and a newer search or repository wins over an older
+//! one still answering.
+
+#[cxx_qt::bridge]
+pub mod qobject {
+    unsafe extern "C++" {
+        include!("cxx-qt-lib/qstring.h");
+        type QString = cxx_qt_lib::QString;
+        include!("cxx-qt-lib/qstringlist.h");
+        type QStringList = cxx_qt_lib::QStringList;
+        include!("cxx-qt-lib/qlist.h");
+        type QList_f64 = cxx_qt_lib::QList<f64>;
+    }
+
+    extern "RustQt" {
+        #[qobject]
+        /// The models on this computer: file names without `.gguf`.
+        #[qproperty(QStringList, names)]
+        /// Their quantisation ("Q4_K_M"), size label ("8B") and size in bytes.
+        #[qproperty(QStringList, quants)]
+        #[qproperty(QStringList, labels)]
+        #[qproperty(QList_f64, sizes)]
+        #[qproperty(QString, folder)]
+        /// Hugging Face repositories found, and their downloads.
+        #[qproperty(QStringList, results)]
+        #[qproperty(QList_f64, downloads)]
+        #[qproperty(bool, searching)]
+        /// The repository open, and its model files.
+        #[qproperty(QString, repo)]
+        #[qproperty(QStringList, files)]
+        #[qproperty(QList_f64, file_sizes, cxx_name = "fileSizes")]
+        #[qproperty(bool, listing)]
+        /// The file downloading ("" for none), from which repository, and how
+        /// far (0 to 1).
+        #[qproperty(QString, downloading)]
+        #[qproperty(QString, download_repo, cxx_name = "downloadRepo")]
+        #[qproperty(f64, progress)]
+        /// What went wrong last (search, listing, download, delete); "" none.
+        #[qproperty(QString, error)]
+        #[namespace = "telamon_gates"]
+        type ModelLibrary = super::ModelLibraryRust;
+    }
+
+    unsafe extern "RustQt" {
+        /// Reads the models folder again.
+        #[qinvokable]
+        fn refresh(self: Pin<&mut ModelLibrary>);
+
+        /// Deletes the model `name` from the folder.
+        #[qinvokable]
+        fn remove(self: Pin<&mut ModelLibrary>, name: &QString);
+
+        #[qinvokable]
+        fn search(self: Pin<&mut ModelLibrary>, query: &QString);
+
+        /// Lists the model files of a repository from the results.
+        #[qinvokable]
+        #[cxx_name = "openRepo"]
+        fn open_repo(self: Pin<&mut ModelLibrary>, repo: &QString);
+
+        /// Downloads one of the open repository's files.
+        #[qinvokable]
+        fn download(self: Pin<&mut ModelLibrary>, file: &QString);
+
+        #[qinvokable]
+        #[cxx_name = "cancelDownload"]
+        fn cancel_download(self: Pin<&mut ModelLibrary>);
+
+        #[qinvokable]
+        #[cxx_name = "dismissError"]
+        fn dismiss_error(self: Pin<&mut ModelLibrary>);
+
+        /// The models in the folder changed (downloaded or deleted).
+        #[qsignal]
+        #[cxx_name = "modelsChanged"]
+        fn models_changed(self: Pin<&mut ModelLibrary>);
+    }
+
+    impl cxx_qt::Threading for ModelLibrary {}
+
+    #[namespace = "rust::cxxqtlib1"]
+    unsafe extern "C++" {
+        include!("cxx-qt-lib/common.h");
+
+        #[cxx_name = "make_unique"]
+        fn model_library_make_unique() -> UniquePtr<ModelLibrary>;
+    }
+}
+
+use core::pin::Pin;
+use cxx_qt::{CxxQtType, Threading};
+use cxx_qt_lib::{CaseSensitivity, QList, QString, QStringList};
+use gates_core::backend::llama::local_models;
+use gates_core::hub::{self, ModelFile};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+#[derive(Default)]
+pub struct ModelLibraryRust {
+    names: QStringList,
+    quants: QStringList,
+    labels: QStringList,
+    sizes: QList<f64>,
+    folder: QString,
+    results: QStringList,
+    downloads: QList<f64>,
+    searching: bool,
+    repo: QString,
+    files: QStringList,
+    file_sizes: QList<f64>,
+    listing: bool,
+    downloading: QString,
+    download_repo: QString,
+    progress: f64,
+    error: QString,
+
+    pub dir: PathBuf,
+    /// The open repository's files, with their checksums.
+    open_files: Vec<ModelFile>,
+    /// Bumped by each search and each repository opened: older answers drop.
+    asked: u64,
+    cancel: Option<Arc<AtomicBool>>,
+}
+
+fn strings<S: AsRef<str>>(items: impl IntoIterator<Item = S>) -> QStringList {
+    let mut list = QStringList::default();
+    for s in items {
+        list.append(QString::from(s.as_ref()));
+    }
+    list
+}
+
+fn numbers(items: impl IntoIterator<Item = f64>) -> QList<f64> {
+    let mut list = QList::default();
+    for n in items {
+        list.append(n);
+    }
+    list
+}
+
+impl qobject::ModelLibrary {
+    pub fn refresh(self: Pin<&mut Self>) {
+        let dir = self.rust().dir.clone();
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let _ = std::fs::create_dir_all(&dir);
+            // The header of each, for its quantisation and size label.
+            let models: Vec<_> = local_models(&dir)
+                .into_iter()
+                .map(|m| {
+                    let info = gates_core::gguf::read(&m.path).unwrap_or_default();
+                    let quant = if info.quant.is_empty() {
+                        gates_core::gguf::quant_from_name(&m.name)
+                    } else {
+                        info.quant
+                    };
+                    (m.name, quant, info.size_label, m.size as f64)
+                })
+                .collect();
+            let _ = qt.queue(move |mut lib| {
+                lib.as_mut()
+                    .set_names(strings(models.iter().map(|m| m.0.as_str())));
+                lib.as_mut()
+                    .set_quants(strings(models.iter().map(|m| m.1.as_str())));
+                lib.as_mut()
+                    .set_labels(strings(models.iter().map(|m| m.2.as_str())));
+                lib.set_sizes(numbers(models.iter().map(|m| m.3)));
+            });
+        });
+    }
+
+    pub fn remove(mut self: Pin<&mut Self>, name: &QString) {
+        let name = name.to_string();
+        let path = self.rust().dir.join(format!("{name}.gguf"));
+        // Only a model the list shows: no path from QML reaches the disk.
+        if !self.names().contains(
+            &QString::from(name.as_str()),
+            CaseSensitivity::CaseSensitive,
+        ) || name.contains('/')
+        {
+            return;
+        }
+        self.as_mut().set_error(QString::default());
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let result = std::fs::remove_file(&path);
+            let _ = qt.queue(move |mut lib| {
+                if let Err(e) = result {
+                    lib.as_mut().set_error(QString::from(
+                        format!("Couldn't delete {name}: {e}.").as_str(),
+                    ));
+                }
+                lib.as_mut().refresh();
+                lib.models_changed();
+            });
+        });
+    }
+
+    pub fn search(mut self: Pin<&mut Self>, query: &QString) {
+        let query = query.to_string();
+        let asked = {
+            let mut rust = self.as_mut().rust_mut();
+            rust.asked += 1;
+            rust.asked
+        };
+        self.as_mut().set_repo(QString::default());
+        self.as_mut().set_files(QStringList::default());
+        if query.trim().is_empty() {
+            self.as_mut().set_results(QStringList::default());
+            self.set_searching(false);
+            return;
+        }
+        self.as_mut().set_searching(true);
+        self.as_mut().set_error(QString::default());
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let result = hub::search(&query);
+            let _ = qt.queue(move |mut lib| {
+                if lib.rust().asked != asked {
+                    return;
+                }
+                lib.as_mut().set_searching(false);
+                match result {
+                    Ok(repos) => {
+                        lib.as_mut()
+                            .set_results(strings(repos.iter().map(|r| r.id.as_str())));
+                        lib.set_downloads(numbers(repos.iter().map(|r| r.downloads as f64)));
+                    }
+                    Err(e) => lib.set_error(QString::from(e.as_str())),
+                }
+            });
+        });
+    }
+
+    pub fn open_repo(mut self: Pin<&mut Self>, repo: &QString) {
+        let repo_id = repo.to_string();
+        let asked = {
+            let mut rust = self.as_mut().rust_mut();
+            rust.asked += 1;
+            rust.open_files.clear();
+            rust.asked
+        };
+        self.as_mut().set_repo(repo.clone());
+        self.as_mut().set_files(QStringList::default());
+        self.as_mut().set_file_sizes(QList::default());
+        // "" closes the repository.
+        if repo_id.is_empty() {
+            self.set_listing(false);
+            return;
+        }
+        self.as_mut().set_listing(true);
+        self.as_mut().set_error(QString::default());
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let result = hub::files(&repo_id);
+            let _ = qt.queue(move |mut lib| {
+                if lib.rust().asked != asked {
+                    return;
+                }
+                lib.as_mut().set_listing(false);
+                match result {
+                    Ok(files) => {
+                        lib.as_mut()
+                            .set_files(strings(files.iter().map(|f| f.name.as_str())));
+                        lib.as_mut()
+                            .set_file_sizes(numbers(files.iter().map(|f| f.size as f64)));
+                        if files.is_empty() {
+                            lib.as_mut().set_error(QString::from(
+                                "This repository has no single-file GGUF model.",
+                            ));
+                        }
+                        lib.rust_mut().open_files = files;
+                    }
+                    Err(e) => lib.set_error(QString::from(e.as_str())),
+                }
+            });
+        });
+    }
+
+    pub fn download(mut self: Pin<&mut Self>, file: &QString) {
+        if !self.downloading().is_empty() {
+            return;
+        }
+        let name = file.to_string();
+        // Only a file the open repository listed, with its size and checksum.
+        let Some(model) = self
+            .rust()
+            .open_files
+            .iter()
+            .find(|f| f.name == name)
+            .cloned()
+        else {
+            return;
+        };
+        let repo = self.repo().to_string();
+        let dir = self.rust().dir.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.as_mut().rust_mut().cancel = Some(cancel.clone());
+        self.as_mut().set_error(QString::default());
+        self.as_mut().set_progress(0.0);
+        self.as_mut()
+            .set_download_repo(QString::from(repo.as_str()));
+        self.as_mut().set_downloading(file.clone());
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let total = model.size.max(1) as f64;
+            let mut last = Instant::now() - Duration::from_secs(1);
+            let progress_qt = qt.clone();
+            let result = hub::download(&repo, &model, &dir, &cancel, &mut |bytes| {
+                // About ten times a second is enough for a bar.
+                if last.elapsed() >= Duration::from_millis(100) {
+                    last = Instant::now();
+                    let done = bytes as f64 / total;
+                    let _ = progress_qt.queue(move |lib| lib.set_progress(done));
+                }
+            });
+            let cancelled = cancel.load(Ordering::Relaxed);
+            let _ = qt.queue(move |mut lib| {
+                lib.as_mut().rust_mut().cancel = None;
+                lib.as_mut().set_downloading(QString::default());
+                lib.as_mut().set_download_repo(QString::default());
+                lib.as_mut().set_progress(0.0);
+                match result {
+                    Ok(_) => {
+                        lib.as_mut().refresh();
+                        lib.models_changed();
+                    }
+                    Err(_) if cancelled => {}
+                    Err(e) => lib.set_error(QString::from(e.as_str())),
+                }
+            });
+        });
+    }
+
+    pub fn cancel_download(self: Pin<&mut Self>) {
+        if let Some(cancel) = &self.rust().cancel {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub fn dismiss_error(self: Pin<&mut Self>) {
+        self.set_error(QString::default());
+    }
+}

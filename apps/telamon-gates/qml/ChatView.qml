@@ -109,7 +109,33 @@ Item {
             type: "info"
             shown: view.chat.demo
             closable: true
-            text: qsTr("No model is connected yet: replies come from the built-in demo.")
+            text: qsTr("No model server is installed: replies come from the built-in demo. Install telamon-llama to chat with local models.")
+        }
+
+        // The model server is there, but no model yet.
+        InfoBanner {
+            Layout.fillWidth: true
+            Layout.maximumWidth: view.columnWidth
+            Layout.alignment: Qt.AlignHCenter
+            type: "info"
+            shown: !view.chat.demo && view.chat.serverUrl.length === 0 && view.chat.models.length === 0 && view.chat.modelsFolder.length > 0
+            text: qsTr("No model yet: add a .gguf model file to the models folder.")
+            actions: [
+                QQC2.Action {
+                    text: qsTr("Open Folder")
+                    onTriggered: Qt.openUrlExternally("file://" + view.chat.modelsFolder.split("/").map(encodeURIComponent).join("/"))
+                }
+            ]
+        }
+
+        // A model dropped into the folder shows up when the window is back.
+        Connections {
+            target: Application
+            function onStateChanged() {
+                if (Application.state === Qt.ApplicationActive && !view.chat.demo && view.chat.serverUrl.length === 0) {
+                    view.chat.refreshModels();
+                }
+            }
         }
 
         InfoBanner {

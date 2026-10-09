@@ -15,8 +15,9 @@ TelamonWindow {
     required property var chat
     required property var library
     required property var vram
+    required property var models
 
-    // "chat", "settings" or "about".
+    // "chat", "models", "settings" or "about".
     property string page: "chat"
 
     title: root.chat.title.length > 0 ? qsTr("%1 — Telamon Gates").arg(root.chat.title) : qsTr("Telamon Gates")
@@ -307,6 +308,13 @@ TelamonWindow {
                 VramMeter {},
                 SidebarItem {
                     Layout.fillWidth: true
+                    text: qsTr("Models")
+                    symbol: Symbols.Psychology
+                    selected: root.page === "models"
+                    onClicked: root.page = "models"
+                },
+                SidebarItem {
+                    Layout.fillWidth: true
                     text: qsTr("Settings")
                     symbol: Symbols.Settings
                     selected: root.page === "settings"
@@ -351,10 +359,30 @@ TelamonWindow {
 
             Loader {
                 anchors.fill: parent
+                active: root.page === "models"
+                visible: active
+                sourceComponent: ModelsPage {
+                    models: root.models
+                    vram: root.vram
+                    chat: root.chat
+                    confirm: root.confirm
+                }
+            }
+
+            Loader {
+                anchors.fill: parent
                 active: root.page === "about"
                 visible: active
                 sourceComponent: AboutPage {}
             }
+        }
+    }
+
+    // A model downloaded or deleted: the chat's list follows.
+    Connections {
+        target: root.models
+        function onModelsChanged() {
+            root.chat.refreshModels();
         }
     }
 

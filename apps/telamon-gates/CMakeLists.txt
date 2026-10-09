@@ -48,6 +48,7 @@ qt_add_qml_module(telamon-gates-app
         qml/Composer.qml
         qml/SettingsPage.qml
         qml/AboutPage.qml
+        qml/ModelsPage.qml
 )
 
 target_link_libraries(telamon-gates-app PRIVATE

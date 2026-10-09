@@ -1,0 +1,61 @@
+name: telamon-llama
+
+# The model server package (packaging/telamon-llama): llama.cpp's
+# llama-server with Vulkan. Built only when its packaging changes, or by
+# hand; its compiled objects are cached per llama.cpp version.
+on:
+  push:
+    branches: [main]
+    paths: ['packaging/telamon-llama/**', '.github/workflows/llama.yml']
+  pull_request:
+    paths: ['packaging/telamon-llama/**', '.github/workflows/llama.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: llama-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  rpm:
+    name: telamon-llama RPM
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container: registry.fedoraproject.org/fedora:44
+    env:
+      CCACHE_DIR: /github/home/ccache
+    steps:
+      - name: Tools for checkout and cache
+        run: dnf -y install git-core tar zstd
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Version
+        id: version
+        run: echo "version=$(awk '/^Version:/ {print $2; exit}' packaging/telamon-llama/telamon-llama.spec)" >> "$GITHUB_OUTPUT"
+      - name: Cached objects
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /github/home/ccache
+          key: llama-ccache-f44-${{ steps.version.outputs.version }}-${{ hashFiles('packaging/telamon-llama/telamon-llama.spec') }}
+          restore-keys: llama-ccache-f44-${{ steps.version.outputs.version }}-
+      - name: Build the RPM
+        run: packaging/telamon-llama/build-rpm.sh "$GITHUB_WORKSPACE/out"
+      - name: Install it and run it
+        run: |
+          dnf -y install out/telamon-llama-*.rpm
+          /usr/libexec/telamon-llama/llama-server --version
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: /github/home/ccache
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: telamon-llama-rpm
+          path: out/*.rpm
+          if-no-files-found: error
+          retention-days: 14

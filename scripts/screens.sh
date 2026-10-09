@@ -70,7 +70,7 @@ run_theme() {
     mkdir -p "$x"/{config,data,cache,runtime,home} "$out"
     chmod 700 "$x/runtime"
     export HOME=$x/home XDG_CONFIG_HOME=$x/config XDG_DATA_HOME=$x/data \
-        XDG_CACHE_HOME=$x/cache XDG_RUNTIME_DIR=$x/runtime
+        XDG_CACHE_HOME=$x/cache XDG_RUNTIME_DIR=$x/runtime XDG_STATE_HOME=$x/state
     if [ "$theme" = dark ]; then
         dark_scheme >"$XDG_CONFIG_HOME/kdeglobals"
     fi
@@ -102,6 +102,12 @@ run_theme() {
 
     mkdir -p "$dir"
     seed_all "$dir"
+    # SCREENS_MODEL=<file.gguf>: replies from llama.cpp (installed in the
+    # container) after the first run, which shows the no-model state.
+    if [ -n "${SCREENS_MODEL:-}" ]; then
+        mkdir -p "$XDG_DATA_HOME/telamon-gates/models"
+        cp "$SCREENS_MODEL" "$XDG_DATA_HOME/telamon-gates/models/"
+    fi
     "$bin" >"$out/app.log" 2>&1 &
     app=$!
     sleep 4
@@ -161,6 +167,26 @@ run_theme() {
     xdotool mousemove 115 1039 click 1
     sleep 1.2
     shot 18-about
+    xdotool mousemove 115 919 click 1
+    sleep 1.5
+    shot 20-models
+    # SCREENS_HUB=1: search Hugging Face (needs the network) and open a result.
+    if [ -n "${SCREENS_HUB:-}" ]; then
+        xdotool mousemove 900 422 click 1
+        xdotool type --delay 10 "SmolLM2-135M-Instruct"
+        sleep 5
+        shot 21-models-search
+        xdotool mousemove 900 500 click 1
+        sleep 4
+        shot 22-models-files
+        # Download the first file, look, then cancel it.
+        xdotool mousemove 1357 569 click 1
+        sleep 2
+        shot 23-models-downloading
+        xdotool mousemove 1370 427 click 1
+        sleep 1
+        shot 24-models-cancelled
+    fi
     # Narrow, on a conversation: the sidebar folds to icons.
     open_chat "Show me"
     win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)
