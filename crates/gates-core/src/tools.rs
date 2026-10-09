@@ -1959,6 +1959,12 @@ mod tests {
 
     #[test]
     fn commands() {
+        // Commands run only in their sandbox; where bubblewrap can't make
+        // one (a CI runner without user namespaces), there is nothing to run.
+        if !crate::sandbox::available() {
+            eprintln!("no command sandbox here: skipped");
+            return;
+        }
         let (dir, ws) = workspace("run");
         let ok = go(
             &ws,
