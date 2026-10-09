@@ -148,7 +148,7 @@ fn main() {
         .expect("the model is in its folder");
     assert!(!found.info.decision.is_empty(), "not a decision model");
     let log = std::env::temp_dir().join("systemone-check.log");
-    let one = SystemOne::new(&binary, &found, log.clone());
+    let one = SystemOne::new(&binary, &found, log.clone(), None);
     println!("{} ({}), log in {}", one.name(), one.kind(), log.display());
 
     let started = Instant::now();

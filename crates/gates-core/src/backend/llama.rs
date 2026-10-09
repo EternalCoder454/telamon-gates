@@ -9,6 +9,7 @@ use super::server::{Endpoint, Launch, Server};
 use super::sse::{self, Line};
 use super::{Backend, BackendError, Event, Options, Request};
 use crate::conversation::{Role, ToolCall};
+use crate::watchdog::{Cap, Watchdog};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -291,6 +292,9 @@ pub struct Llama {
     /// The binary Gates starts; None runs only an external server.
     binary: Option<PathBuf>,
     server: Arc<Server>,
+    /// Watches the graphics card's memory while a server of Gates' runs;
+    /// SystemOne's shares it.
+    watchdog: Arc<Watchdog>,
     options: Mutex<Options>,
     /// The context of the server last asked: its address, and its size.
     context: Mutex<Option<(String, u32)>>,
@@ -370,10 +374,12 @@ impl Llama {
         log: PathBuf,
         options: Options,
     ) -> Llama {
+        let watchdog = Watchdog::new(Cap::default());
         Llama {
             models_dir,
             binary,
-            server: Server::new(log),
+            server: Server::watched(log, watchdog.clone()),
+            watchdog,
             options: Mutex::new(options),
             context: Mutex::new(None),
             strict: Mutex::new(HashSet::new()),
@@ -760,6 +766,10 @@ impl Backend for Llama {
         if let Ok((_, true)) = self.endpoint(model, &AtomicBool::new(false), None) {
             self.server.release();
         }
+    }
+
+    fn watchdog(&self) -> Option<Arc<Watchdog>> {
+        Some(self.watchdog.clone())
     }
 
     fn models_folder(&self) -> Option<PathBuf> {

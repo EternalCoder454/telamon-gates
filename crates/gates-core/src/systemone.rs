@@ -12,6 +12,7 @@
 
 use crate::backend::llama::{LocalModel, authorized};
 use crate::backend::server::{Endpoint, Launch, Server};
+use crate::watchdog::Watchdog;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -140,10 +141,16 @@ pub struct SystemOne {
 impl SystemOne {
     /// SystemOne with `model` (a decision model: its `info.decision` is set),
     /// run by `binary`. The server starts on the first question; its output
-    /// goes to `log`.
-    pub fn new(binary: &Path, model: &LocalModel, log: PathBuf) -> SystemOne {
+    /// goes to `log`. With a `watchdog`, the graphics memory is watched
+    /// while it runs.
+    pub fn new(
+        binary: &Path,
+        model: &LocalModel,
+        log: PathBuf,
+        watchdog: Option<Arc<Watchdog>>,
+    ) -> SystemOne {
         SystemOne {
-            server: Server::with_load_limit(log, LOAD),
+            server: Server::with_load_limit(log, LOAD, watchdog),
             binary: binary.to_path_buf(),
             model: model.path.clone(),
             kind: model.info.decision.clone(),

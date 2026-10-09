@@ -14,6 +14,7 @@ pub trait Backend: Send + Sync {
     fn name(&self) -> String;                 // shown in Settings
     fn is_demo(&self) -> bool { false }       // true only for the demo
     fn models(&self) -> Result<Vec<String>, BackendError>;
+    fn watchdog(&self) -> Option<Arc<Watchdog>> { None } // see Graphics memory limit
     fn complete(
         &self,
         request: &Request,                    // model, system prompt, messages
@@ -181,6 +182,66 @@ it applies to a server address set in Settings, except the last item.
   and they are left out from the first request on. Any other 400 is shown
   as the refusal it is.
 
+### Graphics memory limit
+
+`watchdog.rs`. A full graphics card has crashed the computer, so Gates stops
+its own servers before the card is full. It only applies to servers Gates
+runs: with a server address set in Settings there is nothing to stop, and
+nothing is watched.
+
+- **What is read:** the card's total in use, whoever uses it:
+  `mem_info_vram_used` over `mem_info_vram_total` in
+  `/sys/class/drm/card*/device/`, through `vram::read` (the card with the
+  most memory). With no such files (NVIDIA's and Intel's drivers, the dev
+  container, Xvfb) the watchdog is off and says nothing. Debug builds read
+  the folder `TELAMON_GATES_DRM` names instead, when it is set (the scripts
+  have no card); release builds never do.
+- **When:** every 2 s (`PERIOD`), on its own thread (`gates-vram-watch`),
+  only while a server is loading or up. `Server::acquire` wakes it; it ends
+  within 2 s of the last server stopping (the idle stop, `retire`, a crash).
+  A server loads with its lock held, for minutes, so the thread asks
+  `Server::is_live`, which treats a lock it can't take as a server loading,
+  and never waits for it.
+- **The limit:** Off, 85, 90, 95 (default) or 98 percent of the card's total
+  (`Cap`, saved as `MemoryCap` in the settings file: unset for 95, `off`
+  for Off; Settings → Model Server → Graphics Memory Limit, applied at
+  once, no restart). 95 because the recommended Qwen3-Coder-30B (16.5 GiB
+  and its context, 85–90% of 24 GiB) would be stopped at 90 in normal use.
+- **Reached:** two readings in a row at or over the limit (`Tripwire`,
+  `READINGS`: a spike isn't enough) and, in this order:
+  1. the log (`applog`) and `Watchdog::on_trip`'s hook get the `Trip`. The
+     app's hook queues `Chat.memoryLimitReached` (cancels the reply under
+     way as Stop does, so what came stays and it ends as stopped, not
+     failed, and shows the banner) and `Fleet.memoryLimitReached` (stops the
+     run, shows the banner) to the GUI thread and waits up to a second for
+     both, so the reply is cancelled before its server goes;
+  2. every server registered with the watchdog (the chat model's, and
+     SystemOne's, which takes it as a `SystemOne::new` argument) is halted,
+     side by side: `Server::halt` makes a load under way give up (within
+     250 ms) and stops a running one (SIGTERM, then SIGKILL after 3 s). A
+     halted load is not a death of the model, so it isn't counted towards a
+     crash loop.
+
+  The banner is the `Event::Notice` path (`Chat.notice`, plain text): "Stopped
+  the model: graphics memory reached 95% (23.4 of 24.0 GiB). Close other
+  programs that use the graphics card, or pick a smaller model."
+- **Not restarted:** nothing starts a server again by itself. `Server`
+  checks `Watchdog::check_start` before each start (after the old server of
+  a restart is gone): it starts only when use is below the limit less
+  `MARGIN` (5 points: 90% for 95%), and otherwise `acquire` fails with "Not
+  starting the model: graphics memory is at 92% (22.0 of 24.0 GiB), too full
+  to load a model under the 95% limit. …" and the same advice. The warm-up
+  while typing is refused the same way, silently. With the limit Off, or no
+  reading, a start is never refused.
+- **Tests:** `watchdog.rs` (the threshold maths, two readings in a row, the
+  margin, the settings values, the messages) and `server.rs` (injected
+  readings and the fake-server pattern: both servers stopped and a reply
+  cancelled before them, a spike left alone, no reads without a server, Off,
+  no readable card, a server that ignores SIGTERM killed, a refused start, a
+  load stopped). `scripts/watchdog.sh` runs the app under Xvfb with a
+  stand-in server (`scripts/fake-llama-server.py`) and a made-up card, and
+  checks the banner, the log, the stop, the refusal and the restart.
+
 ### Tuning, and what was left at llama.cpp's defaults
 
 Checked against the v0.6.0 source and a web search (2026-10-08), not taken
@@ -323,7 +384,9 @@ that wrote it, and whether SystemOne picked it.
   graphics card.
 - **Its server:** its own llama-server (`systemone-server.log`), with a
   2048-token context and batch, because a decision model reads each prompt in
-  one micro-batch. It stops after 5 idle minutes, like the chat server.
+  one micro-batch. It stops after 5 idle minutes, like the chat server. The
+  graphics memory limit watches it too and stops it with the chat server
+  (see **Graphics memory limit**).
 - **Getting a model:** Settings offers both from ggml-org's official
   conversions (`Laya-GGUF` Q8_0, `Kev-4B-GGUF` Q4_K_M), downloaded and checked
   like any other model.
