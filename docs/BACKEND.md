@@ -728,6 +728,81 @@ requirement is conservative):
   that makes no sense; one page per address, two per site; reasoning follows the
   mode.
 
+## The UGI Leaderboard
+
+The Models page's *Leaderboard* section browses open models by the
+[UGI Leaderboard](https://huggingface.co/spaces/DontPlanToEnd/UGI-Leaderboard)
+(DontPlanToEnd) before finding a GGUF of one (`gates_core::leaderboard`; the
+page is described in `docs/DESIGN.md`).
+
+- **Data source.** One CSV in the Space,
+  `https://huggingface.co/spaces/DontPlanToEnd/UGI-Leaderboard/resolve/main/ugi-leaderboard-data.csv`
+  (about 650 KB, 71 columns; the Space re-uploads it in place). There is no
+  official API.
+- **Licence.** The Space states no licence for the data. So Gates **never
+  bundles or redistributes it**: it is fetched at run time from the source,
+  kept only in the user's own cache, and the page shows the attribution
+  "Scores from the UGI Leaderboard by DontPlanToEnd" with a button to the
+  Space. The screenshots script uses made-up models in the file's shape
+  (`scripts/screens-ugi.csv`), not the leaderboard's data. If the owner asks
+  for it to stop, remove the section.
+- **Fetching.** The same HTTPS agent as the Hub downloads (system TLS, https
+  only, redirects followed), a 30 s timeout and a 5 MB cap. Hugging Face
+  answers `ETag` and `If-None-Match` for the file (checked: a 307 to its
+  cache, then 200 with an ETag; with the ETag, 304), so a refresh of an
+  unchanged file costs no body.
+- **Cache.** `$XDG_CACHE_HOME/telamon-gates/ugi.csv` (mode 0600, in a 0700
+  folder) and `ugi.etag` beside it, written through a temporary file and a
+  rename, and only after the answer parsed: a captive portal's page or a
+  damaged file never replaces a good copy. The copy's age is the file's
+  modification time. *Load Leaderboard* uses a copy under 24 hours old without
+  asking; an older one is checked with its ETag (304 makes it fresh for
+  another day, by touching the file); *Refresh* always asks. When the Hub
+  can't be reached and there is a copy, the copy is shown with a note;
+  with none, the error. Opening the Models page reads the copy, if any, and
+  never uses the network.
+- **Parsing.** By column name, not place: a header is lowercased with
+  everything but letters, digits, `/`, `-`, `_` and spaces dropped, so
+  "UGI 🏆", "W/10 👍", "NatInt 💡" and "Writing ✍️" are `ugi`, `w/10`,
+  `natint` and `writing` whatever the emoji (and "UGI non-W/10" stays another
+  column). The file starts with a UTF-8 byte order mark. A small RFC 4180
+  reader (quotes, `""`, line breaks inside quotes) instead of the `csv` crate,
+  which the lockfile doesn't have. `NA`, empty or out of range (scores 0 to
+  100, W/10 0 to 10, parameters over 0 and up to 100,000 billion) is
+  missing. A row with no name or no total parameters (the proprietary
+  models: `openai/...`, `anthropic/...`) is dropped; at most 5,000 rows and
+  200 characters a field are read; control and direction-changing
+  characters are removed from every string.
+- **Fields.** `author/model_name`, `Model Link` (kept only when it is
+  `https://huggingface.co/...`, no other host, port or credentials),
+  `Release Date` (M/D/YYYY), `Active Parameters`, `Total Parameters`
+  (billions), `Is Finetuned`, `Is Merged`, `Is Foundation` (a merge wins over a
+  finetune, which wins over a base), `UGI`, `W/10`, `NatInt`, `Writing`,
+  `Is Thinking Model`.
+- **Fit.** The Q4 size is 0.6 GB (decimal) for each billion parameters, and the
+  fit is `ModelsPage.qml`'s rule (Fits at 1.2 times the card's memory or
+  less, Tight up to the memory, else Too Big), repeated in
+  `leaderboard::fit` for the filter. An active count under the total makes a
+  mixture of experts, which runs with the experts it isn't using in system
+  memory: it is Tight when its size fits in the card plus 70% of the system
+  memory (`MemTotal` of `/proc/meminfo`, read on a worker when the page
+  opens; the card alone when unknown), else Too Big. A 30B-A3B (18 GB) is
+  Tight on a 16 GiB card and Fits on 24 GiB; a 120B-A12B (72 GB) is Too Big on
+  24 GiB with 31 GiB of memory (about 49 GB of room). The Recommended list
+  uses the same rule (`fitExperts`).
+- **Find GGUF.** The query is the model's repository name from its link (else
+  the leaderboard's name without the author and a bracketed setting such as
+  "(reasoning=low)") and "GGUF", sent to `hub::search`
+  (`filter=gguf`, most downloaded first). Hugging Face matches each word, so
+  the extra word costs nothing (checked: "Qwen3-14B" and "Qwen3-14B GGUF" give
+  the same repositories).
+- **Checked live** (2026-10-09, `examples/leaderboard-check`): 1,326 rows, of
+  which 1,164 open models and 162 skipped (proprietary); 230 base, 632
+  finetunes, 302 merges, 300 thinking, 232 mixtures of experts, every one
+  with a Hugging Face link. 319 ms for the first load (download and parse), 22 ms
+  from the fresh copy, 180 ms for the forced refresh, which the Hub answered
+  `304 Not Modified`.
+
 ## Performance (measured 2026-10-09, RX 7900 XTX, Vulkan)
 
 Qwen3-4B-Instruct-2507 Q4_K_M unless said; temperature 0; scripts in

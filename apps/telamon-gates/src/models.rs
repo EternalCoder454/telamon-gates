@@ -38,6 +38,9 @@ pub mod qobject {
         /// The free space on the models folder's disk in bytes; -1 when not
         /// known (yet).
         #[qproperty(f64, free)]
+        /// The system memory in bytes (a mixture of experts may use part of
+        /// it, so the fit badges ask); -1 when not known (yet).
+        #[qproperty(f64, ram_total, cxx_name = "ramTotal")]
         /// Partial downloads left in the folder: the file each would become,
         /// bytes so far, the whole size (0 when not known), and the
         /// repository it comes from ("" when not known: no Resume).
@@ -61,6 +64,17 @@ pub mod qobject {
         #[qproperty(f64, progress)]
         /// What went wrong last (search, listing, download, delete); "" none.
         #[qproperty(QString, error)]
+        /// The UGI Leaderboard (`gates_core::leaderboard`): how many open
+        /// models it lists (0 until loaded), when its copy was last known to
+        /// be current (milliseconds since the epoch), a note about the copy
+        /// ("" none), what went wrong loading it, and whether a load is under
+        /// way. `ugiVersion` changes with each load: bind the rows to it.
+        #[qproperty(f64, ugi_count, cxx_name = "ugiCount")]
+        #[qproperty(f64, ugi_updated, cxx_name = "ugiUpdated")]
+        #[qproperty(QString, ugi_note, cxx_name = "ugiNote")]
+        #[qproperty(QString, ugi_error, cxx_name = "ugiError")]
+        #[qproperty(bool, ugi_loading, cxx_name = "ugiLoading")]
+        #[qproperty(f64, ugi_version, cxx_name = "ugiVersion")]
         #[namespace = "telamon_gates"]
         type ModelLibrary = super::ModelLibraryRust;
     }
@@ -117,6 +131,26 @@ pub mod qobject {
         #[cxx_name = "dismissError"]
         fn dismiss_error(self: Pin<&mut ModelLibrary>);
 
+        /// Shows the saved copy of the leaderboard, if there is one. Never
+        /// asks the network; the Models page calls it when it opens.
+        #[qinvokable]
+        #[cxx_name = "openLeaderboard"]
+        fn open_leaderboard(self: Pin<&mut ModelLibrary>);
+
+        /// Loads the leaderboard: the saved copy when it is under a day old,
+        /// else the Hub's (`force`: always asks the Hub).
+        #[qinvokable]
+        #[cxx_name = "loadLeaderboard"]
+        fn load_leaderboard(self: Pin<&mut ModelLibrary>, force: bool);
+
+        /// The leaderboard's models that pass the filters in `spec` (JSON,
+        /// `gates_core::leaderboard::query`), best first, as JSON:
+        /// `{"total": n, "rows": [...]}`. `version` only makes QML ask again
+        /// after a load.
+        #[qinvokable]
+        #[cxx_name = "leaderboardRows"]
+        fn leaderboard_rows(self: &ModelLibrary, spec: &QString, version: f64) -> QString;
+
         /// The models in the folder changed (downloaded or deleted).
         #[qsignal]
         #[cxx_name = "modelsChanged"]
@@ -141,6 +175,7 @@ use gates_core::backend::llama::{
     find_server, local_models, local_projectors, projector_for, unsupported_architecture,
 };
 use gates_core::hub::{self, ModelFile};
+use gates_core::leaderboard::{self, Entry, Loaded};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -159,6 +194,7 @@ pub struct ModelLibraryRust {
     unsupported: QStringList,
     folder: QString,
     free: f64,
+    ram_total: f64,
     partials: QStringList,
     partial_sizes: QList<f64>,
     partial_totals: QList<f64>,
@@ -174,8 +210,16 @@ pub struct ModelLibraryRust {
     download_repo: QString,
     progress: f64,
     error: QString,
+    ugi_count: f64,
+    ugi_updated: f64,
+    ugi_note: QString,
+    ugi_error: QString,
+    ugi_loading: bool,
+    ugi_version: f64,
 
     pub dir: PathBuf,
+    /// The leaderboard's open models, as loaded.
+    ugi: Vec<Entry>,
     /// The open repository's files, with their checksums.
     open_files: Vec<ModelFile>,
     /// The partial downloads the properties show, for Resume.
@@ -490,6 +534,7 @@ impl qobject::ModelLibrary {
             }
             let parts = hub::partials(&dir);
             let free = hub::free_space(&dir).map_or(-1.0, |bytes| bytes as f64);
+            let ram = leaderboard::system_memory().map_or(-1.0, |bytes| bytes as f64);
             let _ = qt.queue(move |mut lib| {
                 lib.as_mut()
                     .set_partials(strings(parts.iter().map(|p| p.name.as_str())));
@@ -501,6 +546,7 @@ impl qobject::ModelLibrary {
                     parts.iter().map(|p| p.repo.as_deref().unwrap_or("")),
                 ));
                 lib.as_mut().rust_mut().partial_list = parts;
+                lib.as_mut().set_ram_total(ram);
                 lib.set_free(free);
             });
         });
@@ -551,5 +597,60 @@ impl qobject::ModelLibrary {
 
     pub fn dismiss_error(self: Pin<&mut Self>) {
         self.set_error(QString::default());
+    }
+
+    pub fn open_leaderboard(self: Pin<&mut Self>) {
+        if self.rust().ugi_loading || self.rust().ugi_count > 0.0 {
+            return;
+        }
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let held = leaderboard::cached(&leaderboard::cache_path());
+            let _ = qt.queue(move |lib| {
+                // A load the user started meanwhile wins.
+                let idle = !lib.rust().ugi_loading && lib.rust().ugi_count == 0.0;
+                if let (Some(held), true) = (held, idle) {
+                    lib.show_leaderboard(held);
+                }
+            });
+        });
+    }
+
+    pub fn load_leaderboard(mut self: Pin<&mut Self>, force: bool) {
+        if self.rust().ugi_loading {
+            return;
+        }
+        self.as_mut().set_ugi_loading(true);
+        self.as_mut().set_ugi_error(QString::default());
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let result = leaderboard::load(force);
+            let _ = qt.queue(move |mut lib| {
+                lib.as_mut().set_ugi_loading(false);
+                match result {
+                    Ok(loaded) => lib.show_leaderboard(loaded),
+                    Err(e) => lib.set_ugi_error(QString::from(e.as_str())),
+                }
+            });
+        });
+    }
+
+    fn show_leaderboard(mut self: Pin<&mut Self>, loaded: Loaded) {
+        let millis = loaded
+            .fetched
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_millis() as f64);
+        self.as_mut()
+            .set_ugi_count(loaded.table.entries.len() as f64);
+        self.as_mut().set_ugi_updated(millis);
+        self.as_mut()
+            .set_ugi_note(QString::from(loaded.note.as_deref().unwrap_or("")));
+        self.as_mut().rust_mut().ugi = loaded.table.entries;
+        let version = self.rust().ugi_version + 1.0;
+        self.set_ugi_version(version);
+    }
+
+    pub fn leaderboard_rows(&self, spec: &QString, _version: f64) -> QString {
+        QString::from(leaderboard::query(&self.rust().ugi, &spec.to_string()).as_str())
     }
 }

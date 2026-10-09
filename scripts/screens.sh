@@ -288,6 +288,52 @@ run_theme() {
         sleep 1
         shot 24-models-cancelled
     fi
+    # The Leaderboard on the Models page: not loaded yet (20-models shows it
+    # at the foot of what is in view). Then a copy of made-up models in the
+    # real file's shape (scripts/screens-ugi.csv), five hours old: fresh, so
+    # Load Leaderboard reads it without the network. Rows, Show More, the
+    # filters, and Find GGUF on the first row (which searches Hugging Face:
+    # the network, or its error).
+    xdotool mousemove 900 600 click --repeat 150 --delay 5 4
+    mkdir -p "$XDG_CACHE_HOME/telamon-gates"
+    cp "$repo/scripts/screens-ugi.csv" "$XDG_CACHE_HOME/telamon-gates/ugi.csv"
+    touch -d "5 hours ago" "$XDG_CACHE_HOME/telamon-gates/ugi.csv"
+    xdotool mousemove 1380 817 click 1
+    sleep 1.5
+    shot 20d-leaderboard-loaded
+    xdotool mousemove 900 600 click --repeat 10 --delay 20 5
+    sleep 0.6
+    shot 20e-leaderboard-filters
+    xdotool mousemove 900 600 click --repeat 60 --delay 20 5
+    sleep 0.6
+    shot 20f-leaderboard-show-more
+    xdotool mousemove 700 883 click 1
+    sleep 1
+    shot 20g-leaderboard-more-shown
+    # Back to the filters: both switches, Type Finetune, Minimum Willingness
+    # 7 or More, Sort By Knowledge.
+    xdotool mousemove 900 600 click --repeat 150 --delay 5 4
+    xdotool mousemove 900 600 click --repeat 10 --delay 20 5
+    sleep 0.6
+    xdotool mousemove 1410 62 click 1
+    xdotool mousemove 1410 137 click 1
+    sleep 0.5
+    xdotool mousemove 1278 213 click 1
+    sleep 0.5
+    xdotool key Down Down Return
+    sleep 0.5
+    xdotool mousemove 1278 288 click 1
+    sleep 0.5
+    xdotool key Down Down Down Return
+    sleep 0.5
+    xdotool mousemove 1278 362 click 1
+    sleep 0.5
+    xdotool key Down Down Return
+    sleep 1
+    shot 20h-leaderboard-filtered
+    xdotool mousemove 1306 454 click 1
+    sleep 5
+    shot 20i-leaderboard-find-gguf
     # The Fleet page, before any run.
     xdotool mousemove 115 859 click 1
     sleep 1.5
