@@ -145,7 +145,10 @@ beside it.
   use (a picker when there are several); one-click Get Laya / Get Kev when
   there's none, with the download's progress. On the Models page, a decision
   model shows "Decision model" and a SystemOne badge instead of a fit badge.
-- **Settings**: the backend, the model, the system prompt (saved as you
+- **Settings**: the backend, the model, the Model for Code (shown when
+  there are two or more models: Code and Agent replies, and the warm-up while
+  typing in those modes, use it; "Same as Model", or a model that is gone,
+  means the chat model), the system prompt (saved as you
   type), the shared transparency switch, and the folder the conversations are
   in, with Open Folder.
 
@@ -157,10 +160,10 @@ beside it.
 - `apps/telamon-gates/src` (CXX-Qt):
   - `Chat` (a `QAbstractListModel` of the open conversation's messages, roles
     `role`, `text`, `kinds`, `contents`, `langs`, `streaming`, `failed`):
-    `newChat`, `open`, `send`, `stop`, `regenerate`, `pickModel`,
+    `newChat`, `open`, `send`, `stop`, `regenerate`, `pickModel`, `pickCodeModel`,
     `saveSystemPrompt`, `refreshModels`, `dismissError`; properties
     `conversationId`, `title`, `generating`, `loading`, `error`, `demo`,
-    `backendName`, `models`, `model`, `systemPrompt`, `count`, `retryable`
+    `backendName`, `models`, `model`, `codeModel`, `systemPrompt`, `count`, `retryable`
     (the last reply failed or never came: Try Again and Regenerate ask for
     one; a good reply is never discarded from the banner).
   - `Fleet` (`fleet.rs`): properties `goal`, `workspace`, `running`,
@@ -202,7 +205,7 @@ arguments), `tool_call_id` and `summary`; the conversation's `mode` when it
 isn't Auto, and its `workspace`), written atomically (temporary file,
 then rename). Ids are hex and dashes only, so no id can name a path outside
 the folder. Settings are `~/.config/telamon-gatesrc`, group `[Chat]`
-(`Model`, `SystemPrompt`), plus the window's size from `TelamonWindow`.
+(`Model`, `CodeModel`, `SystemPrompt`), plus the window's size from `TelamonWindow`.
 
 ## The model server
 

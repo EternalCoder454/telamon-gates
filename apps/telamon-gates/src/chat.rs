@@ -40,6 +40,8 @@ pub mod qobject {
         /// The models to pick from, and the one picked.
         #[qproperty(QStringList, models)]
         #[qproperty(QString, model)]
+        /// The model for Code and Agent mode; "" for the same as `model`.
+        #[qproperty(QString, code_model, cxx_name = "codeModel")]
         #[qproperty(QString, system_prompt, cxx_name = "systemPrompt")]
         #[qproperty(i32, count)]
         /// The last message is a failed reply, or a message with no reply:
@@ -143,6 +145,10 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "pickModel"]
         fn pick_model(self: Pin<&mut Chat>, name: &QString);
+
+        #[qinvokable]
+        #[cxx_name = "pickCodeModel"]
+        fn pick_code_model(self: Pin<&mut Chat>, name: &QString);
 
         #[qinvokable]
         #[cxx_name = "saveSystemPrompt"]
@@ -376,6 +382,7 @@ pub struct ChatRust {
     backend_name: QString,
     models: QStringList,
     model: QString,
+    code_model: QString,
     system_prompt: QString,
     count: i32,
     retryable: bool,
@@ -440,8 +447,8 @@ pub struct ChatRust {
     listing: u64,
     /// Whether commands' sandbox was tried yet (`check_sandbox`).
     sandbox_checked: bool,
-    /// When the model was last warmed up (`prepare`).
-    warmed: Option<Instant>,
+    /// Which model was last warmed up (`prepare`), and when.
+    warmed: Option<(String, Instant)>,
     /// SystemOne's pick for the text being written: the text, the mode,
     /// and whether SystemOne picked it.
     prepick: Option<(String, Active, bool)>,
@@ -630,6 +637,8 @@ impl qobject::Chat {
         self.as_mut().set_demo(demo);
         self.as_mut()
             .set_model(QString::from(settings::get(settings::MODEL).as_str()));
+        self.as_mut()
+            .set_code_model(QString::from(settings::get(settings::CODE_MODEL).as_str()));
         self.as_mut()
             .set_user_name(QString::from(crate::user::first_name().as_str()));
         self.as_mut().set_system_prompt(QString::from(
@@ -950,6 +959,31 @@ impl qobject::Chat {
         }
     }
 
+    pub fn pick_code_model(mut self: Pin<&mut Self>, name: &QString) {
+        self.as_mut().set_code_model(name.clone());
+        if let Some(io) = &self.rust().io {
+            settings::set(io, settings::CODE_MODEL, name.to_string());
+        }
+    }
+
+    /// The model for replies in `mode`: the code model for Code and
+    /// Agent when one is set, else the chat model.
+    fn model_for(&self, mode: &str) -> String {
+        let code = self.code_model().to_string();
+        let coding = mode == modes::CODE.id || mode == modes::AGENT.id;
+        if coding
+            && !code.is_empty()
+            && self.models().contains(
+                &QString::from(code.as_str()),
+                cxx_qt_lib::CaseSensitivity::CaseSensitive,
+            )
+        {
+            code
+        } else {
+            self.model().to_string()
+        }
+    }
+
     pub fn save_system_prompt(mut self: Pin<&mut Self>, text: &QString) {
         if *self.system_prompt() == *text {
             return;
@@ -1003,15 +1037,17 @@ impl qobject::Chat {
         if text.is_empty() || *self.generating() {
             return;
         }
-        // The model, loading while the user writes (once a minute at most:
-        // after that it is loaded, or idle-stopped minutes later).
+        // The mode's model (the code model in Code and Agent), loading while
+        // the user writes: once a minute at most per model, since after that
+        // it is loaded, or idle-stopped minutes later.
+        let model = self.model_for(&self.mode().to_string());
         let due = self
             .rust()
             .warmed
-            .is_none_or(|t| t.elapsed() > Duration::from_secs(60));
+            .as_ref()
+            .is_none_or(|(warm, t)| *warm != model || t.elapsed() > Duration::from_secs(60));
         if due && let Some(backend) = self.rust().backend.clone() {
-            self.as_mut().rust_mut().warmed = Some(Instant::now());
-            let model = self.model().to_string();
+            self.as_mut().rust_mut().warmed = Some((model.clone(), Instant::now()));
             std::thread::spawn(move || backend.warm(&model));
         }
         // SystemOne's pick, made now (Auto only).
@@ -1752,6 +1788,15 @@ impl qobject::Chat {
             .map(|id| library.resolve(id))
             .unwrap_or_else(|| library.resolve(modes::CHAT.id));
         let user_prompt = self.system_prompt().to_string();
+        // Code and Agent replies use the code model, when one is set.
+        let code_model = {
+            let code = self.model_for(modes::CODE.id);
+            if code == self.model().to_string() {
+                String::new()
+            } else {
+                code
+            }
+        };
         // Agent mode works in the conversation's folder, which it needs
         // (opened on the worker: a folder can be on a slow disk).
         // No folder chosen: the conversation's own sandbox, made on the worker.
@@ -1802,6 +1847,9 @@ impl qobject::Chat {
             }
             let id = mode.id.clone();
             let _ = qt.queue(move |chat| chat.set_reply_mode(generation, &id, picked));
+            if (mode.id == modes::CODE.id || mode.id == modes::AGENT.id) && !code_model.is_empty() {
+                request.model = code_model;
+            }
             request.system_prompt = modes::system_prompt_for(&mode, &user_prompt);
             request.sampling = mode.sampling;
             let mut stream = Stream {

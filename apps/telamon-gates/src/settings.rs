@@ -15,6 +15,8 @@ pub const CONTEXT: &str = "ContextSize";
 pub const SERVER_URL: &str = "ServerUrl";
 /// "true": the context cache at 8 bits (less video memory, a little slower).
 pub const SMALL_CACHE: &str = "SmallCache";
+/// The model Code and Agent mode use; unset: the chat model.
+pub const CODE_MODEL: &str = "CodeModel";
 /// "true" lets an agent's commands use the network (off by default).
 pub const AGENT_NETWORK: &str = "AgentNetwork";
 /// "true" shows them the home folder, read-only (off by default).
