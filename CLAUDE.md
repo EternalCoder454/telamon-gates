@@ -5,7 +5,8 @@ local folders still say AtlasOS). Front end only: the model is reached
 through the `Backend` trait (`docs/BACKEND.md`); a demo backend answers until
 llama is connected. Read `docs/DESIGN.md` first and change it with the code.
 
-**Phase: Functionable** (F.S.R.P, see `~/.claude/CLAUDE.md`).
+**Phase: Performant** (F.S.R.P, see `~/.claude/CLAUDE.md`): Functionable, Secure and
+Reliable are done as of 1.0.0; measurements are in `docs/BACKEND.md` → Performance.
 
 The stack, build and look are Telamon Monitor's
 (`~/Documents/Projects/AtlasOS/AtlasOS Monitor`, github.com/EternalCoder454/atlasos-monitor).

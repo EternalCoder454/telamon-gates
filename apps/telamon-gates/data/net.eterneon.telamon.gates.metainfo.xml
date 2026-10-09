@@ -36,6 +36,19 @@
     <control>keyboard</control>
   </supports>
   <releases>
+    <release version="1.0.0" date="2026-10-09">
+      <description>
+        <p>Local models, an agent and a fleet:</p>
+        <ul>
+          <li>Runs models with llama.cpp on the graphics card, and finds and downloads them from Hugging Face</li>
+          <li>Modes for chat, stories and code, with SystemOne picking one for each message, and your own modes</li>
+          <li>Agent mode: works in a sandboxed folder with tools, and asks before it changes anything</li>
+          <li>Fleet: several agents on one goal, on a dashboard</li>
+          <li>Pictures and files in messages; edit, branch and export conversations</li>
+          <li>Faster: rewriting text up to 5 times quicker, the model ready while you type</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-10-08">
       <description>
         <p>First release: conversations with streaming replies, a sidebar grouped by day, tokens per second and a VRAM meter.</p>

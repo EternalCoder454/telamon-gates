@@ -255,7 +255,8 @@ in Settings is used as given, over plain http.
 
 ## Phase
 
-Functionable. From the PR #3 review, for their phases:
+Performant, as of 1.0.0: Functionable, Secure and Reliable are done. What
+each phase settled:
 
 - Secure (done): the server's API key goes in its environment
   (`LLAMA_API_KEY`), never on its command line, where any local user could

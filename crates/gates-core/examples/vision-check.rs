@@ -31,6 +31,7 @@ fn main() {
         }],
         sampling: None,
         tools: Vec::new(),
+        response_format: None,
     };
     let result = llama.complete(&request, &AtomicBool::new(false), &mut |e| {
         if let Event::Text(t) = e {
