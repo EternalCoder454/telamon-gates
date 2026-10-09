@@ -345,6 +345,45 @@ run_theme() {
     shot 30-fleet-planning
     kill "$app"
     wait "$app" || true
+
+    # Web search on (a SearXNG address in the settings file). The demo
+    # backend plays a model that uses it, over made-up results: a search, a
+    # page, then an answer with its sources. Then the Settings section.
+    printf '[Chat]\nWebSearch=true\nWebProvider=searxng\nWebSearxUrl=http://localhost:8080\n' >>"$XDG_CONFIG_HOME/telamon-gatesrc"
+    "$bin" >"$out/app-web.log" 2>&1 &
+    app=$!
+    sleep 4
+    win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)
+    xdotool windowsize "$win" 1512 1080
+    sleep 1.5
+    xdotool mousemove 900 978 click 1
+    xdotool type --delay 10 "What are Rust lifetimes?"
+    xdotool key Return
+    sleep 1.8
+    shot 31-web-searching
+    sleep 12
+    shot 32-web-answered
+    # A tool row opened to what the search gave the model.
+    xdotool mousemove 1451 358 click 1
+    sleep 0.6
+    shot 33-web-tool-output
+    xdotool mousemove 115 979 click 1
+    sleep 1.2
+    xdotool mousemove 900 600 click 5 click 5 click 5 click 5 click 5 click 5 click 5 click 5 click 5 click 5 click 5 click 5
+    sleep 0.6
+    shot 34-settings-web
+    # Test Connection against an instance that isn't there.
+    xdotool mousemove 1357 544 click 1
+    sleep 2.5
+    shot 35-settings-web-test-failed
+    # Brave Search needs a key, and the container has no keyring.
+    xdotool mousemove 1283 370 click 1
+    sleep 0.6
+    xdotool key Up Up Return
+    sleep 0.8
+    shot 36-settings-web-no-keyring
+    kill "$app"
+    wait "$app" || true
     rm -rf "$x"
 }
 

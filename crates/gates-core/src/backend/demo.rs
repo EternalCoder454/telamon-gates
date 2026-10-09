@@ -1,9 +1,12 @@
 //! The built-in demo backend: answers with sample Markdown, streamed a word
 //! at a time, so the window can be used and tested before a real backend is
-//! connected. Nothing leaves the computer.
+//! connected. Nothing leaves the computer. When the web tools are offered it
+//! plays a model that uses them (a search, a page, then an answer), so
+//! their rows and progress can be seen.
 
 use super::{Backend, BackendError, Event, Request};
-use crate::conversation::Role;
+use crate::conversation::{Role, ToolCall};
+use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -55,6 +58,75 @@ impl Demo {
     }
 }
 
+/// What the demo does next when the web tools are offered.
+enum Step {
+    Search(String),
+    Fetch(String),
+    Answer(Vec<String>),
+}
+
+impl Demo {
+    /// The step of a web tool loop `request` is at; None when the web tools
+    /// aren't offered.
+    fn web_step(request: &Request) -> Option<Step> {
+        let offered = |name: &str| {
+            request
+                .tools
+                .iter()
+                .any(|t| t["function"]["name"].as_str() == Some(name))
+        };
+        if !offered("web_search") {
+            return None;
+        }
+        let user = request
+            .messages
+            .iter()
+            .rposition(|m| m.role == Role::User)?;
+        let results: Vec<&str> = request.messages[user..]
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .map(|m| m.text.as_str())
+            .collect();
+        let urls = results
+            .first()
+            .map(|t| crate::web::session::urls_in(t))
+            .unwrap_or_default();
+        Some(match results.len() {
+            0 => Step::Search(
+                request.messages[user]
+                    .text
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(80)
+                    .collect(),
+            ),
+            1 if !urls.is_empty() => Step::Fetch(urls[0].clone()),
+            _ => Step::Answer(urls),
+        })
+    }
+
+    /// `text`, streamed a word at a time. False when stopped.
+    fn stream(&self, text: &str, cancel: &AtomicBool, emit: &mut dyn FnMut(Event<'_>)) -> bool {
+        let mut start = 0;
+        for (i, c) in text.char_indices() {
+            if c == ' ' && i > start {
+                if cancel.load(Ordering::Relaxed) {
+                    return false;
+                }
+                emit(Event::Text(&text[start..i]));
+                start = i;
+                std::thread::sleep(self.delay);
+            }
+        }
+        if !cancel.load(Ordering::Relaxed) {
+            emit(Event::Text(&text[start..]));
+        }
+        true
+    }
+}
+
 impl Backend for Demo {
     fn name(&self) -> String {
         "Demo (no model connected)".to_string()
@@ -74,7 +146,26 @@ impl Backend for Demo {
         cancel: &AtomicBool,
         emit: &mut dyn FnMut(Event<'_>),
     ) -> Result<(), BackendError> {
-        let reply = Demo::reply(request);
+        let step = Demo::web_step(request);
+        let reply = match &step {
+            Some(Step::Search(query)) => {
+                format!("I'll search the web for that. (The demo backend pretends: \"{query}\".)")
+            }
+            Some(Step::Fetch(_)) => "Let me read the first page.".to_string(),
+            Some(Step::Answer(urls)) => {
+                let links: String = urls
+                    .iter()
+                    .take(3)
+                    .map(|u| format!("- [{}]({u})\n", crate::tools::short_url(u)))
+                    .collect();
+                format!(
+                    "Here is what the **demo** found. None of it is real: the demo backend \
+                     makes up its results and nothing was fetched from the internet.\n\n\
+                     Sources:\n\n{links}"
+                )
+            }
+            None => Demo::reply(request),
+        };
         // Thinking, in short steps so Stop is quick.
         let mut waited = Duration::ZERO;
         while waited < self.think {
@@ -86,19 +177,22 @@ impl Backend for Demo {
             waited += step;
         }
         // Word by word, each with the space before it, as a model streams.
-        let mut start = 0;
-        for (i, c) in reply.char_indices() {
-            if c == ' ' && i > start {
-                if cancel.load(Ordering::Relaxed) {
-                    return Ok(());
-                }
-                emit(Event::Text(&reply[start..i]));
-                start = i;
-                std::thread::sleep(self.delay);
-            }
+        if !self.stream(&reply, cancel, emit) || cancel.load(Ordering::Relaxed) {
+            return Ok(());
         }
-        if !cancel.load(Ordering::Relaxed) {
-            emit(Event::Text(&reply[start..]));
+        // A web step ends by asking for a tool.
+        let call = match step {
+            Some(Step::Search(query)) => Some(("web_search", json!({"query": query}))),
+            Some(Step::Fetch(url)) => Some(("fetch_page", json!({"url": url}))),
+            _ => None,
+        };
+        if let Some((name, arguments)) = call {
+            let call = ToolCall {
+                id: format!("demo-{}", request.messages.len()),
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+            };
+            emit(Event::ToolCalls(&[call]));
         }
         Ok(())
     }
@@ -155,5 +249,48 @@ mod tests {
         })
         .unwrap();
         assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn plays_a_model_that_searches_the_web() {
+        use crate::agent::{self, Approval, Host, Tools};
+        use crate::conversation::Message;
+        use crate::web::{Canned, Session};
+
+        struct Rows(Vec<String>);
+        impl Host for Rows {
+            fn text(&mut self, _: &str) {}
+            fn speed(&mut self, _: f64) {}
+            fn calls(&mut self, _: &[crate::conversation::ToolCall]) {}
+            fn approve(&mut self, _: &crate::conversation::ToolCall, _: &str, _: &str) -> Approval {
+                Approval::Deny
+            }
+            fn result(&mut self, m: Message) {
+                self.0.push(m.summary.unwrap_or_default());
+            }
+            fn next_turn(&mut self) {}
+        }
+
+        let demo = Demo {
+            think: Duration::ZERO,
+            delay: Duration::ZERO,
+        };
+        let canned = Canned {
+            delay: Duration::ZERO,
+        };
+        let session = Session::new(&canned, &request().messages);
+        let tools = Tools {
+            workspace: None,
+            web: Some(&session),
+            max_steps: agent::WEB_STEPS,
+        };
+        let mut rows = Rows(Vec::new());
+        agent::run_tools(&demo, request(), &tools, &AtomicBool::new(false), &mut rows).unwrap();
+        // A search, then the first page; the answer follows.
+        assert_eq!(rows.0.len(), 2, "{:?}", rows.0);
+        assert!(rows.0[0].starts_with("Searched for \"What is Rust?\" (3 results)"));
+        assert!(rows.0[1].starts_with("Read example.org/demo/1"));
+        // Without the tools, nothing changes.
+        assert!(Demo::reply(&request()).contains("demo backend"));
     }
 }

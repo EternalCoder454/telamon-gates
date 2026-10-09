@@ -99,6 +99,8 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
         let mut rust = chat.pin_mut().rust_mut();
         rust.io = Some(io);
         rust.backend = Some(backend.clone());
+        // The web search key goes in the system keyring, nowhere else.
+        rust.web_keys = Some(Arc::new(gates_core::web::SecretService));
         rust.library = Some(Box::new(library_thread));
     }
     chat.pin_mut().start();

@@ -367,6 +367,33 @@ Item {
             }
         }
 
+        // What the reply is doing now ("Searching: …"). Plain text: the
+        // words come from the model and the web.
+        RowLayout {
+            visible: view.chat.generating && view.chat.status.length > 0
+            Layout.fillWidth: true
+            Layout.maximumWidth: view.columnWidth
+            Layout.alignment: Qt.AlignHCenter
+            Layout.bottomMargin: Kirigami.Units.smallSpacing
+            Layout.leftMargin: TelamonStyle.spacing
+            spacing: TelamonStyle.spacing
+
+            TelamonSpinner {
+                Layout.alignment: Qt.AlignVCenter
+                Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                Layout.preferredHeight: Kirigami.Units.iconSizes.small
+                animated: parent.visible
+            }
+            TelamonLabel {
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                opacity: 0.8
+                text: view.chat.status
+                Accessible.name: view.chat.status
+            }
+        }
+
         AgentPanel {
             visible: view.chat.mode === "agent"
             Layout.fillWidth: true
