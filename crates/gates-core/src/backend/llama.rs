@@ -78,7 +78,7 @@ pub struct LocalModel {
 pub fn chat_models(dir: &Path) -> Vec<LocalModel> {
     local_models(dir)
         .into_iter()
-        .filter(|m| m.info.decision.is_empty())
+        .filter(|m| m.info.decision.is_empty() && draft_kind(&m.name).is_none())
         .collect()
 }
 
@@ -209,6 +209,40 @@ fn strip_quant(name: &str) -> &str {
     }
     // A bare precision ("f16") is all there was.
     if is_quant(name) { "" } else { name }
+}
+
+/// A speculative-decoding draft (by its name without `.gguf`), as ggml-org
+/// publishes them beside their model: `dspark-Qwen3-8B-Q8_0` drafts for
+/// `Qwen3-8B-*`. Gives its kind; such a file can't chat on its own.
+pub fn draft_kind(name: &str) -> Option<&'static str> {
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("dspark-") {
+        Some("dspark")
+    } else if lower.starts_with("dflash-") {
+        Some("dflash")
+    } else if lower.contains("eagle3") {
+        Some("eagle3")
+    } else {
+        None
+    }
+}
+
+/// The draft that speeds `model` up, if one sits beside it: a DSpark draft
+/// of the same model, whatever the quantisation of either.
+///
+/// Measured on the RX 7900 with Qwen3-8B Q8_0, DSpark with n-gram: chat 86
+/// → 123 tok/s, a story 85 → 130, rewriting a file 82 → 826. DFlash drafts
+/// slowed chat (8% of their tokens accepted), so they aren't used.
+pub fn draft_for(model: &LocalModel, all: &[LocalModel]) -> Option<PathBuf> {
+    let wanted = strip_quant(&model.name.to_ascii_lowercase()).to_string();
+    all.iter()
+        .filter(|m| draft_kind(&m.name) == Some("dspark"))
+        .find(|m| {
+            let lower = m.name.to_ascii_lowercase();
+            let base = lower.trim_start_matches("dspark-");
+            !wanted.is_empty() && strip_quant(base) == wanted
+        })
+        .map(|m| m.path.clone())
 }
 
 /// Whether a `.gguf` (by its name without `.gguf`) is a model to chat with:
@@ -439,6 +473,7 @@ impl Llama {
                 self.models_dir.display()
             )));
         };
+        let all_models = local_models(&self.models_dir);
         // Its image projector, when one sits beside it: it reads pictures.
         let projector = projector_for(chosen, &models, &local_projectors(&self.models_dir));
         let launch = Launch {
@@ -451,6 +486,7 @@ impl Llama {
             small_cache: options.small_cache,
             threads: None,
             speculative: true,
+            draft: draft_for(chosen, &all_models),
         };
         Ok((self.server.acquire_until(&launch, cancel)?, true))
     }
@@ -966,6 +1002,29 @@ mod tests {
         assert_eq!(trimmed.messages[2].text, TRIMMED_OUTPUT);
         assert_eq!(trimmed.messages[4].text.len(), 1000);
         assert_eq!(trimmed.messages[2].tool_call_id.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn drafts_pair_with_their_model() {
+        let m = |name: &str| LocalModel {
+            name: name.into(),
+            path: PathBuf::from(format!("/m/{name}.gguf")),
+            size: 1,
+            info: Default::default(),
+        };
+        let all = vec![
+            m("Qwen3-8B-Q4_K_M"),
+            m("dspark-Qwen3-8B-Q8_0"),
+            m("dflash-Qwen3-8B-Q8_0"),
+            m("Qwen3-4B-Q4_K_M"),
+        ];
+        assert_eq!(
+            draft_for(&all[0], &all),
+            Some(PathBuf::from("/m/dspark-Qwen3-8B-Q8_0.gguf"))
+        );
+        assert_eq!(draft_for(&all[3], &all), None);
+        assert_eq!(draft_kind("dspark-Qwen3-8B-Q8_0"), Some("dspark"));
+        assert_eq!(draft_kind("Qwen3-8B-Q8_0"), None);
     }
 
     #[test]

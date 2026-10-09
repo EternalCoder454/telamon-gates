@@ -408,6 +408,20 @@ Qwen3-4B-Instruct-2507 Q4_K_M unless said; temperature 0; scripts in
 - **A small draft model** (Qwen3-0.6B Q8_0 for the 4B) is slower: only
   27–36% of its tokens are accepted, and chat drops to 126 tok/s. It is not
   used.
+- **Trained drafts.** A `dspark-<model>` file beside its model (as ggml-org
+  publishes them) is used with n-gram drafting (`llama::draft_for`). DFlash
+  drafts made chat slower and aren't used. Qwen3-8B Q8_0, tok/s:
+
+  | Draft | Chat | Rewrite a file | Story |
+  |---|---|---|---|
+  | none | 86 | 82 | 85 |
+  | n-gram | 86 | 726 | 86 |
+  | DFlash | 70 (8% accepted) | 310 | 68 |
+  | DSpark | 122 | 281 | 129 |
+  | **DSpark + n-gram** | **123** | **826** | **130** |
+
+  Drafts are kept out of the chat model list, and the Models page shows them
+  as Speed-Up.
 - **Context cache precision** (Settings → Smaller Context Cache, off by
   default). A 32k context costs 7,104 MiB at f16 against 4,954 MiB at q8_0
   (−30%), and generation drops from 154 to 139 tok/s (−10%).

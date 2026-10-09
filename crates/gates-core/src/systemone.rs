@@ -179,6 +179,7 @@ impl SystemOne {
                 (cpus / 2).clamp(1, 16) as u32
             }),
             speculative: false,
+            draft: None,
         }
     }
 

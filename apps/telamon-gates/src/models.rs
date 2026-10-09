@@ -189,7 +189,12 @@ impl qobject::ModelLibrary {
                         quant,
                         m.info.size_label.clone(),
                         m.size as f64,
-                        m.info.decision.clone(),
+                        // "draft": a speed-up draft for another model.
+                        if gates_core::backend::llama::draft_kind(&m.name).is_some() {
+                            "draft".to_string()
+                        } else {
+                            m.info.decision.clone()
+                        },
                         f64::from(m.info.context_length),
                         flag(m.info.tools),
                         flag(projector_for(m, &found, &projectors).is_some()),

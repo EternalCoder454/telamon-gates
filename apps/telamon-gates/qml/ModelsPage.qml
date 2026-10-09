@@ -119,7 +119,7 @@ TelamonPage {
                 readonly property bool images: (page.models.vision[index] ?? 0) > 0
 
                 title: modelData
-                subtitle: [row.kind.length > 0 ? qsTr("Decision model") : "", page.models.quants[index], page.models.labels[index], row.kind.length === 0 && row.context > 0 ? qsTr("%1 context").arg(page.tokens(row.context)) : "", page.size(bytes)].filter(s => s && s.length > 0).join(" · ")
+                subtitle: [row.kind === "draft" ? qsTr("Draft that speeds up its model") : row.kind.length > 0 ? qsTr("Decision model") : "", page.models.quants[index], page.models.labels[index], row.kind.length === 0 && row.context > 0 ? qsTr("%1 context").arg(page.tokens(row.context)) : "", page.size(bytes)].filter(s => s && s.length > 0).join(" · ")
                 leading: [
                     Symbol {
                         icon: Symbols.Psychology
@@ -146,8 +146,8 @@ TelamonPage {
                     y: parent ? Math.round((parent.height - height) / 2) : 0
                     visible: row.kind.length > 0
                     type: "accent"
-                    symbol: Symbols.Bolt
-                    text: qsTr("SystemOne")
+                    symbol: row.kind === "draft" ? Symbols.Speed : Symbols.Bolt
+                    text: row.kind === "draft" ? qsTr("Speed-Up") : qsTr("SystemOne")
                 }
                 ToolbarButton {
                     y: parent ? Math.round((parent.height - height) / 2) : 0

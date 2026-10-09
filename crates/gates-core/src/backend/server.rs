@@ -51,6 +51,9 @@ pub struct Launch {
     /// go. Free (about 16 MB), and 5× faster where text repeats, as when an
     /// agent rewrites a file; no slower elsewhere.
     pub speculative: bool,
+    /// A DSpark draft model, used with n-gram drafting in place of
+    /// `--spec-default` alone (see `llama::draft_for`).
+    pub draft: Option<PathBuf>,
 }
 
 impl Launch {
@@ -81,8 +84,19 @@ impl Launch {
         if let Some(n) = self.context {
             args.extend(["--ctx-size".into(), n.to_string()]);
         }
-        if self.speculative {
-            args.push("--spec-default".into());
+        match (&self.draft, self.speculative) {
+            (Some(draft), _) => args.extend([
+                "--model-draft".into(),
+                draft.to_string_lossy().into_owned(),
+                "--spec-type".into(),
+                "draft-dspark,ngram-mod".into(),
+                "--spec-draft-n-max".into(),
+                "7".into(),
+                "--flash-attn".into(),
+                "on".into(),
+            ]),
+            (None, true) => args.push("--spec-default".into()),
+            (None, false) => {}
         }
         if let Some(n) = self.threads {
             args.extend([
@@ -468,6 +482,7 @@ mod tests {
             small_cache: false,
             threads: None,
             speculative: false,
+            draft: None,
         }
     }
 
