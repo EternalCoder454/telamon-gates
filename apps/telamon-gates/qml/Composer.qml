@@ -240,7 +240,8 @@ ColumnLayout {
                 ["chat", qsTr("Chat"), Symbols.Chat, qsTr("Questions, advice and everyday talk")],
                 ["story", qsTr("Story"), Symbols.AutoStories, qsTr("Creative writing: warmer, and keeps to your story")],
                 ["code", qsTr("Code"), Symbols.Code, qsTr("Programming: careful and precise")],
-                ["agent", qsTr("Agent"), Symbols.SmartToy, qsTr("Works in a folder with tools: reads files, and asks before it edits them or runs commands")]
+                ["agent", qsTr("Agent"), Symbols.SmartToy, qsTr("Works in a folder with tools: reads files, and asks before it edits them or runs commands")],
+                ["research", qsTr("Deep Research"), Symbols.TravelExplore, qsTr("Searches the web and reads pages to write a report with its sources")]
             ]
             readonly property int ownAt: composer.chat.modeIds.indexOf(composer.chat.mode)
             readonly property var current: modeButton.builtIn.find(c => c[0] === composer.chat.mode) ?? ["", modeButton.ownAt >= 0 ? composer.chat.modeNames[modeButton.ownAt] : qsTr("Chat"), Symbols.EditNote, ""]
@@ -289,24 +290,40 @@ ColumnLayout {
                     checked: composer.chat.mode === "agent"
                     onTriggered: composer.chat.chooseMode("agent")
                 }
+                ContextMenuItem {
+                    text: modeButton.builtIn[5][1]
+                    symbol: modeButton.builtIn[5][2]
+                    radio: true
+                    // Needs Web Search and a model that can call tools.
+                    enabled: composer.chat.researchNote.length === 0
+                    checked: composer.chat.mode === "research"
+                    onTriggered: composer.chat.chooseMode("research")
+                }
+                // What Deep Research is missing, when it is.
+                ContextMenuItem {
+                    visible: composer.chat.researchNote.length > 0
+                    enabled: false
+                    text: composer.chat.researchNote
+                    symbol: Symbols.Info
+                }
                 ContextMenuSeparator {
-                    visible: composer.chat.modeIds.length > 4
+                    visible: composer.chat.modeIds.length > 5
                 }
             }
 
             // The user's own modes, after the separator.
             Instantiator {
-                model: composer.chat.modeIds.slice(4)
+                model: composer.chat.modeIds.slice(5)
                 delegate: ContextMenuItem {
                     required property int index
                     required property string modelData
-                    text: composer.chat.modeNames[index + 4] ?? ""
+                    text: composer.chat.modeNames[index + 5] ?? ""
                     symbol: Symbols.EditNote
                     radio: true
                     checked: composer.chat.mode === modelData
                     onTriggered: composer.chat.chooseMode(modelData)
                 }
-                onObjectAdded: (index, object) => modeMenu.insertItem(6 + index, object)
+                onObjectAdded: (index, object) => modeMenu.insertItem(8 + index, object)
                 onObjectRemoved: (index, object) => modeMenu.removeItem(object)
             }
         }

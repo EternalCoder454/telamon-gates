@@ -346,6 +346,42 @@ run_theme() {
     kill "$app"
     wait "$app" || true
 
+    # Deep Research: its menu entry says what it needs while Web Search is
+    # off; then, with it on (and the demo backend playing the model, over
+    # made-up pages), a whole run: planning, searching, reading, notes, the
+    # report with its linked citations and its sources.
+    "$bin" >"$out/app-research-off.log" 2>&1 &
+    app=$!
+    sleep 4
+    win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)
+    xdotool windowsize "$win" 1512 1080
+    sleep 1.5
+    xdotool mousemove 470 1035 click 1
+    sleep 0.8
+    shot 37-research-menu-no-web
+    kill "$app"
+    wait "$app" || true
+    printf '[Chat]\nWebSearch=true\nWebProvider=searxng\nWebSearxUrl=http://localhost:8080\n' >>"$XDG_CONFIG_HOME/telamon-gatesrc"
+    "$bin" >"$out/app-research.log" 2>&1 &
+    app=$!
+    sleep 4
+    xdotool mousemove 470 1035 click 1
+    sleep 0.8
+    shot 38-research-menu
+    xdotool mousemove 520 985 click 1
+    sleep 0.6
+    xdotool mousemove 900 978 click 1
+    xdotool type --delay 10 "How do heat pumps work in cold weather?"
+    xdotool key Return
+    sleep 6
+    shot 39-research-reading
+    sleep 8
+    shot 40-research-searching
+    sleep 14
+    shot 41-research-report
+    kill "$app"
+    wait "$app" || true
+
     # Web search on (a SearXNG address in the settings file). The demo
     # backend plays a model that uses it, over made-up results: a search, a
     # page, then an answer with its sources. Then the Settings section.

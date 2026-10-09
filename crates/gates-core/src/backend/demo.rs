@@ -107,6 +107,69 @@ impl Demo {
         })
     }
 
+    /// The reply to one of Deep Research's three kinds of request (its plan,
+    /// its notes, its report), made up from what the request holds; None for
+    /// any other.
+    fn research_reply(request: &Request) -> Option<String> {
+        use crate::research::{NOTES_PROMPT, REPORT_RULES};
+        let user = request.messages.last().map(|m| m.text.as_str())?;
+        if request.response_format.is_some() {
+            let asked = user.strip_prefix("Question: ").unwrap_or(user);
+            let topic: String = asked
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim_end_matches('?')
+                .chars()
+                .take(60)
+                .collect();
+            return Some(
+                json!({"questions": [
+                    format!("What is known about {topic}?"),
+                    format!("What are the main points of view on {topic}?"),
+                    format!("What do recent sources say about {topic}?"),
+                ]})
+                .to_string(),
+            );
+        }
+        if request.system_prompt == NOTES_PROMPT {
+            let page = user
+                .split_once("Pages:")
+                .and_then(|(_, pages)| pages.split_once('['))
+                .and_then(|(_, rest)| rest.split_once(']'))
+                .map_or("1", |(n, _)| n);
+            return Some(format!(
+                "- A made-up fact from the page [{page}].\n- The demo backend wrote these notes; \
+                 nothing was read from the internet."
+            ));
+        }
+        if request.system_prompt.ends_with(REPORT_RULES) {
+            let k = user
+                .split_once("Sources (cite by number):")
+                .map_or(0, |(_, list)| {
+                    list.lines().filter(|l| l.starts_with('[')).count()
+                });
+            let cite = |n: usize| {
+                if n <= k {
+                    format!(" [{n}]")
+                } else {
+                    String::new()
+                }
+            };
+            return Some(format!(
+                "# Report from the demo\n\n## Summary\n\nThis report is made up by the demo \
+                 backend: its pages, notes and sources are not real{}.\n\n## Findings\n\n\
+                 - The plan split the question into three parts and each was searched in turn{}.\n\
+                 - Pages were read and short notes taken from each{}.\n\n## Limits\n\n\
+                 Nothing here came from the internet, so none of it should be relied on.\n",
+                cite(1),
+                cite(2),
+                cite(3)
+            ));
+        }
+        None
+    }
+
     /// `text`, streamed a word at a time. False when stopped.
     fn stream(&self, text: &str, cancel: &AtomicBool, emit: &mut dyn FnMut(Event<'_>)) -> bool {
         let mut start = 0;
@@ -164,7 +227,7 @@ impl Backend for Demo {
                      Sources:\n\n{links}"
                 )
             }
-            None => Demo::reply(request),
+            None => Demo::research_reply(request).unwrap_or_else(|| Demo::reply(request)),
         };
         // Thinking, in short steps so Stop is quick.
         let mut waited = Duration::ZERO;
@@ -289,8 +352,75 @@ mod tests {
         // A search, then the first page; the answer follows.
         assert_eq!(rows.0.len(), 2, "{:?}", rows.0);
         assert!(rows.0[0].starts_with("Searched for \"What is Rust?\" (3 results)"));
-        assert!(rows.0[1].starts_with("Read example.org/demo/1"));
+        assert!(rows.0[1].starts_with("Read example.org/demo/what-is-rust/1"));
         // Without the tools, nothing changes.
         assert!(Demo::reply(&request()).contains("demo backend"));
+    }
+
+    #[test]
+    fn plays_a_whole_deep_research_run() {
+        use crate::agent::{Approval, Host};
+        use crate::conversation::{Message, ToolCall};
+        use crate::research::{self, Limits};
+        use crate::web::Canned;
+
+        #[derive(Default)]
+        struct Rows {
+            statuses: Vec<String>,
+            replaced: Option<String>,
+        }
+        impl Host for Rows {
+            fn text(&mut self, _: &str) {}
+            fn speed(&mut self, _: f64) {}
+            fn calls(&mut self, _: &[ToolCall]) {}
+            fn approve(&mut self, _: &ToolCall, _: &str, _: &str) -> Approval {
+                Approval::Deny
+            }
+            fn result(&mut self, _: Message) {}
+            fn next_turn(&mut self) {}
+            fn status(&mut self, line: &str) {
+                self.statuses.push(line.to_string());
+            }
+            fn replace(&mut self, text: &str) {
+                self.replaced = Some(text.to_string());
+            }
+        }
+
+        let demo = Demo {
+            think: Duration::ZERO,
+            delay: Duration::ZERO,
+        };
+        let canned = Canned {
+            delay: Duration::ZERO,
+        };
+        let mut rows = Rows::default();
+        research::run(
+            &demo,
+            &canned,
+            request(),
+            Limits::default(),
+            &AtomicBool::new(false),
+            &mut rows,
+        )
+        .unwrap();
+        let report = rows.replaced.unwrap();
+        // Cited, linked to pages that were read, with a list of them.
+        assert!(
+            report.contains("[\\[1\\]](https://example.org/demo/"),
+            "{report}"
+        );
+        let sources = report.split("## Sources\n\n").nth(1).unwrap();
+        assert!(
+            sources.lines().filter(|l| !l.is_empty()).count() >= 6,
+            "{sources}"
+        );
+        assert_eq!(
+            rows.statuses.first().map(String::as_str),
+            Some("Planning the research")
+        );
+        assert_eq!(
+            rows.statuses.last().map(String::as_str),
+            Some("Writing the report")
+        );
     }
 }

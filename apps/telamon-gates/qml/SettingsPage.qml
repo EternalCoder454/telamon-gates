@@ -201,7 +201,7 @@ TelamonPage {
                 id: modeRow
                 required property int index
                 required property string modelData
-                readonly property bool own: index >= 4
+                readonly property bool own: index >= 5
                 readonly property real temperature: page.chat.modeTemps[index] ?? -1
                 readonly property string prompt: page.chat.modePrompts[index] ?? ""
 
@@ -211,7 +211,7 @@ TelamonPage {
                 subtitle: (modeRow.prompt.length === 0 ? qsTr("No prompt of its own") : modeRow.gist.length > 70 ? modeRow.gist.slice(0, 70).trim() + "…" : modeRow.gist) + " · " + (modeRow.temperature < 0 ? qsTr("the model's temperature") : qsTr("temperature %1").arg(Number(modeRow.temperature).toLocaleString(Qt.locale(), "f", 2)))
                 leading: [
                     Symbol {
-                        icon: modeRow.modelData === "story" ? Symbols.AutoStories : modeRow.modelData === "code" ? Symbols.Code : modeRow.modelData === "agent" ? Symbols.SmartToy : modeRow.own ? Symbols.EditNote : Symbols.Chat
+                        icon: modeRow.modelData === "story" ? Symbols.AutoStories : modeRow.modelData === "code" ? Symbols.Code : modeRow.modelData === "agent" ? Symbols.SmartToy : modeRow.modelData === "research" ? Symbols.TravelExplore : modeRow.own ? Symbols.EditNote : Symbols.Chat
                         color: TelamonStyle.accent
                     }
                 ]

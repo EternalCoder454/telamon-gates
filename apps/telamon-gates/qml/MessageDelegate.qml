@@ -78,14 +78,14 @@ Item {
         Accessible.name: modeText.text
 
         Symbol {
-            icon: message.mode === "story" ? Symbols.AutoStories : message.mode === "code" ? Symbols.Code : message.mode === "agent" ? Symbols.SmartToy : Symbols.Chat
+            icon: message.mode === "story" ? Symbols.AutoStories : message.mode === "code" ? Symbols.Code : message.mode === "agent" ? Symbols.SmartToy : message.mode === "research" ? Symbols.TravelExplore : Symbols.Chat
             size: Math.round(Kirigami.Units.iconSizes.small * 1.2)
             color: message.picked ? TelamonStyle.accent : Kirigami.Theme.disabledTextColor
         }
         TelamonLabel {
             id: modeText
             textStyle: TelamonLabel.Caption
-            readonly property string name: message.mode === "story" ? qsTr("Story") : message.mode === "code" ? qsTr("Code") : message.mode === "agent" ? qsTr("Agent") : qsTr("Chat")
+            readonly property string name: message.mode === "story" ? qsTr("Story") : message.mode === "code" ? qsTr("Code") : message.mode === "agent" ? qsTr("Agent") : message.mode === "research" ? qsTr("Deep Research") : qsTr("Chat")
             text: message.picked ? qsTr("%1, picked by SystemOne").arg(name) : name
         }
     }
