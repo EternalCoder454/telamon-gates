@@ -39,6 +39,8 @@ pub struct Launch {
     /// decision model reads each prompt in one micro-batch, so it must hold
     /// the longest.
     pub batch: Option<u32>,
+    /// The model's image projector (`--mmproj`), so it reads pictures.
+    pub projector: Option<PathBuf>,
 }
 
 impl Launch {
@@ -68,6 +70,9 @@ impl Launch {
         }
         if let Some(n) = self.context {
             args.extend(["--ctx-size".into(), n.to_string()]);
+        }
+        if let Some(p) = &self.projector {
+            args.extend(["--mmproj".into(), p.to_string_lossy().into_owned()]);
         }
         if let Some(n) = self.batch {
             args.extend([
@@ -404,6 +409,7 @@ mod tests {
             gpu_layers: Some(30),
             context: Some(8192),
             batch: None,
+            projector: None,
         }
     }
 

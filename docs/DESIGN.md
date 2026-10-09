@@ -63,6 +63,19 @@ beside it.
   Cancel. A download goes to a hidden `.name.part`, resumes from it, is
   checked against the sha256 Hugging Face publishes, and only then is renamed
   into place; the chat's model list follows.
+- **Attachments**:
+  - **Adding them:** Attach Files… under the message field, or drop files on
+    the chat. Up to 8 a message, shown as removable chips above the field.
+  - **Text files:** read whole (128 KB each, 256 KB a message) and sent as
+    `<file name="…">` blocks after your text.
+  - **Pictures** (PNG, JPEG, GIF, WebP, BMP, by their first bytes, 10 MB at
+    most) are copied into `$XDG_DATA_HOME/telamon-gates/attachments`. They
+    are sent as image parts only from there, so a conversation file can't
+    point at another file.
+  - **In the chat:** under your message, a picture shows as a thumbnail and
+    a text file as a chip.
+  - **Image models:** a model with a projector beside it starts with
+    `--mmproj` and reads them.
 - **Modes** (in Settings): a row per mode, with the start of its prompt and
   its temperature, and Edit…; Add a Mode. The dialog has the name (the
   user's own modes only), the system prompt, and the temperature: the

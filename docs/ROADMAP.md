@@ -76,7 +76,9 @@ its place, and the ones left out are listed with the reason.
 7. **Attachments.** Text and code files go into the message. Retrieval with
    embeddings over many documents comes later, if attachments prove too
    small.
+   - **Built.**
 8. **Images.** Attach an image for models with a projector (`--mmproj`).
+   - **Built:** tested with SmolVLM-256M and its projector.
 
 ## Left out
 

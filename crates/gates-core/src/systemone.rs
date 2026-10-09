@@ -123,6 +123,7 @@ impl SystemOne {
             gpu_layers: (self.kind == "laya").then_some(0),
             context: Some(CONTEXT),
             batch: Some(CONTEXT),
+            projector: None,
         }
     }
 

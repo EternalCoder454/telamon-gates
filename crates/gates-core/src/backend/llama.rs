@@ -429,12 +429,15 @@ impl Llama {
                 self.models_dir.display()
             )));
         };
+        // Its image projector, when one sits beside it: it reads pictures.
+        let projector = projector_for(chosen, &models, &local_projectors(&self.models_dir));
         let launch = Launch {
             binary,
             model: chosen.path.clone(),
             gpu_layers: (options.gpu_layers > 0).then_some(options.gpu_layers),
             context: Some(context_for(options.context, chosen.info.context_length)),
             batch: None,
+            projector,
         };
         Ok((self.server.acquire(&launch)?, true))
     }

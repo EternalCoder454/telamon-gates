@@ -203,7 +203,7 @@ mod tests {
         let kept = PathBuf::from(p.image.clone().unwrap());
         assert_eq!(kept.parent(), Some(store.as_path()));
         assert_eq!(fs::read(&kept).unwrap(), png);
-        let urls = image_urls(&[p.clone()], &store);
+        let urls = image_urls(std::slice::from_ref(&p), &store);
         assert!(urls[0].starts_with("data:image/png;base64,iVBORw0KGgo"));
         // A picture outside Gates' folder is never read.
         let elsewhere = Attachment {
