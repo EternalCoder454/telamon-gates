@@ -121,6 +121,12 @@ from advice on trust:
   Vulkan/RDNA3 evidence for a larger `-ub`; benchmark before changing.
 - **Context shift** stays off (the default). With `--keep 0` it can drop the
   system prompt. Gates trims long conversations instead (see below).
+- **Automatic context** is Gates' own choice, not llama.cpp's fit. Left to
+  itself, fit filled the RX 7900 with cache: a 129,024-token context for
+  Qwen3-4B, 23.1 of 24 GiB in use, and no room for Kev. Automatic is now
+  32,768 tokens, or the model's own context (`<arch>.context_length`) if
+  smaller (`context_for`): 9.9 GiB in use for the same model. GPU layers are
+  still fit's. Settings can set a bigger context.
 
 ### Long conversations
 
@@ -208,4 +214,81 @@ which is what Gates does. Measured 2026-10-09, telamon-llama 0.6.0:
   accuracy from 3/12 to 6/12.
 - **The threshold:** anywhere from 0.5 to 0.65 scored the same on this set, so
   it stays at 0.5 rather than being tuned to 36 messages.
+
+## Agent mode and tools
+
+**Agent** is a fourth mode, pinned by the user and never picked by
+SystemOne, so no tool runs unless the user asked for an agent. It works in
+one folder per conversation (`Conversation.workspace`), chosen above the
+composer.
+
+**The tools** (`tools.rs`) are plain Rust run inside Gates: no MCP, no
+interpreter, no server.
+
+| Tool | Does | Runs |
+|---|---|---|
+| `list_dir` | names, kinds and sizes in a folder | at once |
+| `read_file` | text with line numbers, 400 lines a part (2,000 at most) | at once |
+| `search` | a string in text files (smart case), `file:line: text` | at once |
+| `find_files` | paths containing a string, or `*`/`?` patterns | at once |
+| `write_file` | creates or replaces a file (atomic, keeps permissions) | after the user allows it |
+| `edit_file` | replaces text that is in the file once | after the user allows it |
+| `run_command` | `/bin/sh -c` in the folder, 60 s (300 s at most) | after the user allows it, every time |
+
+The limits:
+- **The folder:** `/`, a top folder (`/etc`) and the home folder or one
+  above it are refused as workspaces, since reading tools don't ask.
+- **Paths:** every path is resolved against the real folders, links
+  included. One that leaves the workspace is refused, and new folders are
+  made only under a real folder inside it. Writes go through a fresh
+  temporary file with a random name (`O_EXCL`, `O_NOFOLLOW`), so a link a
+  repository planted can't redirect them.
+- **Commands** run in their own process group: a timeout or Stop ends
+  everything they started, and leftovers end when they do. Their output
+  comes through a pipe, kept in memory as its first 8 KiB and last 22 KiB,
+  so nothing fills the disk.
+- **Asking:** the card shows the folder, the time limit, the line and
+  character count, and the full text wrapped. Hidden characters (controls,
+  bidi marks) show as `⟨U+202E⟩` and are called out. Arguments that can't
+  run are refused without asking. "Allow All Edits in This Reply" doesn't
+  cover hidden files and folders (`.git`, `.envrc`), build files (Makefile,
+  package.json, Cargo.toml…), scripts and programs: those always ask.
+- **Walks:** a search or find skips `.git`, `target`, `node_modules`, build
+  output and hidden folders, and doesn't follow links.
+- **Sizes:** a result is 32 KiB at most, and a file read is 4 MiB at most.
+- **Forgiving edits:** when the text isn't in the file as written,
+  `edit_file` takes off the line numbers models copy from `read_file`, then
+  lets lines match whatever their indentation; it must still be there once.
+- **Long runs:** to fit the context, whole turns before the task go first,
+  then the oldest tools' output gives way to a note. The task and every
+  call with its result stay (`trim_to_budget`).
+- **One mode per run:** the mode and folder can't change while it runs,
+  and Auto never continues in Agent.
+
+**The loop** (`agent.rs`):
+- **Each step:** the request carries the tools' schema. llama-server
+  (`--jinja`) streams `delta.tool_calls` in pieces, and `llama.rs` hands
+  them on whole (`Event::ToolCalls`) at `[DONE]`. Reads run at once; a
+  write or a command waits for Allow, Deny, or "Allow All Edits in This
+  Reply" (commands always ask). Each result goes back as a `tool` message,
+  and the model goes on.
+- **Limits:** the loop stops after 25 steps. Stop answers any waiting
+  question with no.
+- **Stopped runs:** `repair` gives calls left without a result "Stopped
+  before it ran.", so the conversation can still be sent.
+- **Cost:** llama-server's prompt cache keeps the conversation's prefix, so
+  each step only reads what is new.
+
+**Which models can:** a model's GGUF chat template has to mention tools
+(`gguf.rs` reads `tokenizer.chat_template`). For others the window says the
+agent can only talk.
+
+**`examples/agent-check`** runs a real model on a small Python project (change
+a greeting, add a run line to the README). Measured 2026-10-09 with
+Qwen3-4B-Instruct-2507 Q4_K_M on the RX 7900, about 170 tokens/s:
+
+| Version | Steps | Failed edits | Time | Done |
+|---|---|---|---|---|
+| exact `edit_file` | 11 | 4 | 10.0 s | yes |
+| forgiving `edit_file` (3 runs) | 6 | 0 | 5.5 s (median) | 3 of 3 |
 

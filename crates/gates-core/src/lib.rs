@@ -3,6 +3,7 @@
 //! chat backend (llama, or anything else) implements. The app crate
 //! (`apps/telamon-gates`) only moves these to and from QML.
 
+pub mod agent;
 pub mod backend;
 pub mod conversation;
 pub mod gguf;
@@ -11,6 +12,7 @@ pub mod markdown;
 pub mod modes;
 pub mod store;
 pub mod systemone;
+pub mod tools;
 pub mod vram;
 
 pub use backend::{Backend, BackendError, Event, Options, Request};

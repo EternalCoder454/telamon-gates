@@ -198,7 +198,8 @@ ColumnLayout {
                 ["auto", qsTr("Auto"), composer.chat.systemOneReady ? qsTr("SystemOne picks Chat, Story or Code for each message") : qsTr("Chat, until SystemOne has a decision model (Settings)")],
                 ["chat", qsTr("Chat"), qsTr("Questions, advice and everyday talk")],
                 ["story", qsTr("Story"), qsTr("Creative writing: warmer, and keeps to your story")],
-                ["code", qsTr("Code"), qsTr("Programming: careful and precise")]
+                ["code", qsTr("Code"), qsTr("Programming: careful and precise")],
+                ["agent", qsTr("Agent"), qsTr("Works in a folder with tools: reads files, and asks before it edits them or runs commands")]
             ]
 
             model: modes.choices.map(c => ({
@@ -206,6 +207,8 @@ ColumnLayout {
                         toolTip: c[2]
                     }))
             currentIndex: Math.max(0, modes.choices.findIndex(c => c[0] === composer.chat.mode))
+            // Not while a reply runs: an agent keeps its mode and folder.
+            enabled: !composer.chat.generating
             onActivated: index => composer.chat.chooseMode(modes.choices[index][0])
             Accessible.name: qsTr("Mode")
         }

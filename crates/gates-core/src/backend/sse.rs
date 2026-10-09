@@ -11,6 +11,14 @@ pub enum Line {
     Text(String),
     /// The server's tokens per second (llama-server's last chunk carries it).
     Speed(f64),
+    /// A piece of a tool call: the call at `index` gets its id and name
+    /// once, then its arguments a piece at a time.
+    ToolCall {
+        index: usize,
+        id: Option<String>,
+        name: Option<String>,
+        arguments: String,
+    },
     /// The server reports an error in the stream.
     Error(String),
     /// The stream is over.
@@ -45,6 +53,20 @@ pub fn parse(line: &str) -> Vec<Line> {
         .unwrap_or("");
     if !content.is_empty() {
         out.push(Line::Text(content.to_string()));
+    }
+    if let Some(calls) = json
+        .pointer("/choices/0/delta/tool_calls")
+        .and_then(Value::as_array)
+    {
+        for call in calls {
+            let text = |p: &str| call.pointer(p).and_then(Value::as_str).map(str::to_string);
+            out.push(Line::ToolCall {
+                index: call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
+                id: text("/id"),
+                name: text("/function/name"),
+                arguments: text("/function/arguments").unwrap_or_default(),
+            });
+        }
     }
     if let Some(speed) = json
         .pointer("/timings/predicted_per_second")
@@ -133,6 +155,30 @@ mod tests {
         assert_eq!(
             parse(r#"error: {"code":400,"message":"bad request"}"#),
             vec![Line::Error("bad request".into())]
+        );
+    }
+
+    #[test]
+    fn tool_calls_come_in_pieces() {
+        let first = r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"read_file"}}]}}]}"#;
+        let more = r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":"}}]}}]}"#;
+        assert_eq!(
+            parse(first),
+            vec![Line::ToolCall {
+                index: 0,
+                id: Some("c1".into()),
+                name: Some("read_file".into()),
+                arguments: String::new()
+            }]
+        );
+        assert_eq!(
+            parse(more),
+            vec![Line::ToolCall {
+                index: 0,
+                id: None,
+                name: None,
+                arguments: "{\"path\":".into()
+            }]
         );
     }
 

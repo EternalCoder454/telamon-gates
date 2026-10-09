@@ -115,6 +115,7 @@ mod tests {
             system_prompt: String::new(),
             messages: vec![Message::user("What is Rust?")],
             sampling: None,
+            tools: Vec::new(),
         }
     }
 

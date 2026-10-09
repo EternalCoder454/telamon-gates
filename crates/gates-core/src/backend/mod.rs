@@ -43,6 +43,8 @@ pub struct Request {
     pub messages: Vec<Message>,
     /// The mode's sampling; None for the model's own defaults.
     pub sampling: Option<crate::modes::Sampling>,
+    /// Tools the model may call (OpenAI `tools`); empty for none.
+    pub tools: Vec<serde_json::Value>,
 }
 
 /// What a backend streams while it answers.
@@ -56,6 +58,9 @@ pub enum Event<'a> {
     /// second (llama-server's `timings.predicted_per_second`). Once sent, it
     /// is shown in place of the window's count.
     Speed(f64),
+    /// The reply ends by asking for these tools to run (Agent mode), sent
+    /// once, whole, after its text.
+    ToolCalls(&'a [crate::conversation::ToolCall]),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

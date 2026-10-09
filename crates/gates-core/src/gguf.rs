@@ -22,6 +22,11 @@ pub struct Info {
     /// which answers typed questions through `/v1/systemone` and writes no
     /// text; "" for a model that chats.
     pub decision: String,
+    /// Its chat template takes tools (Agent mode can use it).
+    pub tools: bool,
+    /// The context it was trained for, in tokens (`<arch>.context_length`);
+    /// 0 when it doesn't say.
+    pub context_length: u32,
 }
 
 /// The longest string read whole; longer ones are skipped.
@@ -52,15 +57,24 @@ pub fn read(path: &Path) -> io::Result<Info> {
     let keys = u64_le(&mut r)?.min(MAX_KEYS);
     let mut info = Info::default();
     let mut file_type = None;
+    // `<arch>.context_length`, once the architecture is known (it comes first).
+    let mut context_key: Option<String> = None;
     for _ in 0..keys {
         let Ok(key) = string(&mut r) else { break };
         let Ok(kind) = u32_le(&mut r) else { break };
         let wanted = matches!(
             key.as_deref(),
-            Some("general.name" | "general.size_label" | "general.file_type")
-        ) || key
-            .as_deref()
-            .is_some_and(|k| k.ends_with(".decision.type"));
+            Some(
+                "general.name"
+                    | "general.size_label"
+                    | "general.file_type"
+                    | "general.architecture"
+            )
+        ) || key.as_deref().is_some_and(|k| {
+            k.ends_with(".decision.type")
+                || k == "tokenizer.chat_template"
+                || k.ends_with(".context_length")
+        });
         if !wanted {
             if skip_value(&mut r, kind, 0).is_err() {
                 break;
@@ -69,6 +83,13 @@ pub fn read(path: &Path) -> io::Result<Info> {
         }
         match (key.as_deref(), kind) {
             (Some("general.file_type"), 4) => file_type = u32_le(&mut r).ok(),
+            (Some(k), 4) if Some(k) == context_key.as_deref() => {
+                info.context_length = u32_le(&mut r).unwrap_or(0);
+            }
+            (Some(k), 10) if Some(k) == context_key.as_deref() => {
+                info.context_length =
+                    u64_le(&mut r).map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX));
+            }
             (Some(k), 8) => {
                 let Ok(value) = string(&mut r) else { break };
                 let value = value.unwrap_or_default();
@@ -76,8 +97,12 @@ pub fn read(path: &Path) -> io::Result<Info> {
                     info.name = value;
                 } else if k == "general.size_label" {
                     info.size_label = value;
+                } else if k == "general.architecture" {
+                    context_key = Some(format!("{value}.context_length"));
                 } else if k.ends_with(".decision.type") {
                     info.decision = value;
+                } else if k == "tokenizer.chat_template" {
+                    info.tools = value.contains("tools");
                 }
             }
             _ => {
@@ -297,8 +322,19 @@ mod tests {
                 size_label: "135M".into(),
                 quant: "Q4_K_M".into(),
                 decision: String::new(),
+                tools: false,
+                context_length: 8192,
             }
         );
+        let _ = std::fs::remove_file(path);
+        // A template that takes tools.
+        let bytes = header(&[(
+            "tokenizer.chat_template",
+            8,
+            gguf_string("{% if tools %}<tools>{{ tools }}</tools>{% endif %}"),
+        )]);
+        let path = write("tools.gguf", &bytes);
+        assert!(read(&path).unwrap().tools);
         let _ = std::fs::remove_file(path);
         // A decision model says so under its architecture's name.
         let bytes = header(&[
