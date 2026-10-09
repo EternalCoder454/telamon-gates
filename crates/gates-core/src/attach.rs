@@ -52,7 +52,7 @@ pub fn read(path: &Path, store: &Path) -> Result<Attachment, String> {
         if meta.len() > MAX_IMAGE {
             return Err(format!("{name} is too big (10 MB at most)."));
         }
-        fs::create_dir_all(store).map_err(|e| format!("Can't keep {name}: {e}."))?;
+        crate::store::private_dir(store).map_err(|e| format!("Can't keep {name}: {e}."))?;
         let kept = store.join(format!("{}.{kind}", random_name()?));
         copy_bounded(path, &kept, MAX_IMAGE).map_err(|e| format!("Can't keep {name}: {e}."))?;
         return Ok(Attachment {

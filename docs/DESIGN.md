@@ -216,10 +216,12 @@ in Settings is used as given, over plain http.
 
 Functionable. From the PR #3 review, for their phases:
 
-- Secure: the server's API key is on its command line (readable in
-  `/proc` by other local users); `LLAMA_API_KEY` in its environment would not
-  be. A local process could take the free port between the check and the
-  server's start.
+- Secure (done): the server's API key goes in its environment
+  (`LLAMA_API_KEY`), never on its command line, where any local user could
+  read it; Gates' folders are 0700 and conversations 0600; agents work in a
+  sandbox (see Agent mode). Left: a local process could take the free port
+  between the check and the server's start (it would then have to answer
+  as llama-server, and never gets the key).
 - Reliable: Stop doesn't close the connection while the server is still
   reading the prompt or loading the model, so the next message waits behind
   it; a server that hangs mid-reply holds its worker for good; a panic in a

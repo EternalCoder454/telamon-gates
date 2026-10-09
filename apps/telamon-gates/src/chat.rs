@@ -1672,7 +1672,7 @@ impl qobject::Chat {
                 match &workspace {
                     Some(folder) => {
                         if folder.starts_with(gates_core::store::data_dir().join("workspaces")) {
-                            let _ = std::fs::create_dir_all(folder);
+                            let _ = gates_core::store::private_dir(folder);
                         }
                         let ws = Workspace::open(folder).map_err(|e| {
                             gates_core::BackendError::Other(format!(

@@ -79,7 +79,8 @@ the demo otherwise.
   it ends (`retire`), and Settings hands them over on the GUI thread, in the
   order they were made.
   - It listens on 127.0.0.1 only, on a free port, and wants a fresh random
-    `--api-key` each start, so no other program can use it.
+    API key each start, so no other program can use it. The key goes in the
+    server's environment (`LLAMA_API_KEY`), never on its command line.
   - It is started from one long-lived thread and dies with Gates
     (PR_SET_PDEATHSIG). That signal fires when the *thread* that started the
     child ends, so starting it from a reply's worker killed it after every

@@ -44,11 +44,13 @@ pub struct Launch {
 }
 
 impl Launch {
-    /// The command line, after the binary. GPU layers and context are
-    /// passed only when the user set them: left out, llama.cpp fits both to
-    /// the graphics card's free memory itself (its `--fit`, on by default),
-    /// which a number given here would turn off.
-    pub fn args(&self, port: u16, api_key: &str) -> Vec<String> {
+    /// The command line, after the binary. GPU layers are passed only when
+    /// the user set them: left out, llama.cpp fits them to the graphics
+    /// card's free memory itself (its `--fit`). The API key is not here:
+    /// anyone on the computer can read a command line (`/proc/<pid>/cmdline`),
+    /// so it goes in the environment (`LLAMA_API_KEY`), which only the user
+    /// can read.
+    pub fn args(&self, port: u16) -> Vec<String> {
         let mut args: Vec<String> = vec![
             "--model".into(),
             self.model.to_string_lossy().into_owned(),
@@ -56,8 +58,6 @@ impl Launch {
             "127.0.0.1".into(),
             "--port".into(),
             port.to_string(),
-            "--api-key".into(),
-            api_key.into(),
             // One conversation at a time: all of the context for it.
             "--parallel".into(),
             "1".into(),
@@ -250,7 +250,7 @@ impl Server {
             BackendError::Other(format!("Couldn't make a key for the model server: {e}."))
         })?;
         if let Some(dir) = self.log.parent() {
-            let _ = fs::create_dir_all(dir);
+            let _ = crate::store::private_dir(dir);
         }
         let log = File::create(&self.log).map_err(|e| {
             BackendError::Other(format!("Couldn't open {}: {e}.", self.log.display()))
@@ -260,7 +260,8 @@ impl Server {
         })?;
         let mut command = Command::new(&launch.binary);
         command
-            .args(launch.args(port, &api_key))
+            .args(launch.args(port))
+            .env("LLAMA_API_KEY", &api_key)
             .stdin(Stdio::null())
             .stdout(log)
             .stderr(log2);
@@ -415,7 +416,7 @@ mod tests {
 
     #[test]
     fn the_command_line() {
-        let args = launch().args(4242, "k3y");
+        let args = launch().args(4242);
         let pair = |flag: &str| {
             let i = args.iter().position(|a| a == flag).expect(flag);
             args[i + 1].clone()
@@ -423,7 +424,8 @@ mod tests {
         assert_eq!(pair("--model"), "/m/qwen.gguf");
         assert_eq!(pair("--host"), "127.0.0.1");
         assert_eq!(pair("--port"), "4242");
-        assert_eq!(pair("--api-key"), "k3y");
+        // The key is never on the command line.
+        assert!(!args.iter().any(|a| a == "--api-key" || a == "k3y"));
         assert_eq!(pair("--n-gpu-layers"), "30");
         assert_eq!(pair("--ctx-size"), "8192");
         assert!(args.iter().any(|a| a == "--no-webui"));
@@ -436,7 +438,7 @@ mod tests {
             batch: Some(2048),
             ..launch()
         }
-        .args(1, "k");
+        .args(1);
         let i = decision.iter().position(|a| a == "--ubatch-size").unwrap();
         assert_eq!(decision[i + 1], "2048");
         // Automatic: neither is passed, so llama.cpp's fit chooses.
@@ -445,7 +447,7 @@ mod tests {
             context: None,
             ..launch()
         }
-        .args(1, "k");
+        .args(1);
         assert!(
             !auto
                 .iter()

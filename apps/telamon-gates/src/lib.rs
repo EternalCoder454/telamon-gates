@@ -66,9 +66,15 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
     let folder = store.dir().to_string_lossy().into_owned();
     let io = io::Io::start(store);
     // There from the start, so Settings' Open Folder always opens it.
+    // Gates' folders are the user's alone (conversations, pictures,
+    // agents' work, logs).
     io.run(|store| {
-        if let Err(e) = std::fs::create_dir_all(store.dir()) {
-            log::warn!("cannot make {}: {e}", store.dir().display());
+        let data = gates_core::store::data_dir();
+        let state = gates_core::store::state_dir();
+        for dir in [data.as_path(), state.as_path(), store.dir()] {
+            if let Err(e) = gates_core::store::private_dir(dir) {
+                log::warn!("cannot make {} private: {e}", dir.display());
+            }
         }
     });
 
