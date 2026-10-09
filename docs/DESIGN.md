@@ -239,14 +239,28 @@ beside it.
   model answers in its own words, like a person rather than a list of
   results, and links its sources inline as Markdown links, which go through
   `markdown.rs`.
-- **Settings**: the backend, the model, the Model for Code (shown when
-  there are two or more models: Code and Agent replies, and the warm-up while
-  typing in those modes, use it; "Same as Model", or a model that is gone,
-  means the chat model), Smaller Context Cache (a q8_0 context cache, on
-  by default; off is saved as `false`), the system prompt (saved as you
-  type), the shared transparency switch, and the folder the conversations are
-  in, with Open Folder. Under Troubleshooting, Logs: the folder of the log
-  (`telamon-gates.log`, see Startup) with Open Log Folder.
+- **Settings**: sections in this order, the first always open and the rest
+  foldable (the framework's `Section` with `foldable`: its title is a button;
+  the page keeps the state and sets `folded`).
+  - **System Prompt**, first so it is seen at once, never folded (saved as
+    you type).
+  - **Model & Model Server**, open by default: the backend, the model, the
+    Model for Code (shown when there are two or more models: Code and Agent
+    replies, and the warm-up while typing in those modes, use it; "Same as
+    Model", or a model that is gone, means the chat model), the Models Folder,
+    then GPU Layers, Context Size, Smaller Context Cache (a q8_0 context
+    cache, on by default; off is saved as `false`) and the Server Address.
+  - **Modes**, **Agent**, **Web Search**, **SystemOne**, **Appearance** (the
+    shared transparency switch), **Conversations** (the folder they are in,
+    with Open Folder) and **Troubleshooting** (Logs: the folder of the log,
+    `telamon-gates.log`, see Startup, with Open Log Folder), folded by
+    default.
+  - Which sections are open is kept across launches: `SettingsOpen` in the
+    settings file, the open ids joined by commas (`none` when all are
+    folded; unset opens Model & Model Server). `Chat.openSections` holds the
+    list and `foldSection(id, fold)` changes it and saves it on the file
+    thread. A failed Web Search test unfolds Web Search, so the result isn't
+    hidden.
 
 ## Code
 
@@ -395,7 +409,8 @@ the folder. `gates-core/src/store.rs` keeps the rest safe:
 Settings are `~/.config/telamon-gatesrc`, group `[Chat]`
 (`Model`, `CodeModel`, `SystemPrompt`, and for web search `WebSearch`,
 `WebProvider`, `WebSearxUrl` and `WebKeyBrave`/`WebKeyTavily`, which only say
-that a key is in the keyring), plus the window's size from `TelamonWindow`. The
+that a key is in the keyring, and `SettingsOpen`, the Settings sections left
+open), plus the window's size from `TelamonWindow`. The
 API keys themselves are in the system keyring under the application
 `net.eterneon.telamon.gates`.
 

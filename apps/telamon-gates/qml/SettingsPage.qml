@@ -24,7 +24,44 @@ TelamonPage {
     readonly property var contexts: [0, 4096, 8192, 16384, 32768, 65536, 131072]
 
     Section {
-        title: qsTr("Model")
+        title: qsTr("System Prompt")
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            Layout.margins: Kirigami.Units.largeSpacing
+            spacing: Kirigami.Units.smallSpacing
+
+            TelamonTextArea {
+                id: prompt
+                Layout.fillWidth: true
+                implicitHeight: Kirigami.Units.gridUnit * 6
+                wrapMode: TextEdit.Wrap
+                placeholderText: qsTr("You are a helpful assistant.")
+                text: page.chat.systemPrompt
+                Accessible.name: qsTr("System Prompt")
+                onTextChanged: saveLater.restart()
+            }
+            TelamonLabel {
+                Layout.fillWidth: true
+                textStyle: TelamonLabel.Caption
+                wrapMode: Text.Wrap
+                text: qsTr("Sent to the model before every conversation. Leave it empty for none.")
+            }
+        }
+
+        // Saved once typing pauses, and when the page closes.
+        Timer {
+            id: saveLater
+            interval: 600
+            onTriggered: page.chat.saveSystemPrompt(prompt.text)
+        }
+    }
+
+    Section {
+        title: qsTr("Model & Model Server")
+        foldable: true
+        folded: page.chat.openSections.indexOf("model") < 0
+        onFoldRequested: fold => page.chat.foldSection("model", fold)
 
         SectionRow {
             title: qsTr("Backend")
@@ -90,11 +127,6 @@ TelamonPage {
                 onClicked: Qt.openUrlExternally(page.folderUrl(page.chat.modelsFolder))
             }
         }
-    }
-
-    Section {
-        title: qsTr("Model Server")
-
         SectionRow {
             visible: !page.chat.demo && page.chat.serverUrl.length === 0
             title: qsTr("GPU Layers")
@@ -192,6 +224,9 @@ TelamonPage {
 
     Section {
         title: qsTr("Modes")
+        foldable: true
+        folded: page.chat.openSections.indexOf("modes") < 0
+        onFoldRequested: fold => page.chat.foldSection("modes", fold)
         footer: qsTr("Each mode is a system prompt and a temperature. Change the built-in ones, or add your own: they show beside the mode switch under the message field.")
 
         Repeater {
@@ -344,6 +379,9 @@ TelamonPage {
 
     Section {
         title: qsTr("Agent")
+        foldable: true
+        folded: page.chat.openSections.indexOf("agent") < 0
+        onFoldRequested: fold => page.chat.foldSection("agent", fold)
         footer: qsTr("An agent's commands run in a bubblewrap sandbox: they see the agent's folder and the system's programs, nothing else of yours.")
 
         SectionRow {
@@ -377,6 +415,9 @@ TelamonPage {
     Section {
         id: webSection
         title: qsTr("Web Search")
+        foldable: true
+        folded: page.chat.openSections.indexOf("web") < 0
+        onFoldRequested: fold => page.chat.foldSection("web", fold)
         footer: qsTr("Lets Chat, Code and Agent replies search the web and read pages, when the model can call tools. What the model asks for is sent to the search service. Pages are opened over https only, never on this computer or your network, and everything that comes back is treated as text to read, not orders to follow.")
 
         readonly property var providers: ["brave", "tavily", "searxng"]
@@ -500,8 +541,22 @@ TelamonPage {
         }
     }
 
+    // A failed test or key save is shown in Test Connection's row: unfold
+    // the section when one comes in, so a folded one doesn't hide it.
+    Connections {
+        target: page.chat
+        function onWebTestResultChanged() {
+            if (page.chat.webTestResult.length > 0 && !page.chat.webTestOk) {
+                page.chat.foldSection("web", false);
+            }
+        }
+    }
+
     Section {
         title: qsTr("SystemOne")
+        foldable: true
+        folded: page.chat.openSections.indexOf("systemone") < 0
+        onFoldRequested: fold => page.chat.foldSection("systemone", fold)
         footer: qsTr("In Auto, a small decision model reads each message and picks Chat, Story or Code before the chat model answers. When it isn't sure, Chat answers.")
 
         SectionRow {
@@ -562,46 +617,18 @@ TelamonPage {
     }
 
     Section {
-        title: qsTr("System Prompt")
-
-        ColumnLayout {
-            Layout.fillWidth: true
-            Layout.margins: Kirigami.Units.largeSpacing
-            spacing: Kirigami.Units.smallSpacing
-
-            TelamonTextArea {
-                id: prompt
-                Layout.fillWidth: true
-                implicitHeight: Kirigami.Units.gridUnit * 6
-                wrapMode: TextEdit.Wrap
-                placeholderText: qsTr("You are a helpful assistant.")
-                text: page.chat.systemPrompt
-                Accessible.name: qsTr("System Prompt")
-                onTextChanged: saveLater.restart()
-            }
-            TelamonLabel {
-                Layout.fillWidth: true
-                textStyle: TelamonLabel.Caption
-                wrapMode: Text.Wrap
-                text: qsTr("Sent to the model before every conversation. Leave it empty for none.")
-            }
-        }
-
-        // Saved once typing pauses, and when the page closes.
-        Timer {
-            id: saveLater
-            interval: 600
-            onTriggered: page.chat.saveSystemPrompt(prompt.text)
-        }
-    }
-
-    Section {
         title: qsTr("Appearance")
+        foldable: true
+        folded: page.chat.openSections.indexOf("appearance") < 0
+        onFoldRequested: fold => page.chat.foldSection("appearance", fold)
         TelamonTransparencySwitch {}
     }
 
     Section {
         title: qsTr("Conversations")
+        foldable: true
+        folded: page.chat.openSections.indexOf("conversations") < 0
+        onFoldRequested: fold => page.chat.foldSection("conversations", fold)
 
         SectionRow {
             title: qsTr("Folder")
@@ -624,6 +651,9 @@ TelamonPage {
 
     Section {
         title: qsTr("Troubleshooting")
+        foldable: true
+        folded: page.chat.openSections.indexOf("troubleshooting") < 0
+        onFoldRequested: fold => page.chat.foldSection("troubleshooting", fold)
 
         SectionRow {
             title: qsTr("Logs")
