@@ -36,6 +36,13 @@
     <control>keyboard</control>
   </supports>
   <releases>
+    <release version="1.2.0" date="2026-10-09">
+      <description>
+        <p>Web search: Chat, Code and Agent mode can search the web and read pages, with Brave Search, Tavily or your own SearXNG. The API key is kept in the system keyring.</p>
+        <p>Deep Research mode plans the question, searches, reads the sources and writes a report with citations.</p>
+        <p>More robust: a model that runs out of memory is retried with a smaller context, downloads check for free space, damaged conversations are set aside instead of lost, and a second launch brings the open window forward.</p>
+      </description>
+    </release>
     <release version="1.1.0" date="2026-10-09">
       <description>
         <p>Recommended models on the Models page: one click gets a tested model for coding, for chat and stories, or for small graphics cards.</p>
