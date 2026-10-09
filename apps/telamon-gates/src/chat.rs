@@ -65,6 +65,9 @@ pub mod qobject {
         #[qproperty(QString, server_url, cxx_name = "serverUrl")]
         /// The context cache at 8 bits (Settings).
         #[qproperty(bool, small_cache, cxx_name = "smallCache")]
+        /// The graphics memory limit (Settings), in percent of the card's
+        /// memory; 0 for no limit.
+        #[qproperty(i32, memory_cap, cxx_name = "memoryCap")]
         /// Where the backend's model files go; "" when it has no folder.
         #[qproperty(QString, models_folder, cxx_name = "modelsFolder")]
         /// The Settings sections that are open (ids; `settings::SECTIONS`).
@@ -206,6 +209,11 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "useSmallCache"]
         fn set_small_cache_option(self: Pin<&mut Chat>, on: bool);
+
+        /// The graphics memory limit: 0 for none, else 85, 90, 95 or 98.
+        #[qinvokable]
+        #[cxx_name = "saveMemoryCap"]
+        fn save_memory_cap(self: Pin<&mut Chat>, percent: i32);
 
         /// The user is writing `text`: gets the model ready, and in Auto has
         /// SystemOne pick the mode now, so Send waits for neither.
@@ -382,6 +390,7 @@ use gates_core::modes::{self, Active, Library, Preset};
 use gates_core::preflight;
 use gates_core::systemone::{self, SystemOne};
 use gates_core::tools::Workspace;
+use gates_core::watchdog::Cap;
 use gates_core::web::{self, KeyStore, Provider, Setup};
 use gates_core::{Backend, Conversation, Event, Message, Request, Role};
 use std::path::PathBuf;
@@ -468,6 +477,7 @@ pub struct ChatRust {
     server_url: QString,
     small_cache: bool,
     open_sections: QStringList,
+    memory_cap: i32,
     models_folder: QString,
     active_context: i32,
     mode: QString,
@@ -771,6 +781,8 @@ impl qobject::Chat {
         ));
         let options = settings::backend_options();
         self.as_mut().set_small_cache(options.small_cache);
+        self.as_mut()
+            .set_memory_cap(i32::from(settings::memory_cap().number()));
         self.as_mut()
             .set_gpu_layers(i32::try_from(options.gpu_layers).unwrap_or(0));
         self.as_mut()
@@ -1291,6 +1303,29 @@ impl qobject::Chat {
         self.save_server_options(gpu, ctx, &url);
     }
 
+    pub fn save_memory_cap(mut self: Pin<&mut Self>, percent: i32) {
+        let cap = Cap::from_number(percent);
+        self.as_mut().set_memory_cap(i32::from(cap.number()));
+        if let Some(io) = &self.rust().io {
+            settings::set(io, settings::MEMORY_CAP, cap.setting());
+        }
+        // Applies at once, with no restart of the server.
+        if let Some(watchdog) = self.rust().backend.as_ref().and_then(|b| b.watchdog()) {
+            watchdog.set_cap(cap);
+        }
+    }
+
+    /// The graphics memory limit was reached (`watchdog.rs`), and the model
+    /// servers are about to stop: the reply under way stops as if Stop was
+    /// pressed (what came so far stays), and the banner says why. Called on
+    /// the watchdog's request, which waits for it.
+    pub fn memory_limit_reached(mut self: Pin<&mut Self>, text: &str) {
+        if *self.generating() {
+            self.as_mut().stop();
+        }
+        self.set_notice(QString::from(text));
+    }
+
     pub fn refresh_models(mut self: Pin<&mut Self>) {
         self.as_mut().refresh_decision_models();
         let Some(backend) = self.rust().backend.clone() else {
@@ -1722,10 +1757,12 @@ impl qobject::Chat {
             Some((model, _)) if current.as_deref() == Some(model.name.as_str()) => None,
             Some((model, binary)) => {
                 let log = gates_core::store::state_dir().join("systemone-server.log");
+                // Watched with the chat model's server.
+                let watchdog = self.rust().backend.as_ref().and_then(|b| b.watchdog());
                 self.as_mut()
                     .rust_mut()
                     .system_one_model
-                    .replace(Arc::new(SystemOne::new(&binary, &model, log)))
+                    .replace(Arc::new(SystemOne::new(&binary, &model, log, watchdog)))
             }
             None => self.as_mut().rust_mut().system_one_model.take(),
         };

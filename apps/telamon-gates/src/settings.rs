@@ -15,6 +15,9 @@ pub const CONTEXT: &str = "ContextSize";
 pub const SERVER_URL: &str = "ServerUrl";
 /// "true": the context cache at 8 bits (less video memory, a little slower).
 pub const SMALL_CACHE: &str = "SmallCache";
+/// The limit on graphics memory in use, past which the model servers stop:
+/// unset is 95%, "off" is no limit, else 85, 90 or 98.
+pub const MEMORY_CAP: &str = "MemoryCap";
 /// The model Code and Agent mode use; unset: the chat model.
 pub const CODE_MODEL: &str = "CodeModel";
 /// "true" lets an agent's commands use the network (off by default).
@@ -115,6 +118,11 @@ pub fn get(key: &str) -> String {
 /// A whole number, 0 when unset or not one.
 pub fn get_u32(key: &str) -> u32 {
     get(key).trim().parse().unwrap_or(0)
+}
+
+/// The graphics memory limit.
+pub fn memory_cap() -> gates_core::watchdog::Cap {
+    gates_core::watchdog::Cap::from_setting(&get(MEMORY_CAP))
 }
 
 /// What the settings say for the model server.

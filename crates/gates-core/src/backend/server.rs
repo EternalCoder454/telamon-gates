@@ -11,6 +11,7 @@
 //! worker thread.
 
 use super::BackendError;
+use crate::watchdog::Watchdog;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -452,18 +453,33 @@ pub struct Server {
     /// reply's short-lived worker, the server would die with that reply. This
     /// thread lives as long as the Server.
     spawner: Mutex<Sender<Spawn>>,
+    /// Watches the graphics card's memory while this server is up, and
+    /// stops it when the card is full (`watchdog.rs`).
+    watchdog: Option<Arc<Watchdog>>,
+    /// The watchdog stopped this server: a start under way gives up.
+    /// Cleared by every start.
+    halted: AtomicBool,
 }
 
 impl Server {
     /// A server that is not started yet, and the thread that stops it when
     /// idle (it ends with the server).
     pub fn new(log: PathBuf) -> Arc<Server> {
-        Server::with_load_limit(log, LOAD)
+        Server::with_load_limit(log, LOAD, None)
+    }
+
+    /// As `new`, watched by `watchdog`.
+    pub fn watched(log: PathBuf, watchdog: Arc<Watchdog>) -> Arc<Server> {
+        Server::with_load_limit(log, LOAD, Some(watchdog))
     }
 
     /// As `new`, giving up on a start after `load` (a small model that
     /// isn't up quickly won't be).
-    pub fn with_load_limit(log: PathBuf, load: Duration) -> Arc<Server> {
+    pub fn with_load_limit(
+        log: PathBuf,
+        load: Duration,
+        watchdog: Option<Arc<Watchdog>>,
+    ) -> Arc<Server> {
         let (spawner, jobs) = mpsc::channel::<Spawn>();
         let _ = std::thread::Builder::new()
             .name("llama-spawn".into())
@@ -478,7 +494,12 @@ impl Server {
             load,
             log,
             spawner: Mutex::new(spawner),
+            watchdog,
+            halted: AtomicBool::new(false),
         });
+        if let Some(watchdog) = &server.watchdog {
+            watchdog.register(&server);
+        }
         let weak: Weak<Server> = Arc::downgrade(&server);
         let _ = std::thread::Builder::new()
             .name("llama-idle".into())
@@ -565,8 +586,23 @@ impl Server {
                     Instant::now(),
                 )));
             }
+            // A card that is nearly full is no place to load a model (the
+            // old server, if any, is gone: its memory counts as free).
+            if let Some(watchdog) = &self.watchdog {
+                watchdog.check_start().map_err(BackendError::Other)?;
+            }
+            self.halted.store(false, Ordering::Relaxed);
+            // Watched while it loads too: that is when the card fills. The
+            // watchdog never waits for the lock held here (`is_live`).
+            if let Some(watchdog) = &self.watchdog {
+                watchdog.wake();
+            }
             match self.start(launch, cancel) {
                 Ok(running) => state.running = Some(running),
+                Err(_) if self.halted.load(Ordering::Relaxed) => {
+                    // Stopped by the watchdog while it loaded: not a crash.
+                    return Err(BackendError::Other(self.halted_message()));
+                }
                 Err(failed) => {
                     if failed.exited {
                         let last = last_line(&self.log).unwrap_or_default();
@@ -590,6 +626,11 @@ impl Server {
         state.busy += 1;
         state.last_used = Some(Instant::now());
         drop(guard);
+        // Already up: watched since it started, unless the thread ended
+        // (the card had nothing to read, the limit was Off).
+        if let Some(watchdog) = &self.watchdog {
+            watchdog.wake();
+        }
         if let (Some(note), Some(notes)) = (note, notes) {
             notes(&note);
         }
@@ -629,6 +670,42 @@ impl Server {
             .running
             .as_mut()
             .is_some_and(|r| matches!(r.child.try_wait(), Ok(None)))
+    }
+
+    /// Whether a server runs or is starting: the lock is held while one
+    /// loads, so a lock that can't be taken counts. For the watchdog,
+    /// which must not wait for a load.
+    pub(crate) fn is_live(&self) -> bool {
+        match self.state.try_lock() {
+            Ok(mut state) => state
+                .running
+                .as_mut()
+                .is_some_and(|r| matches!(r.child.try_wait(), Ok(None))),
+            Err(std::sync::TryLockError::WouldBlock) => true,
+            Err(std::sync::TryLockError::Poisoned(e)) => e
+                .into_inner()
+                .running
+                .as_mut()
+                .is_some_and(|r| matches!(r.child.try_wait(), Ok(None))),
+        }
+    }
+
+    /// The watchdog stops the server: one that is loading gives up (within
+    /// a quarter of a second), one that runs quits or is killed (3 s).
+    pub(crate) fn halt(&self) {
+        self.halted.store(true, Ordering::Relaxed);
+        self.stop();
+    }
+
+    /// What a start the watchdog stopped says.
+    fn halted_message(&self) -> String {
+        self.watchdog
+            .as_ref()
+            .and_then(|w| w.last_trip())
+            .map_or_else(
+                || "The model server was stopped: graphics memory ran out.".to_string(),
+                |trip| trip.message(),
+            )
     }
 
     /// Stops the server now, if it runs.
@@ -759,7 +836,7 @@ impl Server {
             base: format!("http://127.0.0.1:{port}"),
             api_key,
         };
-        match wait_ready(&mut child, &endpoint.base, self.load, cancel) {
+        match wait_ready(&mut child, &endpoint.base, self.load, cancel, &self.halted) {
             Ok(()) => Ok((child, endpoint)),
             Err(unready) => {
                 stop(child);
@@ -869,13 +946,14 @@ fn wait_ready(
     base: &str,
     limit: Duration,
     cancel: &AtomicBool,
+    halted: &AtomicBool,
 ) -> Result<(), Unready> {
     let agent = super::llama::agent(Some(Duration::from_secs(2)));
     let url = format!("{base}/health");
     let deadline = Instant::now() + limit;
     let waiting = |why: String, exited: bool| Unready { why, exited };
     loop {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.load(Ordering::Relaxed) || halted.load(Ordering::Relaxed) {
             return Err(waiting("it was stopped while it loaded.".into(), false));
         }
         if let Ok(Some(status)) = child.try_wait() {
@@ -1630,6 +1708,369 @@ llama_model_load: error loading model: invalid tensor shape\n";
         let now = Instant::now();
         let recent = server.state.lock().unwrap().crashes[&wanted.model].recent(now);
         assert_eq!(recent, 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- The graphics-memory watchdog
+
+    use crate::vram::Vram;
+    use crate::watchdog::{Cap, Trip, Watchdog};
+    use std::sync::atomic::AtomicU64;
+
+    const GIB: u64 = 1 << 30;
+
+    /// A card of 24 GiB whose use (in tenths of a GiB) the test sets, and
+    /// the number of times it was read.
+    struct Card {
+        tenths: AtomicU64,
+        reads: AtomicU64,
+        /// Readings to give first, in order, before `tenths`.
+        script: Mutex<Vec<u64>>,
+    }
+
+    impl Card {
+        fn new(used_gib: f64) -> Arc<Card> {
+            Arc::new(Card {
+                tenths: AtomicU64::new((used_gib * 10.0) as u64),
+                reads: AtomicU64::new(0),
+                script: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn use_gib(&self, gib: f64) {
+            self.tenths.store((gib * 10.0) as u64, Ordering::Relaxed);
+        }
+
+        /// The next readings, in tenths of a GiB, before the steady use.
+        fn then(&self, tenths: &[u64]) {
+            *self.script.lock().unwrap() = tenths.iter().rev().copied().collect();
+        }
+
+        fn reads(&self) -> u64 {
+            self.reads.load(Ordering::Relaxed)
+        }
+
+        /// A watchdog reading this card every 20 ms.
+        fn watchdog(self: &Arc<Self>, cap: Cap) -> Arc<Watchdog> {
+            let card = self.clone();
+            Watchdog::with_reader(
+                cap,
+                Box::new(move || {
+                    card.reads.fetch_add(1, Ordering::Relaxed);
+                    let tenths = card
+                        .script
+                        .lock()
+                        .unwrap()
+                        .pop()
+                        .unwrap_or_else(|| card.tenths.load(Ordering::Relaxed));
+                    Some(Vram {
+                        used: tenths * GIB / 10,
+                        total: 24 * GIB,
+                    })
+                }),
+                Duration::from_millis(20),
+            )
+        }
+    }
+
+    /// Waits up to `secs` for `done`.
+    fn wait_for(secs: u64, mut done: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < deadline {
+            if done() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        done()
+    }
+
+    /// A watched server in the temp folder.
+    fn watched(name: &str, watchdog: &Arc<Watchdog>) -> Arc<Server> {
+        Server::watched(
+            std::env::temp_dir().join(format!("gates-watch-{name}-{}.log", std::process::id())),
+            watchdog.clone(),
+        )
+    }
+
+    /// `server` "runs" a `sleep` (or `script`, run by sh), with a reply under
+    /// way.
+    fn run_fake(server: &Server, script: Option<&str>) {
+        let mut command = match script {
+            Some(script) => {
+                let mut c = Command::new("sh");
+                c.args(["-c", script]);
+                c
+            }
+            None => {
+                let mut c = Command::new("sleep");
+                c.arg("30");
+                c
+            }
+        };
+        command.stdin(Stdio::null());
+        let child = server.spawn(command).unwrap();
+        let mut state = server.state.lock().unwrap();
+        state.running = Some(running(child));
+        state.busy = 1;
+    }
+
+    /// Set when the watchdog says the limit is reached.
+    fn flag_trips(watchdog: &Watchdog) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        let f = flag.clone();
+        watchdog.on_trip(move |_| f.store(true, Ordering::Relaxed));
+        flag
+    }
+
+    #[test]
+    fn a_full_card_stops_every_server_and_cancels_the_reply() {
+        let card = Card::new(10.0);
+        let watchdog = card.watchdog(Cap::Percent(95));
+        // The chat model's server and SystemOne's.
+        let chat = watched("chat", &watchdog);
+        let one = watched("one", &watchdog);
+        run_fake(&chat, None);
+        run_fake(&one, None);
+
+        // A reply under way: it ends when it is cancelled, as Ok.
+        let cancel = Arc::new(AtomicBool::new(false));
+        let reply = {
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                let mut pieces = 0;
+                while !cancel.load(Ordering::Relaxed) {
+                    pieces += 1;
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                pieces
+            })
+        };
+        // What the window does when told: cancel the reply. It must still
+        // find the server up (cancelled before it is stopped).
+        let told: Arc<Mutex<Vec<(Trip, bool)>>> = Arc::default();
+        {
+            let (cancel, told, chat) = (cancel.clone(), told.clone(), chat.clone());
+            watchdog.on_trip(move |trip| {
+                told.lock().unwrap().push((*trip, chat.is_running()));
+                cancel.store(true, Ordering::Relaxed);
+            });
+        }
+
+        watchdog.wake();
+        // Under the limit, it only reads.
+        assert!(wait_for(2, || card.reads() >= 3));
+        assert!(chat.is_running() && one.is_running());
+        assert!(told.lock().unwrap().is_empty());
+
+        card.use_gib(23.5);
+        assert!(
+            wait_for(3, || !chat.is_running() && !one.is_running()),
+            "both servers stop"
+        );
+        assert!(
+            reply.join().unwrap() > 0,
+            "the reply was cancelled, not lost"
+        );
+        let told = told.lock().unwrap();
+        assert_eq!(told.len(), 1, "told once");
+        assert_eq!(told[0].0.percent, 95);
+        assert!(
+            told[0].1,
+            "the server was still up when the window was told"
+        );
+        assert_eq!(watchdog.last_trip(), Some(told[0].0));
+        assert!(
+            wait_for(2, || !watchdog.watching()),
+            "no server, no watching"
+        );
+    }
+
+    #[test]
+    fn a_spike_does_not_stop_the_server() {
+        let card = Card::new(10.0);
+        let watchdog = card.watchdog(Cap::Percent(95));
+        let server = watched("spike", &watchdog);
+        run_fake(&server, None);
+        let told = flag_trips(&watchdog);
+        watchdog.wake();
+        assert!(wait_for(2, || card.reads() >= 2));
+        // Over now and then, never twice in a row.
+        let reads = card.reads();
+        card.then(&[238, 100, 239, 100, 240, 100, 238]);
+        assert!(wait_for(2, || card.reads() >= reads + 12));
+        assert!(server.is_running());
+        assert!(!told.load(Ordering::Relaxed));
+        server.stop();
+    }
+
+    #[test]
+    fn it_watches_only_while_a_server_runs() {
+        let card = Card::new(10.0);
+        let watchdog = card.watchdog(Cap::Percent(95));
+        let server = watched("only", &watchdog);
+        // Nothing runs: nothing is read.
+        watchdog.wake();
+        assert!(wait_for(2, || !watchdog.watching()));
+        let reads = card.reads();
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(card.reads(), reads, "no reads without a server");
+        // A server runs: it reads; it stops: the thread ends.
+        run_fake(&server, None);
+        watchdog.wake();
+        assert!(wait_for(2, || card.reads() >= reads + 3));
+        server.stop();
+        assert!(wait_for(2, || !watchdog.watching()));
+        let reads = card.reads();
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(card.reads(), reads);
+    }
+
+    #[test]
+    fn off_says_nothing_until_a_limit_is_set() {
+        let card = Card::new(23.9);
+        let watchdog = card.watchdog(Cap::Off);
+        let server = watched("off", &watchdog);
+        run_fake(&server, None);
+        let told = flag_trips(&watchdog);
+        watchdog.wake();
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(card.reads(), 0, "Off reads nothing");
+        assert!(server.is_running() && !told.load(Ordering::Relaxed));
+        // Turned on with the card full and the server up: it stops.
+        watchdog.set_cap(Cap::Percent(90));
+        assert!(wait_for(3, || !server.is_running()));
+        assert!(told.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_card_with_nothing_to_read_says_nothing() {
+        // No `mem_info` (not AMD, the dev container, Xvfb).
+        let blind =
+            Watchdog::with_reader(Cap::default(), Box::new(|| None), Duration::from_millis(20));
+        let server = watched("blind", &blind);
+        run_fake(&server, None);
+        let told = flag_trips(&blind);
+        blind.wake();
+        assert!(wait_for(2, || !blind.watching()), "the thread ends");
+        assert!(server.is_running() && !told.load(Ordering::Relaxed));
+        assert_eq!(blind.last_trip(), None);
+        // And a start is not held up by it.
+        assert_eq!(blind.check_start(), Ok(()));
+        server.stop();
+    }
+
+    #[test]
+    fn a_server_that_ignores_the_quit_is_killed() {
+        let card = Card::new(23.9);
+        let watchdog = card.watchdog(Cap::Percent(95));
+        let server = watched("kill", &watchdog);
+        // Deaf to SIGTERM.
+        run_fake(&server, Some("trap '' TERM; while true; do sleep 1; done"));
+        std::thread::sleep(Duration::from_millis(300));
+        let started = Instant::now();
+        watchdog.wake();
+        assert!(wait_for(8, || !server.is_running()), "killed");
+        assert!(
+            started.elapsed() < Duration::from_secs(7),
+            "after about 3 s: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_nearly_full_card_refuses_a_start() {
+        let (dir, fake) = fake_server("watch-refuse", "echo $port > \"$dir/port\"\nexec sleep 30");
+        let stop = Arc::new(AtomicBool::new(false));
+        let health = answer_health(dir.clone(), stop.clone());
+        // 22 GiB of 24 is 92%: over the 90% a start needs under a 95% limit.
+        let card = Card::new(22.0);
+        let watchdog = card.watchdog(Cap::Percent(95));
+        let server = Server::watched(dir.join("server.log"), watchdog.clone());
+        let wanted = Launch {
+            binary: fake,
+            ..launch()
+        };
+        let err = server.acquire(&wanted).unwrap_err().to_string();
+        assert!(err.starts_with("Not starting the model"), "{err}");
+        assert!(
+            err.contains("92%") && err.contains("22.0 of 24.0 GiB"),
+            "{err}"
+        );
+        assert_eq!(starts(&dir), 0, "never started");
+        assert!(!server.is_running());
+        // Below the margin it starts.
+        card.use_gib(21.0);
+        server.acquire(&wanted).unwrap();
+        server.release();
+        assert_eq!(starts(&dir), 1);
+        server.stop();
+        stop.store(true, Ordering::Relaxed);
+        let _ = health.join();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn with_no_limit_a_server_starts_at_any_use() {
+        let (dir, fake) = fake_server("watch-off", "echo $port > \"$dir/port\"\nexec sleep 30");
+        let stop = Arc::new(AtomicBool::new(false));
+        let health = answer_health(dir.clone(), stop.clone());
+        let card = Card::new(23.5);
+        let watchdog = card.watchdog(Cap::Off);
+        let server = Server::watched(dir.join("server.log"), watchdog.clone());
+        let wanted = Launch {
+            binary: fake,
+            ..launch()
+        };
+        server.acquire(&wanted).unwrap();
+        server.release();
+        assert_eq!(starts(&dir), 1);
+        assert!(server.is_running(), "and it is left alone");
+        // A limit set while it runs stops it, and the next start is refused.
+        watchdog.set_cap(Cap::Percent(95));
+        assert!(wait_for(3, || !server.is_running()));
+        let err = server.acquire(&wanted).unwrap_err().to_string();
+        assert!(err.starts_with("Not starting the model"), "{err}");
+        assert_eq!(starts(&dir), 1);
+        stop.store(true, Ordering::Relaxed);
+        let _ = health.join();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_load_that_fills_the_card_is_stopped() {
+        // A server that never gets ready: it is loading when the card fills.
+        let (dir, fake) = fake_server("watch-load", "echo $port > \"$dir/port\"\nexec sleep 30");
+        let card = Card::new(10.0);
+        let watchdog = card.watchdog(Cap::Percent(95));
+        let server = Server::watched(dir.join("server.log"), watchdog.clone());
+        let wanted = Launch {
+            binary: fake,
+            ..launch()
+        };
+        let loading = {
+            let (server, wanted) = (server.clone(), wanted.clone());
+            std::thread::spawn(move || server.acquire(&wanted))
+        };
+        assert!(wait_for(5, || starts(&dir) == 1), "it started loading");
+        // The lock is held for the whole load: the watchdog sees it anyway.
+        let reads = card.reads();
+        assert!(wait_for(2, || card.reads() > reads));
+        card.use_gib(23.9);
+        let started = Instant::now();
+        let err = loading.join().unwrap().unwrap_err().to_string();
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(
+            err.starts_with("Stopped the model: graphics memory reached 95%"),
+            "{err}"
+        );
+        assert!(!server.is_running());
+        // Not a crash of the model.
+        assert!(server.state.lock().unwrap().crashes.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 }

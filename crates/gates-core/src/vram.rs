@@ -15,7 +15,16 @@ pub struct Vram {
 }
 
 /// The card with the most video memory, from `/sys/class/drm`.
+///
+/// Debug builds read the folder `TELAMON_GATES_DRM` names instead, when it
+/// is set: the container the scripts run the app in has no card (see
+/// `scripts/watchdog.sh`). Release builds never do.
 pub fn read() -> Option<Vram> {
+    if cfg!(debug_assertions)
+        && let Some(dir) = std::env::var_os("TELAMON_GATES_DRM")
+    {
+        return read_in(Path::new(&dir));
+    }
     read_in(Path::new("/sys/class/drm"))
 }
 

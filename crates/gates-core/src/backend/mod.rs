@@ -15,8 +15,10 @@ pub use demo::Demo;
 pub use llama::Llama;
 
 use crate::conversation::Message;
+use crate::watchdog::Watchdog;
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 /// The user's choices for the model server (Settings). The default leaves
@@ -122,6 +124,12 @@ pub trait Backend: Send + Sync {
     /// New choices from Settings; they apply from the next reply. Called on
     /// the GUI thread, in the order they were made: must not block.
     fn set_options(&self, _options: &Options) {}
+
+    /// The graphics-memory watchdog of the servers this backend runs
+    /// (`watchdog.rs`); None when it runs none.
+    fn watchdog(&self) -> Option<Arc<Watchdog>> {
+        None
+    }
 
     /// Where the backend's model files are, if it has a folder of them.
     fn models_folder(&self) -> Option<PathBuf> {
