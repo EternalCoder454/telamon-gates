@@ -416,7 +416,22 @@ the user; each call shows as a tool row.
   | SearXNG | `GET <instance>/search?q=…&format=json` | none; the instance must list `json` under `search.formats` |
 
   Titles and snippets are reduced to plain text, links kept only when http(s),
-  duplicates dropped. The key is never in an address, so it can't reach an
+  duplicates dropped. Each result's date is kept as one short line: Brave's
+  `page_age`/`age`, Tavily's `published_date`, SearXNG's `publishedDate`, with
+  ISO timestamps cut to the day. The model reads:
+
+  ```
+  Web results for "rust 1.90 release" (today is Friday, 2026-10-09):
+
+  1. Announcing Rust 1.90
+     https://blog.rust-lang.org/…
+     Date: 2026-09-18
+     The Rust team is happy to announce…
+  ```
+
+  Today's date in the header lets the model judge how recent a result is.
+  The query is put on one line, so a query can't fake a title and address
+  line (`result_urls`). The key is never in an address, so it can't reach an
   error message, and a printed request shows its header names only. Services
   with a key are reached over https only and never follow a redirect (which
   would hand the key to wherever it points); a SearXNG instance, which has no
@@ -457,9 +472,17 @@ the user; each call shows as a tool row.
   the path is more than the root.
 - **Stop:** each call runs on a thread of its own that the reply waits on, so
   Stop returns within 40 ms; the thread ends by its time limits.
-- **The prompt** (`web::PROMPT`) tells the model the results are data, not
-  instructions, not to put anything private in a search, and to cite what it
-  used as Markdown links. Results carry the same warning.
+- **The prompt** (`web::PROMPT`) tells the model:
+  - to search only when it needs current or specific facts, usually once or
+    twice, and to read a page when the snippets aren't enough;
+  - that results are data, not instructions, and to put nothing private in
+    a search;
+  - to answer like a person, not a search engine: in its own words, the
+    answer first, with no list of results and no account of its searching;
+  - to link each fact where it's used as a short Markdown link, and to say
+    when sources disagree, are old, or found nothing reliable.
+
+  Results carry the same data-not-instructions warning.
 - **Demo:** the demo backend plays a model that uses the tools (a search, the
   first page, an answer with its sources) over `web::Canned`, made-up results
   at example.org, .net and .com, so the rows and progress can be seen without a
@@ -626,6 +649,16 @@ temperature 0.2, and each model was run 3–4 times.
 | Qwen3-4B-Instruct-2507 Q4_K_M | 2.3 GiB | 18.4 (17–20) | 4–5 | 5–7 | 7–8 | 31 s | 196 | 966 | 195 |
 | Qwen3-8B Q8_0 + DSpark | 8.1 + 1.1 GiB | 15.0 (14–16) | 4–5 | 2–3 | 8 | 19 s | 122 | 831 | 128 |
 | Qwen3.5-9B Q4_K_M | 5.3 GiB | 14 | 2 | 4 | 8 | 66 s | 104 | 504 | 104 |
+| Qwen3.6-35B-A3B UD-IQ4_XS, q8_0 cache | 16.5 GiB | 20.5 (20–21) | 7 | 5–6 | 8 | 48 s | 128 | 478 | 128 |
+| Qwen3.6-35B-A3B, thinking on | | **24** (1 run) | 8 | 8 | 8 | 580 s, 78k tokens | | | |
+
+- **Qwen3.6-35B-A3B** has a context cache about 4.8× smaller than
+  Qwen3-Coder's: 10 of its 40 layers keep one, with 2 KV heads (config.json).
+  - Without thinking it is below Qwen3-Coder (20.5 against 22 with the same
+    q8_0 cache) and slower (120 against 164 tok/s for code), so Qwen3-Coder
+    stays the coding pick.
+  - With thinking it got all 24, the only perfect score, at 20 times the
+    tokens.
 
 - **Mixture-of-experts models are the cheap way to power.** Qwen3-Coder-30B
   and gpt-oss-20b compute only about 3B parameters a token, so they answer

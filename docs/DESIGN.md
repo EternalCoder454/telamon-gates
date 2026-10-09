@@ -214,7 +214,9 @@ beside it.
   async" (5 results)", "Read docs.rs/tokio (12 KB)"), opening to what the
   model was given. While a call runs, a progress line over the message field
   says what it is doing ("Searching: …", "Reading: …"), as plain text. The
-  model cites its sources as Markdown links, which go through `markdown.rs`.
+  model answers in its own words, like a person rather than a list of
+  results, and links its sources inline as Markdown links, which go through
+  `markdown.rs`.
 - **Settings**: the backend, the model, the Model for Code (shown when
   there are two or more models: Code and Agent replies, and the warm-up while
   typing in those modes, use it; "Same as Model", or a model that is gone,
