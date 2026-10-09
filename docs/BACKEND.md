@@ -181,11 +181,13 @@ the header doesn't say), `toolCapable` and `vision` (1 or 0).
 `modes.rs` has three modes. Each is a system prompt plus sampling (temperature,
 top-p), sent in the request body:
 
-| Mode | Temperature | Top-p | System prompt |
-|---|---|---|---|
-| Chat | the model's own | the model's own | none (only the user's own) |
-| Story | 1.0 | 0.95 | a creative-writing partner that keeps the story consistent |
-| Code | 0.2 | 0.9 | an expert programmer: complete fenced code, assumptions named |
+| Mode | Temperature | Top-p | Reasoning | System prompt |
+|---|---|---|---|---|
+| Chat | the model's own | the model's own | brief | none (only the user's own) |
+| Story | 1.0 | 0.95 | brief | a creative-writing partner that keeps the story consistent |
+| Code | 0.2 | 0.9 | the model's own | an expert programmer: complete fenced code, assumptions named |
+
+Brief reasoning is explained under Performance → Recommended models.
 
 A user's own system prompt (Settings) follows the mode's. A conversation is in
 Auto or pinned to a mode (`Conversation.mode`). Each reply records the mode
@@ -443,4 +445,71 @@ Qwen3-4B-Instruct-2507 Q4_K_M unless said; temperature 0; scripts in
 - **The binary.** HTTPS through the system's OpenSSL instead of a bundled
   rustls/ring: 8.48 → 7.14 MB stripped for the same release build
   (−1.34 MB, −16%).
+
+### Recommended models
+
+The Models page's *Recommended* list comes from this test (`out/spec/
+codeeval.py`, `bench.py`; RX 7900 XTX, 24 GiB, telamon-llama 0.6.0, n-gram
+drafting on). The code test has 8 tasks (palindromes, merging intervals,
+Roman numerals, top-k words, durations, brackets, RPN, version sorting),
+each written in Rust, Go and Python: 24 answers. Each answer is compiled
+(`rustc`, `go`) and run against fixed tests. Thinking is off, at
+temperature 0.2, and each model was run 3–4 times.
+
+| Model (file) | Size | Code test, mean (range) | Rust | Go | Python | Time for 24 | Chat tok/s | Rewrite tok/s | Story tok/s |
+|---|---|---|---|---|---|---|---|---|---|
+| **Qwen3-Coder-30B-A3B** UD-Q4_K_XL | 16.5 GiB | **21.0** (21–21) | **8/8** every run | 5 | 8 | **24 s** | 192 | 674 | 192 |
+| gpt-oss-20b MXFP4, low effort | 11.3 GiB | 20.6 (18–23) | 4–8 | 5–7 | 8 | 30 s | 204 | 800 | 204 |
+| Qwen3-4B-Instruct-2507 Q4_K_M | 2.3 GiB | 18.4 (17–20) | 4–5 | 5–7 | 7–8 | 31 s | 196 | 966 | 195 |
+| Qwen3-8B Q8_0 + DSpark | 8.1 + 1.1 GiB | 15.0 (14–16) | 4–5 | 2–3 | 8 | 19 s | 122 | 831 | 128 |
+| Qwen3.5-9B Q4_K_M | 5.3 GiB | 14 | 2 | 4 | 8 | 66 s | 104 | 504 | 104 |
+
+- **Mixture-of-experts models are the cheap way to power.** Qwen3-Coder-30B
+  and gpt-oss-20b compute only about 3B parameters a token, so they answer
+  as fast as the 4B and faster than the dense 8B. They know as much as
+  their full size. Both fit a 24 GiB card; on a smaller one, llama.cpp's fit
+  keeps experts in system memory and they still run.
+- **Qwen3-Coder** has the best and steadiest code (the same 21 each run)
+  and the shortest answers: 3.9k tokens for the 24, against about 5.6k for
+  the others. Its Go misses are type errors (`byte` for `rune`), unused
+  imports and one changed signature.
+- **gpt-oss-20b** is the fastest in chat and almost as good at code.
+  - Its eagle3 draft (`--spec-type draft-eagle3`) doesn't change the score,
+    and it slows chat from 204 to 182 tok/s and rewrites from 800 to
+    247 tok/s, so it isn't used.
+  - Without `reasoning_effort` it reasons at medium. In one story test, its
+    1,500 tokens all went to reasoning and none to the story.
+- **Qwen3-4B-2507** is the pick for cards of 8 GiB or less, and it wrote the
+  most inventive story.
+- **Qwen3.5-9B** with thinking off was the weakest at Rust and the slowest,
+  so it isn't recommended.
+- Every model got all 8 Python tasks; Rust and Go set them apart.
+
+**Reasoning, per mode.** Reasoning gets more code right but costs a lot
+more tokens.
+
+| Code test | Score | Time for 24 | Tokens |
+|---|---|---|---|
+| gpt-oss-20b, low effort | 20.6 | 30 s | 5.7k |
+| gpt-oss-20b, medium effort (its default) | 23 | 79 s | 15.3k |
+| Qwen3-8B, thinking off | 15 | 19 s | not logged |
+| Qwen3-8B, thinking on (its default) | 21 | 559 s | 90k |
+
+In chat and stories, reasoning only costs time, and gpt-oss can loop
+(`out/spec/brief.py`, temperature 0):
+
+| Prompt | Model's own reasoning | Brief |
+|---|---|---|
+| gpt-oss-20b, chat | 583 tokens, 3.2 s | 724 tokens, 3.7 s |
+| gpt-oss-20b, a 400-word story | **6,000 tokens, 25.8 s, all reasoning: no story** | 713 tokens, 3.7 s, 557 words |
+| Qwen3-8B, chat | 1,011 tokens (494 words of thinking), 7.7 s | 442 tokens, 3.4 s |
+| Qwen3-8B, story | 1,498 tokens (835 words of thinking), 13.0 s | 534 tokens, 4.0 s |
+| Qwen3-Coder-30B (doesn't reason) | 2.0 s / 2.4 s | 1.0 s / 1.9 s |
+
+So Chat and Story are *brief* (`modes::Mode::brief` → `Request::brief`).
+The request carries `reasoning_effort: "low"` for gpt-oss and
+`chat_template_kwargs: {"enable_thinking": false}` for Qwen3; other
+templates ignore both. Code and Agent, and a user's own modes, leave
+reasoning to the model. In Auto, SystemOne's pick decides: a coding
+question goes to Code and reasons.
 

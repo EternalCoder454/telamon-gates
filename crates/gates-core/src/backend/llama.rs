@@ -781,6 +781,12 @@ pub fn request_body(request: &Request) -> Value {
     if let Some(format) = &request.response_format {
         body["response_format"] = format.clone();
     }
+    if request.brief {
+        // Each model reads its own: gpt-oss the effort, Qwen3 the template
+        // switch. Other templates ignore both.
+        body["reasoning_effort"] = json!("low");
+        body["chat_template_kwargs"] = json!({"enable_thinking": false});
+    }
     body
 }
 
@@ -853,6 +859,7 @@ mod tests {
             sampling: None,
             tools: Vec::new(),
             response_format: None,
+            brief: false,
         }
     }
 
@@ -868,6 +875,17 @@ mod tests {
         assert!(body.get("temperature").is_none());
         assert!(body.get("tools").is_none());
         assert!(body.get("response_format").is_none());
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("chat_template_kwargs").is_none());
+        // Chat and Story: short reasoning, in both models' words.
+        let mut brief = request();
+        brief.brief = true;
+        let body = request_body(&brief);
+        assert_eq!(body["reasoning_effort"], "low");
+        assert_eq!(
+            body["chat_template_kwargs"],
+            json!({"enable_thinking": false})
+        );
         // A constrained reply (the Fleet's plan): the format goes as given.
         let mut plan = request();
         plan.response_format = Some(json!({"type": "json_object", "schema": {"type": "object"}}));

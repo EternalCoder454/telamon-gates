@@ -64,7 +64,13 @@ beside it.
   its single-file models, and downloads one at a time with a progress bar and
   Cancel. A download goes to a hidden `.name.part`, resumes from it, is
   checked against the sha256 Hugging Face publishes, and only then is renamed
-  into place; the chat's model list follows.
+  into place; the chat's model list follows. *Recommended* (hidden when a
+  model server URL is set) offers three tested models, one per use, from
+  `docs/BACKEND.md` → Recommended models: For Coding, For Chat and Stories,
+  and Small and Fast. Each shows a fit badge and Download (`downloadFrom`,
+  the same checked download); once it's on the computer, Use makes the
+  coding pick the Model for Code and the others the Model, and In Use
+  marks the current one.
 - **Attachments**:
   - **Adding them:** Attach Files… under the message field, or drop files on
     the chat. Up to 8 a message, shown as removable chips above the field.

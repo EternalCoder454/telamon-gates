@@ -1821,6 +1821,7 @@ impl qobject::Chat {
             sampling: None,
             tools: Vec::new(),
             response_format: None,
+            brief: false,
         };
         // Saved with the user's message, before the reply's row (empty
         // until its text comes) is there.
@@ -1852,6 +1853,7 @@ impl qobject::Chat {
             }
             request.system_prompt = modes::system_prompt_for(&mode, &user_prompt);
             request.sampling = mode.sampling;
+            request.brief = mode.brief;
             let mut stream = Stream {
                 qt: qt.clone(),
                 generation,
