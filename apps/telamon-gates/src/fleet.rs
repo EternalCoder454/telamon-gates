@@ -27,6 +27,9 @@ pub mod qobject {
         #[qproperty(bool, planning)]
         /// What went wrong with the run; "" when nothing.
         #[qproperty(QString, error)]
+        /// Something the model server changed to load the model, short of an
+        /// error ("loaded with a smaller context"); plain text, "" for none.
+        #[qproperty(QString, notice)]
         /// The built-in demo answers, which can't plan.
         #[qproperty(bool, demo)]
         /// Per agent, in the plan's order: title, status ("idle", "working",
@@ -79,6 +82,10 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "dismissError"]
         fn dismiss_error(self: Pin<&mut Fleet>);
+
+        #[qinvokable]
+        #[cxx_name = "dismissNotice"]
+        fn dismiss_notice(self: Pin<&mut Fleet>);
     }
 
     impl cxx_qt::Threading for Fleet {}
@@ -124,6 +131,7 @@ pub struct FleetRust {
     running: bool,
     planning: bool,
     error: QString,
+    notice: QString,
     demo: bool,
     titles: QStringList,
     statuses: QStringList,
@@ -221,6 +229,11 @@ impl FleetHost for Events {
 
     fn judged(&mut self, agent: usize, confidence: f64) {
         self.send(move |fleet, g| fleet.card_confidence(g, agent, confidence));
+    }
+
+    fn notice(&mut self, text: &str) {
+        let text = text.to_string();
+        self.send(move |fleet, g| fleet.show_notice(g, &text));
     }
 }
 
@@ -377,6 +390,7 @@ impl qobject::Fleet {
         };
         self.as_mut().set_goal(QString::from(goal.as_str()));
         self.as_mut().set_error(QString::default());
+        self.as_mut().set_notice(QString::default());
         self.as_mut().set_approving(false);
         self.as_mut().sync();
         self.as_mut().set_planning(true);
@@ -470,6 +484,17 @@ impl qobject::Fleet {
 
     pub fn dismiss_error(self: Pin<&mut Self>) {
         self.set_error(QString::default());
+    }
+
+    pub fn dismiss_notice(self: Pin<&mut Self>) {
+        self.set_notice(QString::default());
+    }
+
+    /// The backend's notice for the run of `generation`.
+    fn show_notice(self: Pin<&mut Self>, generation: u64, text: &str) {
+        if self.rust().generation == generation {
+            self.set_notice(QString::from(text));
+        }
     }
 
     /// The plan is in: a card for each task.

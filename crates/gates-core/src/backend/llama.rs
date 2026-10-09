@@ -19,6 +19,26 @@ use std::time::Duration;
 /// Where telamon-llama installs the server.
 pub const PACKAGED_SERVER: &str = "/usr/libexec/telamon-llama/llama-server";
 
+/// Whether the architecture list (`gguf::SUPPORTED_ARCHITECTURES`) says what
+/// the server `binary` loads. It is telamon-llama's build's list, so it
+/// holds for that binary only: a `llama-server` from `$PATH` may be newer,
+/// and is let try. No server found (None) counts as telamon-llama, which is
+/// what Gates will run once installed.
+pub fn knows_architectures(binary: Option<&Path>) -> bool {
+    binary.is_none_or(|b| b == Path::new(PACKAGED_SERVER))
+}
+
+/// The architecture of a model the server `binary` can't load, by the list
+/// (see `knows_architectures`); None when it can, or when the list doesn't
+/// speak for that binary. What the Models page marks Unsupported and the
+/// chat refuses.
+pub fn unsupported_architecture<'a>(
+    info: &'a crate::gguf::Info,
+    binary: Option<&Path>,
+) -> Option<&'a str> {
+    (knows_architectures(binary) && !info.supported()).then_some(info.architecture.as_str())
+}
+
 /// The server binary: telamon-llama's, else a `llama-server` on `$PATH`.
 pub fn find_server() -> Option<PathBuf> {
     find_server_in(Path::new(PACKAGED_SERVER), std::env::var_os("PATH"))
@@ -491,11 +511,12 @@ impl Llama {
                 self.models_dir.display()
             )));
         };
-        // Refused here, in words: llama-server would only fail to load it.
-        if !chosen.info.supported() {
+        // Refused here, in words: telamon-llama's llama-server would only
+        // fail to load it. Another server may know more, and is let try.
+        if let Some(architecture) = unsupported_architecture(&chosen.info, Some(binary.as_path())) {
             return Err(BackendError::Other(unsupported_message(
                 &chosen.name,
-                &chosen.info.architecture,
+                architecture,
             )));
         }
         let all_models = local_models(&self.models_dir);
@@ -1655,10 +1676,11 @@ mod tests {
         assert!(models[1].info.supported(), "Known");
         assert_eq!(chat_models(&dir).len(), 2);
 
-        // /bin/false stands in for the server: it never starts.
+        // Telamon-llama's binary (it needn't exist: the refusal comes
+        // first) knows this list.
         let llama = Llama::new(
             dir.clone(),
-            Some(PathBuf::from("/bin/false")),
+            Some(PathBuf::from(PACKAGED_SERVER)),
             dir.join("server.log"),
             Options::default(),
         );
@@ -1671,14 +1693,50 @@ mod tests {
         assert!(err.contains("“Future-Q4_K_M” can't be loaded"), "{err}");
         assert!(err.contains("“future-arch”"), "{err}");
         assert!(err.contains("Choose another model"), "{err}");
-        // A supported one gets as far as starting the server.
+        // A supported one is not refused.
         asked.model = "Known-Q4_K_M".into();
         let err = llama
             .complete(&asked, &AtomicBool::new(false), &mut |_| {})
             .unwrap_err()
             .to_string();
         assert!(!err.contains("can't be loaded"), "{err}");
+
+        // Another llama-server (/bin/false stands in: it never starts) may
+        // be newer than the list: the unsupported model is let try.
+        let other = Llama::new(
+            dir.clone(),
+            Some(PathBuf::from("/bin/false")),
+            dir.join("server.log"),
+            Options::default(),
+        );
+        asked.model = "Future-Q4_K_M".into();
+        let err = other
+            .complete(&asked, &AtomicBool::new(false), &mut |_| {})
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("can't be loaded"), "{err}");
         assert!(err.contains("didn't start"), "{err}");
+        // What the Models page marks, by the same rule.
+        let future = &models[0].info;
+        let packaged = Path::new(PACKAGED_SERVER);
+        assert_eq!(
+            unsupported_architecture(future, Some(packaged)),
+            Some("future-arch")
+        );
+        assert_eq!(unsupported_architecture(future, None), Some("future-arch"));
+        assert_eq!(
+            unsupported_architecture(future, Some(Path::new("/usr/bin/llama-server"))),
+            None
+        );
+        assert_eq!(
+            unsupported_architecture(&models[1].info, Some(packaged)),
+            None
+        );
+        assert!(knows_architectures(Some(Path::new(PACKAGED_SERVER))));
+        assert!(knows_architectures(None));
+        assert!(!knows_architectures(Some(Path::new(
+            "/usr/bin/llama-server"
+        ))));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

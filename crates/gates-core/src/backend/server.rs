@@ -82,11 +82,32 @@ pub enum Step {
     Done,
 }
 
-/// The `launch` to retry with after a load that ran out of memory, from
+/// Which memory a load ran out of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Memory {
+    /// The graphics card's.
+    Graphics,
+    /// The computer's own (`cannot allocate memory`, `bad_alloc`, a CPU
+    /// buffer). Fewer layers on the card would make it worse.
+    Host,
+}
+
+impl Memory {
+    /// What to call it for the user.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Memory::Graphics => "graphics memory",
+            Memory::Host => "memory",
+        }
+    }
+}
+
+/// The `launch` to retry with after a load that ran out of `memory`, from
 /// step `from` on, and the step after it. A smaller context first (halved,
-/// down to `MIN_CONTEXT`), then half the GPU layers (of the model's, when
-/// they were left to llama.cpp). None when there is nothing lighter.
-pub fn lighter(launch: &Launch, from: Step) -> Option<(Launch, Step)> {
+/// down to `MIN_CONTEXT`), then, for the card's memory only, half the GPU
+/// layers (of the model's, when they were left to llama.cpp). None when
+/// there is nothing lighter.
+pub fn lighter(launch: &Launch, from: Step, memory: Memory) -> Option<(Launch, Step)> {
     if from == Step::Context
         && let Some(context) = launch.context.filter(|c| *c > MIN_CONTEXT)
     {
@@ -96,7 +117,7 @@ pub fn lighter(launch: &Launch, from: Step) -> Option<(Launch, Step)> {
         };
         return Some((smaller, Step::Layers));
     }
-    if from <= Step::Layers {
+    if from <= Step::Layers && memory == Memory::Graphics {
         // A setting above the model's layers (99 means "all") counts as
         // the model's own number: half of 99 would still be all of them.
         let known = (launch.layers > 0).then_some(launch.layers);
@@ -138,12 +159,37 @@ pub fn changes(from: &Launch, to: &Launch) -> String {
     parts.join(" and ")
 }
 
-/// Whether a server's log (or its tail) says it ran out of memory: llama.cpp
-/// and its backends say it in several ways ("failed to allocate",
-/// "ErrorOutOfDeviceMemory", CUDA's "out of memory"). Pinned-memory
-/// warnings, which don't stop a load, don't count.
-pub fn out_of_memory(log: &str) -> bool {
-    const SIGNS: [&str; 8] = [
+/// What a log line says once llama.cpp's timestamp and level ("0.10.780.096
+/// I ") are off it.
+fn log_text(line: &str) -> &str {
+    let line = line.trim_start();
+    let mut parts = line.splitn(3, ' ');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(stamp), Some(level), Some(rest))
+            if stamp.starts_with(|c: char| c.is_ascii_digit())
+                && stamp.contains('.')
+                && matches!(level, "I" | "W" | "E" | "D") =>
+        {
+            rest
+        }
+        _ => line,
+    }
+}
+
+/// Whether a server's log (or its tail) says it ran out of memory, and
+/// which: llama.cpp and its backends say it in several ways ("failed to
+/// allocate", "ErrorOutOfDeviceMemory", CUDA's "out of memory", a
+/// `bad_alloc`).
+///
+/// Only lines that look like what a failing allocation prints count: they
+/// start with what produced them (`ggml_…`, `alloc_…`, `llama_…`,
+/// `load_tensors`, `terminate called`, `vk::`, `error`…). The model's
+/// metadata and chat template, which the server dumps while it loads
+/// (`llama_model_loader: - kv …`, `print_info: …`), can say anything
+/// ("out of memory") and are skipped, as are pinned-memory warnings, which
+/// don't stop a load. A graphics line wins over a host one.
+pub fn out_of_memory(log: &str) -> Option<Memory> {
+    const SIGNS: [&str; 9] = [
         "out of memory",
         "outofdevicememory",
         "outofhostmemory",
@@ -152,11 +198,58 @@ pub fn out_of_memory(log: &str) -> bool {
         "cannot allocate memory",
         "device memory allocation",
         "bad_alloc",
+        "allocation of size",
     ];
-    log.lines().any(|line| {
-        let line = line.to_ascii_lowercase();
-        !line.contains("pinned") && SIGNS.iter().any(|sign| line.contains(sign))
-    })
+    // What produces a failure line, by its start.
+    const PRODUCERS: [&str; 15] = [
+        "ggml",
+        "alloc_",
+        "llama_",
+        "load_tensors",
+        "graph_",
+        "sched_",
+        "common_",
+        "terminate called",
+        "what()",
+        "vk::",
+        "vulkan",
+        "cuda",
+        "hip",
+        "error",
+        "fatal",
+    ];
+    // What the server prints about the model, not about a failure.
+    const DUMPS: [&str; 3] = [
+        "llama_model_loader: -",
+        "print_info:",
+        "llama_model_loader: loaded",
+    ];
+    let mut found = None;
+    for line in log.lines() {
+        let text = log_text(line);
+        let lower = text.to_ascii_lowercase();
+        let looks_like_failure = PRODUCERS.iter().any(|p| lower.starts_with(p))
+            && !DUMPS.iter().any(|d| lower.starts_with(d));
+        if !looks_like_failure
+            || lower.contains("pinned")
+            || !SIGNS.iter().any(|sign| lower.contains(sign))
+        {
+            continue;
+        }
+        let host = [
+            "cannot allocate memory",
+            "bad_alloc",
+            "outofhostmemory",
+            "cpu buffer",
+        ]
+        .iter()
+        .any(|sign| lower.contains(sign));
+        if !host {
+            return Some(Memory::Graphics);
+        }
+        found = Some(Memory::Host);
+    }
+    found
 }
 
 /// The deaths of one model's server, to tell a crash loop.
@@ -563,12 +656,14 @@ impl Server {
     fn start(&self, requested: &Launch, cancel: &AtomicBool) -> Result<Running, StartError> {
         let mut current = requested.clone();
         let mut step = Step::Context;
+        let mut short = Memory::Graphics;
         loop {
             let mut failed = match self.start_once(&current, cancel) {
                 Ok((child, endpoint)) => {
                     let note = (current != *requested).then(|| {
                         format!(
-                            "There wasn't enough graphics memory to load “{}” as set, so it loaded with {}.",
+                            "There wasn't enough {} to load “{}” as set, so it loaded with {}.",
+                            short.noun(),
                             model_name(&requested.model),
                             changes(requested, &current)
                         )
@@ -583,10 +678,11 @@ impl Server {
                 }
                 Err(failed) => failed,
             };
-            if !failed.out_of_memory {
+            let Some(memory) = failed.out_of_memory else {
                 return Err(failed);
-            }
-            if let Some((next, after)) = lighter(&current, step) {
+            };
+            short = memory;
+            if let Some((next, after)) = lighter(&current, step, memory) {
                 crate::applog::warn(&format!(
                     "{} ran out of memory loading: retrying with {}",
                     model_name(&requested.model),
@@ -605,7 +701,8 @@ impl Server {
                 .map(|l| format!(" It said: {l}"))
                 .unwrap_or_default();
             failed.error = BackendError::Unreachable(format!(
-                "There isn't enough memory to load “{}”{tried}. Try a smaller model, or a smaller context in Settings.{line}",
+                "There isn't enough {} to load “{}”{tried}. Try a smaller model, or a smaller context in Settings.{line}",
+                memory.noun(),
                 model_name(&requested.model)
             ));
             return Err(failed);
@@ -668,8 +765,10 @@ impl Server {
                 stop(child);
                 let last = last_line(&self.log);
                 // Only a server that ended on its own says why in its log.
-                let out_of_memory =
-                    unready.exited && out_of_memory(&read_tail(&self.log, LOG_TAIL));
+                let out_of_memory = unready
+                    .exited
+                    .then(|| out_of_memory(&read_tail(&self.log, LOG_TAIL)))
+                    .flatten();
                 Err(StartError {
                     error: BackendError::Unreachable(match last {
                         Some(line) => format!(
@@ -692,7 +791,7 @@ impl Server {
 struct StartError {
     error: BackendError,
     exited: bool,
-    out_of_memory: bool,
+    out_of_memory: Option<Memory>,
 }
 
 impl From<BackendError> for StartError {
@@ -700,7 +799,7 @@ impl From<BackendError> for StartError {
         StartError {
             error,
             exited: false,
-            out_of_memory: false,
+            out_of_memory: None,
         }
     }
 }
@@ -1019,30 +1118,77 @@ mod tests {
 
     #[test]
     fn logs_that_say_the_memory_ran_out() {
-        for log in [
+        let graphics = [
             "ggml_vulkan: Device memory allocation of size 17179869184 failed.",
             "llama_model_load: error loading model: vk::Device::allocateMemory: ErrorOutOfDeviceMemory",
             "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9000 MiB on device 0: cudaMalloc failed: out of memory",
             "alloc_tensor_range: failed to allocate Vulkan0 buffer of size 4294967296",
             "llama_init_from_model: failed to initialize the context: failed to allocate buffer for kv cache",
+            // With llama.cpp's timestamp and level in front.
+            "0.10.780.096 E alloc_tensor_range: failed to allocate Vulkan0 buffer of size 99",
+        ];
+        for log in graphics {
+            assert_eq!(out_of_memory(log), Some(Memory::Graphics), "{log}");
+        }
+        // The computer's own memory, not the card's.
+        for log in [
             "terminate called after throwing an instance of 'std::bad_alloc'",
             "load_tensors: unable to allocate CPU buffer",
+            "alloc_tensor_range: failed to allocate CPU buffer of size 99",
+            "ggml_aligned_malloc: insufficient memory: cannot allocate memory",
         ] {
-            assert!(out_of_memory(log), "{log}");
+            assert_eq!(out_of_memory(log), Some(Memory::Host), "{log}");
         }
+        // A card's failure wins over a host one in the same log.
+        let both = "terminate called after throwing an instance of 'std::bad_alloc'\nggml_vulkan: Device memory allocation of size 9 failed.\n";
+        assert_eq!(out_of_memory(both), Some(Memory::Graphics));
         // Among a long log, anywhere.
         let log = "load: loading\nload: ok\nggml_vulkan: Failed to allocate memory\nllama: exit\n";
-        assert!(out_of_memory(log));
+        assert_eq!(out_of_memory(log), Some(Memory::Graphics));
         for log in [
             "",
             "error: failed to load model",
             "common_init_from_params: failed to create context with model",
             "error loading model: unknown model architecture: 'foo'",
             "warning: failed to allocate 512 MiB of pinned memory: out of memory",
+            "ggml_cuda_host_malloc: failed to allocate pinned memory",
             "listening on 127.0.0.1:8080",
         ] {
-            assert!(!out_of_memory(log), "{log}");
+            assert_eq!(out_of_memory(log), None, "{log}");
         }
+    }
+
+    #[test]
+    fn the_models_own_text_is_not_a_failure() {
+        // The server dumps the GGUF's metadata and the chat template while
+        // it loads: they can say anything.
+        let log = "\
+0.00.001.000 I llama_model_loader: - kv   3: general.description str = A model that never runs out of memory\n\
+llama_model_loader: - kv  30: tokenizer.chat_template str = {% if x %}failed to allocate{% endif %}\n\
+print_info: general.name = Out Of Memory 7B (failed to allocate)\n\
+srv    load_model: chat template, example_format: 'it ran out of memory'\n\
+main: the model said: cannot allocate memory\n\
+llama_model_load: error loading model: invalid tensor shape\n";
+        assert_eq!(out_of_memory(log), None);
+        // The same words from a failing allocation count.
+        let log = format!("{log}alloc_tensor_range: failed to allocate Vulkan0 buffer of size 1\n");
+        assert_eq!(out_of_memory(&log), Some(Memory::Graphics));
+    }
+
+    #[test]
+    fn host_memory_only_shrinks_the_context() {
+        let big = Launch {
+            context: Some(32_768),
+            gpu_layers: Some(30),
+            ..launch()
+        };
+        let (one, step) = lighter(&big, Step::Context, Memory::Host).unwrap();
+        assert_eq!((one.context, one.gpu_layers), (Some(16_384), Some(30)));
+        // Fewer layers on the card would put more in the computer's memory.
+        assert!(lighter(&one, step, Memory::Host).is_none());
+        assert!(lighter(&one, step, Memory::Graphics).is_some());
+        assert_eq!(Memory::Host.noun(), "memory");
+        assert_eq!(Memory::Graphics.noun(), "graphics memory");
     }
 
     #[test]
@@ -1054,22 +1200,22 @@ mod tests {
             ..launch()
         };
         // First the context, halved...
-        let (one, step) = lighter(&big, Step::Context).unwrap();
+        let (one, step) = lighter(&big, Step::Context, Memory::Graphics).unwrap();
         assert_eq!((one.context, one.gpu_layers), (Some(16_384), None));
         assert_eq!(step, Step::Layers);
         // ...then half the model's layers (they were left to llama.cpp)...
-        let (two, step) = lighter(&one, step).unwrap();
+        let (two, step) = lighter(&one, step, Memory::Graphics).unwrap();
         assert_eq!((two.context, two.gpu_layers), (Some(16_384), Some(18)));
         assert_eq!(step, Step::Done);
         // ...and then there is nothing.
-        assert!(lighter(&two, step).is_none());
+        assert!(lighter(&two, step, Memory::Graphics).is_none());
         // A context already at the floor goes straight to the layers.
         let floor = Launch {
             context: Some(MIN_CONTEXT),
             gpu_layers: Some(30),
             ..launch()
         };
-        let (fewer, _) = lighter(&floor, Step::Context).unwrap();
+        let (fewer, _) = lighter(&floor, Step::Context, Memory::Graphics).unwrap();
         assert_eq!((fewer.context, fewer.gpu_layers), (Some(4096), Some(15)));
         // "All layers" set as 99 on a 36-layer model: half of 36, not of 99.
         let all = Launch {
@@ -1077,27 +1223,39 @@ mod tests {
             gpu_layers: Some(99),
             ..launch()
         };
-        assert_eq!(lighter(&all, Step::Context).unwrap().0.gpu_layers, Some(18));
+        assert_eq!(
+            lighter(&all, Step::Context, Memory::Graphics)
+                .unwrap()
+                .0
+                .gpu_layers,
+            Some(18)
+        );
         // Halving stops at the floor.
         let near = Launch {
             context: Some(6000),
             ..launch()
         };
-        assert_eq!(lighter(&near, Step::Context).unwrap().0.context, Some(4096));
+        assert_eq!(
+            lighter(&near, Step::Context, Memory::Graphics)
+                .unwrap()
+                .0
+                .context,
+            Some(4096)
+        );
         // No layers to take: all on the processor already, or not known.
         let cpu = Launch {
             context: Some(4096),
             gpu_layers: Some(0),
             ..launch()
         };
-        assert!(lighter(&cpu, Step::Context).is_none());
+        assert!(lighter(&cpu, Step::Context, Memory::Graphics).is_none());
         let unknown = Launch {
             context: None,
             gpu_layers: None,
             layers: 0,
             ..launch()
         };
-        assert!(lighter(&unknown, Step::Context).is_none());
+        assert!(lighter(&unknown, Step::Context, Memory::Graphics).is_none());
     }
 
     #[test]
@@ -1301,7 +1459,7 @@ mod tests {
         let err = server.acquire(&wanted).unwrap_err().to_string();
         // 16384, then 8192, then 15 layers; then it gives up.
         assert_eq!(starts(&dir), 3);
-        assert!(err.contains("isn't enough memory"), "{err}");
+        assert!(err.contains("isn't enough graphics memory"), "{err}");
         assert!(err.contains("“qwen”"), "{err}");
         assert!(err.contains("8192 tokens instead of 16384"), "{err}");
         assert!(err.contains("failed to allocate Vulkan0"), "{err}");
@@ -1324,6 +1482,94 @@ mod tests {
         assert_eq!(starts(&dir), 1);
         assert!(err.contains("unknown model architecture"), "{err}");
         assert!(!err.contains("enough memory"), "{err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_metadata_line_that_says_out_of_memory_is_not_one() {
+        // The model's own description mentions it; the server fails for
+        // another reason: no retry.
+        let (dir, fake) = fake_server(
+            "metadata",
+            "echo 'llama_model_loader: - kv   3: general.description str = never runs out of memory, failed to allocate' >&2\n\
+             echo 'print_info: general.name = out of memory' >&2\n\
+             echo 'llama_model_load: error loading model: invalid tensor shape' >&2\n\
+             exit 1",
+        );
+        let server = Server::new(dir.join("server.log"));
+        let wanted = Launch {
+            binary: fake,
+            context: Some(32_768),
+            gpu_layers: Some(30),
+            ..launch()
+        };
+        let err = server.acquire(&wanted).unwrap_err().to_string();
+        assert_eq!(starts(&dir), 1, "no retries");
+        assert!(err.contains("invalid tensor shape"), "{err}");
+        assert!(!err.contains("enough"), "{err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn running_out_of_the_computers_memory_only_shrinks_the_context() {
+        // Always fails with a bad_alloc: the context goes down once, and
+        // the layers on the card are left alone.
+        let (dir, fake) = fake_server(
+            "host-oom",
+            "echo \"terminate called after throwing an instance of 'std::bad_alloc'\" >&2\nexit 134",
+        );
+        let server = Server::new(dir.join("server.log"));
+        let wanted = Launch {
+            binary: fake,
+            context: Some(32_768),
+            gpu_layers: Some(30),
+            ..launch()
+        };
+        let err = server.acquire(&wanted).unwrap_err().to_string();
+        assert_eq!(
+            starts(&dir),
+            2,
+            "{:?}",
+            fs::read_to_string(dir.join("starts"))
+        );
+        let seen = fs::read_to_string(dir.join("starts")).unwrap();
+        assert!(!seen.contains("layers=15"), "{seen}");
+        assert!(err.contains("isn't enough memory"), "{err}");
+        assert!(!err.contains("graphics"), "{err}");
+        let _ = fs::remove_dir_all(&dir);
+
+        // And when the smaller context loads, the note says "memory".
+        let (dir, fake) = fake_server(
+            "host-oom-ok",
+            "if [ \"$ctx\" -gt 16384 ]; then\n\
+               echo 'terminate called after throwing an instance of std::bad_alloc' >&2\n\
+               exit 134\n\
+             fi\n\
+             echo $port > \"$dir/port\"\n\
+             exec sleep 30",
+        );
+        let stop = Arc::new(AtomicBool::new(false));
+        let health = answer_health(dir.clone(), stop.clone());
+        let server = Server::new(dir.join("server.log"));
+        let wanted = Launch {
+            binary: fake,
+            context: Some(32_768),
+            gpu_layers: Some(30),
+            ..launch()
+        };
+        let mut said = Vec::new();
+        server
+            .acquire_noting(&wanted, &AtomicBool::new(false), &mut |n| {
+                said.push(n.to_string())
+            })
+            .unwrap();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("enough memory to load"), "{}", said[0]);
+        assert!(!said[0].contains("graphics"), "{}", said[0]);
+        assert!(said[0].contains("a context of 16384 tokens"), "{}", said[0]);
+        server.stop();
+        stop.store(true, Ordering::Relaxed);
+        let _ = health.join();
         let _ = fs::remove_dir_all(&dir);
     }
 

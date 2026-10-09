@@ -137,7 +137,9 @@ pub mod qobject {
 use core::pin::Pin;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{CaseSensitivity, QList, QString, QStringList};
-use gates_core::backend::llama::{local_models, local_projectors, projector_for};
+use gates_core::backend::llama::{
+    find_server, local_models, local_projectors, projector_for, unsupported_architecture,
+};
 use gates_core::hub::{self, ModelFile};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -214,6 +216,9 @@ impl qobject::ModelLibrary {
             // and tools; images from a projector file beside it.
             let found = local_models(&dir);
             let projectors = local_projectors(&dir);
+            // The architecture list is telamon-llama's: another server found
+            // on the path may load more.
+            let server = find_server();
             let models: Vec<_> = found
                 .iter()
                 .map(|m| {
@@ -236,12 +241,10 @@ impl qobject::ModelLibrary {
                         f64::from(m.info.context_length),
                         flag(m.info.tools),
                         flag(projector_for(m, &found, &projectors).is_some()),
-                        // The architecture llama-server can't load, else "".
-                        if m.info.supported() {
-                            String::new()
-                        } else {
-                            m.info.architecture.clone()
-                        },
+                        // The architecture the server can't load, else "".
+                        unsupported_architecture(&m.info, server.as_deref())
+                            .unwrap_or_default()
+                            .to_string(),
                     )
                 })
                 .collect();

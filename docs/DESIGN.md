@@ -74,7 +74,8 @@ beside it.
   doesn't know (the GGUF's `general.architecture` against the packaged
   llama.cpp's list, see `docs/BACKEND.md` → Server failures) shows an error
   badge, Unsupported, instead of those, and "Architecture “x” isn't
-  supported" in its subtitle; choosing it in the chat gives an error that
+  supported" in its subtitle (only while the server is telamon-llama's: one
+  from the path may load more, so nothing is marked then); choosing it in the chat gives an error that
   says so, and the server is not started. Vision projectors
   (`mmproj-…`) and the later parts of a split model are not listed. *Get
   Models* searches Hugging Face for GGUF repositories (`hub.rs`), opens one to
@@ -176,7 +177,9 @@ beside it.
     way). The goal card holds a text box and the folder the agents work in,
     with Choose Folder… (the portal's dialog; the folder is checked like an
     agent's workspace). While a run is under way the goal is only read,
-    two or three lines.
+    two or three lines. Above it, banners: an error one, and a warning one
+    (`notice`, plain text, closable) when the model server loaded the model
+    with less than was set because memory was short.
   - **Question:** when an agent wants to change something, a card with the
     agent's name, the text or command as plain text, and Deny, Allow All
     Edits by This Agent (for edits), and Allow (Run for a command). The

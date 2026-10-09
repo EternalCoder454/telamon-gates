@@ -119,15 +119,24 @@ the demo otherwise.
 What Gates does when the model server it runs (`server.rs`) fails. None of
 it applies to a server address set in Settings, except the last item.
 
-- **Out of graphics memory on load.** When the server ends while the model
-  loads and the end of its log (64 KiB) says memory ran out
-  (`out_of_memory`: "failed to allocate", "out of memory",
-  "ErrorOutOfDeviceMemory", "Device memory allocation … failed",
-  "bad_alloc"; pinned-memory warnings don't count), Gates starts it again
-  with something lighter (`lighter`), at most twice:
+- **Out of memory on load.** When the server ends while the model loads
+  and the end of its log (64 KiB) says memory ran out (`out_of_memory`:
+  "failed to allocate", "out of memory", "ErrorOutOfDeviceMemory",
+  "Device memory allocation … failed", "bad_alloc"), Gates starts it again
+  with something lighter (`lighter`), at most twice. Only lines that look
+  like a failing allocation count: they start with what produced them
+  (`ggml_…`, `alloc_…`, `llama_…`, `load_tensors`, `terminate called`,
+  `vk::`, `error`). The metadata and chat template the server dumps while
+  it loads (`llama_model_loader: - kv …`, `print_info: …`, `srv …`) can say
+  anything and are skipped, and so are pinned-memory warnings, which don't
+  stop a load. A log that is about the computer's own memory
+  (`cannot allocate memory`, `bad_alloc`, a CPU buffer) is told from the
+  card's (`Memory::Host`, `Memory::Graphics`):
   1. the context halved, but not below 4096 tokens (skipped when it is
      there already);
-  2. half the layers on the card: `--n-gpu-layers` is half of what was set
+  2. for the card's memory only, half the layers on the card (fewer on the
+     card means more in the computer's memory, so a host failure only gets
+     step 1): `--n-gpu-layers` is half of what was set
      (or of the model's layers, when the setting is above them: 99 means
      all) or, when it was left to llama.cpp, half the model's layers
      (`<arch>.block_count`, `gguf::Info::block_count`, `Launch::layers`).
@@ -135,9 +144,12 @@ it applies to a server address set in Settings, except the last item.
   Any other reason for a failed start (a bad file, a timeout, Stop) is not
   retried. If the retry loads, the first reply gets one notice, as
   `Event::Notice` ("There wasn't enough graphics memory to load “X” as set,
-  so it loaded with a context of 16384 tokens instead of 32768."), shown
+  so it loaded with a context of 16384 tokens instead of 32768."; "memory"
+  alone for the computer's), shown
   in a warning banner above the messages (`Chat.notice`, plain text, gone
-  when the next reply starts). A server asked for the same options later is
+  when the next reply starts; the Fleet page has the same banner,
+  `FleetHost::notice`, fed by the coordinator's reply and the agents').
+  A server asked for the same options later is
   not restarted for being lighter. If the last try fails too, the error says
   there isn't enough memory, what was tried, and the log's last line. Each
   start tries what was asked first; nothing is remembered between starts.
@@ -153,11 +165,14 @@ it applies to a server address set in Settings, except the last item.
   `SUPPORTED_ARCHITECTURES` is the list of `LLM_ARCH_NAMES` in the packaged
   llama.cpp's `src/llama-arch.cpp` (v0.6.0, less `clip`; a test checks the
   tag against `telamon-llama.spec`, so bumping the package means checking
-  the list). The Models page marks other files Unsupported and the chat
-  refuses to load one: "“X” can't be loaded: it is a “foo” model, and the
-  model server (llama.cpp v0.6.0) doesn't support that architecture."
-  A file whose header gives no architecture is let through for llama.cpp to
-  explain.
+  the list). With telamon-llama's `llama-server` (`PACKAGED_SERVER`) the
+  Models page marks other files Unsupported and the chat refuses to load
+  one: "“X” can't be loaded: it is a “foo” model, and the model server
+  (llama.cpp v0.6.0) doesn't support that architecture." Another
+  `llama-server` found on `$PATH` may be newer than the list: with it
+  nothing is marked or refused, and the model is let try
+  (`knows_architectures`, `unsupported_architecture`). A file whose header
+  gives no architecture is let through for llama.cpp to explain.
 - **Strict OpenAI-style servers** (a server address set in Settings). The
   brief-reasoning fields (`reasoning_effort`, `chat_template_kwargs`, added
   by `request_body` when `Request::brief`) can make such a server answer 400.

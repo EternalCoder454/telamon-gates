@@ -158,6 +158,16 @@ TelamonPage {
         }
     }
 
+    // What the model server changed to load the model. Plain text.
+    InfoBanner {
+        Layout.fillWidth: true
+        type: "warning"
+        text: page.fleet.notice
+        shown: page.fleet.notice.length > 0
+        closable: true
+        onClosed: page.fleet.dismissNotice()
+    }
+
     InfoBanner {
         Layout.fillWidth: true
         type: "error"
