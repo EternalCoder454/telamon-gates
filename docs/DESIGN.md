@@ -58,12 +58,14 @@ beside it.
   Folder while the models folder is empty; an error banner with Try Again when
   a reply fails. The first two come from the first-run check (see Startup).
   A warning banner with Open Folder and a dismiss cross, above those, when
-  reading the conversations put something right (see Data): "1 conversation
-  couldn't be read and was set aside in …/damaged.", a restore from a backup,
-  a save finished after a crash, or files from a newer Gates left alone. It
-  is said once, when the list is read (or when opening a conversation finds a
-  damaged file), and Open Folder shows the `damaged` folder (else the
-  conversations).
+  reading the conversations put something right (see Data). It is short, with
+  no path (Open Folder opens the `damaged` folder, else the conversations):
+  "1 conversation couldn't be read and was set aside.", "2 conversations
+  couldn't be read: 1 was restored from a saved copy, 1 was set aside.", "1
+  conversation was recovered from an interrupted save.", or "1 conversation
+  is from a newer version of Telamon Gates and was left as it is." It is
+  said once, when the list is read (or when opening a conversation finds a
+  damaged file).
 - **Models**: *On This Computer* lists each model in the models folder
   (`$XDG_DATA_HOME/telamon-gates/models`) with its quantisation and size label
   from the file's GGUF header (`gguf.rs`, bounded reads), its size, a badge
@@ -353,19 +355,28 @@ the folder. `gates-core/src/store.rs` keeps the rest safe:
   higher one (from a newer Gates) is not listed, opened or overwritten (a
   save over it fails), and the banner says so.
 - **Backups:** a save first keeps the file it replaces as `<id>.json.bak`
-  (0600, one generation, only if that file was good). Deleting a conversation
-  deletes its `.bak` too.
+  (0600, one generation, only if that file was good).
 - **Damaged files:** a file that doesn't parse (or whose `id` isn't its name)
   is moved, never skipped or written over, to `conversations/damaged/<id>.
   <YYYYMMDD-HHMMSS UTC>.json` (folder 0700, file 0600). If its `.bak` parses,
-  that is put in its place and the banner says it was restored. Opening a
-  file that went bad during the session does the same, and a save over one
-  sets it aside first, keeping the good `.bak`. The log names the place in
+  that is put in its place and the banner says it was restored. The file
+  is read once more just before the move, and left where it is if it parses
+  by then (a sync tool may have finished writing it). Opening a file that
+  went bad during the session does the same, and a save over one sets it
+  aside first, keeping the good `.bak`. The permissions are set on the moved
+  file only when it is a regular file (never through a symlink), and a chmod
+  that fails is logged, not fatal. The log names the place in
   the file the parser stopped at, never its text.
-- **Interrupted saves:** at each list, a leftover `.<id>.json.tmp` is moved
-  into place when `<id>.json` is gone and it parses (a crash between the sync
-  and the rename), else removed: the file on disk is the last saved state. A
+- **Interrupted saves:** at each list, a leftover `.<id>.json.tmp` that
+  parses (a crash between the sync and the rename) is moved into place when
+  `<id>.json` is gone, or when `<id>.json` is damaged (that file is set aside
+  first; the temporary file is newer than the `.bak`, so it goes first), and
+  removed when `<id>.json` is good: the file on disk is the last saved state.
+  One cut short is removed. One from a newer Gates is always kept. A
   `.bak.tmp` is removed.
+- **Deleting:** removes `<id>.json` first, then its `.bak`, leftover temporary
+  files and its copies in `damaged/` (`<id>.*.json`): the user asked for it
+  to be gone.
 
 Settings are `~/.config/telamon-gatesrc`, group `[Chat]`
 (`Model`, `CodeModel`, `SystemPrompt`, and for web search `WebSearch`,

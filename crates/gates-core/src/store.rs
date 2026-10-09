@@ -47,7 +47,8 @@ pub struct Report {
     /// Files that couldn't be read, moved to `damaged/` (the restored ones
     /// included).
     pub set_aside: usize,
-    /// Of those, the ones whose `.bak` was good and now stands in.
+    /// Of those, the ones a good copy now stands in for: the `.bak`, or the
+    /// whole temporary file of an interrupted save.
     pub restored: usize,
     /// Conversations finished from the temporary file of an interrupted save.
     pub finished: usize,
@@ -69,33 +70,30 @@ impl Report {
         self.newer = self.newer.max(other.newer);
     }
 
-    /// The notice for the window, in a few sentences (empty when there is
-    /// nothing to say). `damaged` is the folder files were set aside in.
-    pub fn describe(&self, damaged: &Path) -> String {
+    /// The notice for the window, short, as plain text (empty when there is
+    /// nothing to say). No paths: its Open Folder button opens the folder
+    /// the files were set aside in.
+    pub fn describe(&self) -> String {
         let lost = self.set_aside.saturating_sub(self.restored);
         let mut parts = Vec::new();
-        if lost > 0 {
-            parts.push(format!(
-                "{} couldn't be read and {} set aside in {}.",
-                conversations(lost),
-                was(lost),
-                damaged.display()
-            ));
-        }
-        if self.restored > 0 {
-            let n = self.restored;
-            parts.push(format!(
-                "{} couldn't be read and {} restored from {}; the damaged {} in {}.",
+        match (lost, self.restored) {
+            (0, 0) => {}
+            (n, 0) => parts.push(format!(
+                "{} couldn't be read and {} set aside.",
                 conversations(n),
-                was(n),
-                if n == 1 {
-                    "its backup"
-                } else {
-                    "their backups"
-                },
-                if n == 1 { "file is" } else { "files are" },
-                damaged.display()
-            ));
+                was(n)
+            )),
+            (0, n) => parts.push(format!(
+                "{} couldn't be read and {} restored from a saved copy.",
+                conversations(n),
+                was(n)
+            )),
+            (l, r) => parts.push(format!(
+                "{} couldn't be read: {r} {} restored from a saved copy, {l} {} set aside.",
+                conversations(l + r),
+                was(r),
+                was(l)
+            )),
         }
         if self.finished > 0 {
             let n = self.finished;
@@ -108,9 +106,9 @@ impl Report {
         if self.newer > 0 {
             let n = self.newer;
             parts.push(format!(
-                "{} {} saved by a newer version of Telamon Gates and {} left as {}.",
+                "{} {} from a newer version of Telamon Gates and {} left as {}.",
                 conversations(n),
-                was(n),
+                if n == 1 { "is" } else { "are" },
                 was(n),
                 if n == 1 { "it is" } else { "they are" }
             ));
@@ -180,6 +178,23 @@ enum Parsed {
     /// the file, never its text: conversations are private, and the reason
     /// goes in the log.
     Damaged(String),
+}
+
+/// What `set_aside_damaged` did.
+enum Aside {
+    /// The file was still unreadable and is now at this path.
+    Moved(PathBuf),
+    /// It parses now (or is from a newer Gates): not moved. Its bytes are
+    /// what was read.
+    Changed(Parsed, Vec<u8>),
+}
+
+/// Removes a leftover temporary file, and says so.
+fn remove_leftover(path: &Path, name: &str) {
+    match fs::remove_file(path) {
+        Ok(()) => event!("removed the leftover of an interrupted save: {name}"),
+        Err(e) => event!("cannot remove {name}: {e}"),
+    }
 }
 
 fn parse(bytes: &[u8], id: &str) -> Parsed {
@@ -300,8 +315,14 @@ impl Store {
             Parsed::Damaged(why) => why,
         };
         event!("conversation {id} can't be read ({why})");
-        // Failing to move it leaves it where it is, and says so.
-        let moved = self.set_aside(id)?;
+        // Failing to move it leaves it where it is, and says so. It is read
+        // once more first: a sync tool may have finished writing it.
+        let moved = match self.set_aside_damaged(id)? {
+            Aside::Moved(to) => to,
+            Aside::Changed(Parsed::Ok(c), _) => return Ok(c),
+            Aside::Changed(Parsed::Newer(v), _) => return Err(newer_error(v)),
+            Aside::Changed(Parsed::Damaged(_), _) => return Err(damaged_error()),
+        };
         report.set_aside += 1;
         event!("conversation {id} set aside as {}", moved.display());
         let Some((c, backup)) = self.backup_of(id) else {
@@ -339,6 +360,20 @@ impl Store {
         }
     }
 
+    /// Reads `<id>.json` again and moves it aside only if it still doesn't
+    /// parse: between the first read and now, a sync tool may have finished
+    /// writing it, and a good file must never be moved.
+    fn set_aside_damaged(&self, id: &str) -> io::Result<Aside> {
+        let bytes = fs::read(self.path(id)?)?;
+        match parse(&bytes, id) {
+            Parsed::Damaged(_) => self.set_aside(id).map(Aside::Moved),
+            other => {
+                event!("conversation {id} is readable now; left where it is");
+                Ok(Aside::Changed(other, bytes))
+            }
+        }
+    }
+
     /// Moves `<id>.json` to `damaged/<id>.<UTC time>.json` (owner only, like
     /// the other files) and returns where it went.
     fn set_aside(&self, id: &str) -> io::Result<PathBuf> {
@@ -360,16 +395,30 @@ impl Store {
             .find(|p| !p.exists())
             .expect("an unbounded range");
         fs::rename(&from, &to)?;
-        fs::set_permissions(&to, fs::Permissions::from_mode(0o600))?;
+        // Owner only, but the move is done: failing to chmod must not undo or
+        // hide it. Only a regular file we moved is changed, never what a
+        // symlink points at.
+        if fs::symlink_metadata(&to).is_ok_and(|m| m.is_file())
+            && let Err(e) = fs::set_permissions(&to, fs::Permissions::from_mode(0o600))
+        {
+            event!("cannot make {} private: {e}", to.display());
+        }
         Ok(to)
     }
 
-    /// The leftovers of writes a crash interrupted. A `.<id>.json.tmp` is the
-    /// whole next version when the crash came between its sync and its
-    /// rename: if `<id>.json` is gone, it is moved into place, but only when
-    /// it parses. Otherwise (the file it was to replace is there, or it is
-    /// cut short) it is removed, and the file on disk stays the last saved
-    /// state. A `.<id>.json.bak.tmp` is only ever a half-made backup.
+    /// The leftovers of writes a crash interrupted.
+    ///
+    /// A `.<id>.json.tmp` is the whole next version when the crash came
+    /// between its sync and its rename. If it parses:
+    /// - and `<id>.json` is gone, it is moved into place;
+    /// - and `<id>.json` is damaged, that file is set aside and the temporary
+    ///   one moved into place (it is newer than the `.bak`, so it goes first);
+    /// - and `<id>.json` is good, it is removed: the file on disk is the last
+    ///   saved state.
+    ///
+    /// One cut short is removed. One from a newer Gates is kept, whatever is
+    /// beside it: nothing of a newer version is ever deleted. A
+    /// `.<id>.json.bak.tmp` is only ever a half-made backup, and is removed.
     fn clean_temporary(&self, report: &mut Report) {
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return;
@@ -383,25 +432,67 @@ impl Store {
                 continue;
             };
             let path = self.dir.join(&name);
-            if let Some(id) = inner.strip_suffix(".json").filter(|id| valid_id(id)) {
-                let main = self.dir.join(format!("{id}.json"));
-                if !main.exists()
-                    && let Ok(bytes) = fs::read(&path)
-                    && matches!(parse(&bytes, id), Parsed::Ok(_))
-                    && fs::rename(&path, &main).is_ok()
-                {
-                    report.finished += 1;
-                    event!("conversation {id} finished from an interrupted save");
+            let Some(id) = inner.strip_suffix(".json").filter(|id| valid_id(id)) else {
+                if inner.strip_suffix(".json.bak").is_some_and(valid_id) {
+                    remove_leftover(&path, &name);
+                }
+                // Anything else is not one of ours.
+                continue;
+            };
+            let bytes = match fs::read(&path) {
+                Ok(b) => b,
+                Err(e) => {
+                    event!("cannot read {name}: {e}");
                     continue;
                 }
-            } else if !inner.strip_suffix(".json.bak").is_some_and(valid_id) {
-                // Not one of ours.
-                continue;
+            };
+            match parse(&bytes, id) {
+                Parsed::Newer(_) => event!("kept {name}: it is from a newer version"),
+                Parsed::Damaged(_) => remove_leftover(&path, &name),
+                Parsed::Ok(_) => self.finish_save(id, &path, &name, report),
             }
-            match fs::remove_file(&path) {
-                Ok(()) => event!("removed the leftover of an interrupted save: {name}"),
-                Err(e) => event!("cannot remove {name}: {e}"),
+        }
+    }
+
+    /// `clean_temporary` for a whole `.<id>.json.tmp` at `tmp`.
+    fn finish_save(&self, id: &str, tmp: &Path, name: &str, report: &mut Report) {
+        let main = self.dir.join(format!("{id}.json"));
+        let main_is_damaged = match fs::read(&main) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+            Err(e) => {
+                // Neither file is touched while one can't be looked at.
+                event!("cannot read {id}.json: {e}");
+                return;
             }
+            Ok(bytes) => match parse(&bytes, id) {
+                Parsed::Damaged(_) => true,
+                Parsed::Ok(_) | Parsed::Newer(_) => return remove_leftover(tmp, name),
+            },
+        };
+        if main_is_damaged {
+            match self.set_aside_damaged(id) {
+                Ok(Aside::Moved(to)) => {
+                    report.set_aside += 1;
+                    event!("conversation {id} set aside as {}", to.display());
+                }
+                // Readable after all (a sync finished): nothing to replace.
+                Ok(Aside::Changed(..)) => return remove_leftover(tmp, name),
+                Err(e) => {
+                    event!("cannot set aside conversation {id}: {e}");
+                    return;
+                }
+            }
+        }
+        match fs::rename(tmp, &main) {
+            Ok(()) if main_is_damaged => {
+                report.restored += 1;
+                event!("conversation {id} restored from the file of an interrupted save");
+            }
+            Ok(()) => {
+                report.finished += 1;
+                event!("conversation {id} finished from an interrupted save");
+            }
+            Err(e) => event!("cannot finish {name}: {e}"),
         }
     }
 
@@ -422,8 +513,29 @@ impl Store {
             })
         }
         .map_err(io::Error::other)?;
-        match fs::read(&path) {
-            Ok(old) => match parse(&old, &c.id) {
+        let mut previous = match fs::read(&path) {
+            Ok(old) => Some(old),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
+        // A file that doesn't parse is set aside, never written over.
+        if let Some(old) = &previous
+            && let Parsed::Damaged(why) = parse(old, &c.id)
+        {
+            event!(
+                "conversation {} can't be read ({why}); setting it aside",
+                c.id
+            );
+            previous = match self.set_aside_damaged(&c.id) {
+                Ok(Aside::Moved(_)) => None,
+                // Readable by now: it is what gets backed up (or refused).
+                Ok(Aside::Changed(_, fresh)) => Some(fresh),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e),
+            };
+        }
+        if let Some(old) = previous {
+            match parse(&old, &c.id) {
                 // Only a good file becomes the backup: a damaged one must
                 // not replace a good backup.
                 Parsed::Ok(_) => {
@@ -432,28 +544,41 @@ impl Store {
                     }
                 }
                 Parsed::Newer(v) => return Err(newer_error(v)),
-                Parsed::Damaged(why) => {
-                    event!(
-                        "conversation {} can't be read ({why}); setting it aside",
-                        c.id
-                    );
-                    self.set_aside(&c.id)?;
-                }
-            },
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
+                Parsed::Damaged(_) => {}
+            }
         }
         write_private(&path, &json)
     }
 
-    /// Removes the conversation, its backup and any leftover temporary file.
+    /// Removes the conversation: its file first, then its backup, any
+    /// leftover temporary file, and the copies of it set aside in `damaged/`
+    /// (deleting is asking for it to be gone).
     pub fn delete(&self, id: &str) -> io::Result<()> {
         let main = self.path(id)?;
-        for extra in [
+        let result = match fs::remove_file(main) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            r => r,
+        };
+        let mut extras = vec![
             self.backup_path(id),
             self.dir.join(format!(".{id}.json.bak.tmp")),
             self.dir.join(format!(".{id}.json.tmp")),
-        ] {
+        ];
+        // `<id>.<time>.json`: an id has no dot, so the dot ends it.
+        let prefix = format!("{id}.");
+        if let Ok(entries) = fs::read_dir(self.damaged_dir()) {
+            extras.extend(
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|e| {
+                        e.file_name()
+                            .to_str()
+                            .is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".json"))
+                    })
+                    .map(|e| e.path()),
+            );
+        }
+        for extra in extras {
             match fs::remove_file(&extra) {
                 Err(e) if e.kind() != io::ErrorKind::NotFound => {
                     event!("cannot remove {}: {e}", extra.display());
@@ -461,10 +586,7 @@ impl Store {
                 _ => {}
             }
         }
-        match fs::remove_file(main) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            r => r,
-        }
+        result
     }
 
     fn path(&self, id: &str) -> io::Result<PathBuf> {
@@ -1015,42 +1137,223 @@ mod tests {
         let _ = fs::remove_dir_all(store.dir());
     }
 
+    #[test]
+    fn a_file_that_is_readable_again_is_not_moved() {
+        // A sync tool finished writing it between the read that failed and
+        // the move: it is read once more, and left where it is.
+        let store = temp_store("again");
+        let c = saved(&store, "ab-1", "whole");
+        match store.set_aside_damaged("ab-1").unwrap() {
+            Aside::Changed(Parsed::Ok(back), bytes) => {
+                assert_eq!(back, c);
+                assert_eq!(bytes, fs::read(file(&store, "ab-1.json")).unwrap());
+            }
+            _ => panic!("a whole file must not be moved"),
+        }
+        let newer = r#"{"version":9,"id":"ab-2"}"#;
+        fs::write(file(&store, "ab-2.json"), newer).unwrap();
+        assert!(matches!(
+            store.set_aside_damaged("ab-2").unwrap(),
+            Aside::Changed(Parsed::Newer(9), _)
+        ));
+        assert!(file(&store, "ab-1.json").exists() && file(&store, "ab-2.json").exists());
+        assert!(damaged(&store).is_empty());
+        // Still damaged: moved.
+        fs::write(file(&store, "ab-3.json"), "{").unwrap();
+        assert!(matches!(
+            store.set_aside_damaged("ab-3").unwrap(),
+            Aside::Moved(_)
+        ));
+        let _ = fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn a_symlink_set_aside_leaves_its_target_alone() {
+        use std::os::unix::fs::symlink;
+        let store = temp_store("link");
+        fs::create_dir_all(store.dir()).unwrap();
+        let target = store.dir().join("elsewhere.txt");
+        fs::write(&target, "not json").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+        symlink(&target, file(&store, "abc.json")).unwrap();
+        let listing = store.scan();
+        assert_eq!(listing.report.set_aside, 1);
+        assert!(!file(&store, "abc.json").exists());
+        // The target was not chmodded through the link.
+        assert_eq!(mode(&target), 0o644);
+        let _ = fs::remove_dir_all(store.dir());
+    }
+
+    // --- Interrupted writes, more ---
+
+    #[test]
+    fn a_temporary_file_from_a_newer_version_is_always_kept() {
+        let store = temp_store("tmp-newer");
+        fs::create_dir_all(store.dir()).unwrap();
+        let newer =
+            r#"{"version":5,"id":"ab-1","title":"t","created":1,"updated":1,"messages":[]}"#;
+        // Beside a good file, beside a damaged one, and alone.
+        saved(&store, "ab-1", "good");
+        fs::write(file(&store, ".ab-1.json.tmp"), newer).unwrap();
+        fs::write(file(&store, "ab-2.json"), "{").unwrap();
+        fs::write(
+            file(&store, ".ab-2.json.tmp"),
+            newer.replace("ab-1", "ab-2"),
+        )
+        .unwrap();
+        fs::write(
+            file(&store, ".ab-3.json.tmp"),
+            newer.replace("ab-1", "ab-3"),
+        )
+        .unwrap();
+
+        let before_good = fs::read(file(&store, "ab-1.json")).unwrap();
+        store.scan();
+        for (name, id) in [
+            (".ab-1.json.tmp", "ab-1"),
+            (".ab-2.json.tmp", "ab-2"),
+            (".ab-3.json.tmp", "ab-3"),
+        ] {
+            assert_eq!(
+                fs::read_to_string(file(&store, name)).unwrap(),
+                newer.replace("ab-1", id),
+                "{name}"
+            );
+        }
+        // Nothing was promoted over anything either.
+        assert_eq!(fs::read(file(&store, "ab-1.json")).unwrap(), before_good);
+        assert!(!file(&store, "ab-3.json").exists());
+        let _ = fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn a_whole_temporary_file_replaces_a_damaged_file_ahead_of_the_backup() {
+        let store = temp_store("tmp-damaged");
+        let mut c = saved(&store, "ab-1", "one");
+        c.messages.push(Message::assistant("two"));
+        store.save(&c).unwrap();
+        // The crash: the next version was synced but never renamed in, and
+        // the file it was to replace is damaged.
+        c.messages.push(Message::user("three"));
+        fs::write(
+            file(&store, ".ab-1.json.tmp"),
+            serde_json::to_vec_pretty(&c).unwrap(),
+        )
+        .unwrap();
+        fs::write(file(&store, "ab-1.json"), "{\"id\": ").unwrap();
+        let bak = fs::read(file(&store, "ab-1.json.bak")).unwrap();
+
+        let listing = store.scan();
+        assert_eq!(listing.conversations.len(), 1);
+        assert_eq!(
+            listing.report,
+            Report {
+                set_aside: 1,
+                restored: 1,
+                ..Report::default()
+            }
+        );
+        // The newest version, not the backup's (one message fewer).
+        assert_eq!(store.load("ab-1").unwrap().messages.len(), 3);
+        assert_eq!(fs::read(file(&store, "ab-1.json.bak")).unwrap(), bak);
+        assert!(!file(&store, ".ab-1.json.tmp").exists());
+        let names = damaged(&store);
+        assert_eq!(names.len(), 1);
+        assert_eq!(
+            fs::read_to_string(store.damaged_dir().join(&names[0])).unwrap(),
+            "{\"id\": "
+        );
+        let _ = fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn a_cut_short_temporary_file_does_not_replace_a_damaged_file() {
+        // The backup is used, as without a temporary file.
+        let store = temp_store("tmp-cut-damaged");
+        let mut c = saved(&store, "ab-1", "one");
+        c.messages.push(Message::assistant("two"));
+        store.save(&c).unwrap();
+        fs::write(file(&store, "ab-1.json"), "x").unwrap();
+        fs::write(file(&store, ".ab-1.json.tmp"), "{\"id\": \"ab-1").unwrap();
+        let listing = store.scan();
+        assert_eq!(listing.report.restored, 1);
+        assert_eq!(store.load("ab-1").unwrap().messages.len(), 1);
+        assert!(!file(&store, ".ab-1.json.tmp").exists());
+        let _ = fs::remove_dir_all(store.dir());
+    }
+
+    // --- Deleting ---
+
+    #[test]
+    fn deleting_takes_the_copies_set_aside_of_that_conversation_only() {
+        let store = temp_store("delete-damaged");
+        saved(&store, "ab", "mine");
+        saved(&store, "ab-1", "another");
+        fs::create_dir_all(store.damaged_dir()).unwrap();
+        for name in [
+            "ab.20261009-120000.json",
+            "ab.20261009-120000-1.json",
+            "ab-1.20261009-120000.json",
+            "ab.notes.txt",
+        ] {
+            fs::write(store.damaged_dir().join(name), "x").unwrap();
+        }
+        store.delete("ab").unwrap();
+        assert_eq!(
+            damaged(&store),
+            vec!["ab-1.20261009-120000.json", "ab.notes.txt"]
+        );
+        assert!(!file(&store, "ab.json").exists());
+        assert!(file(&store, "ab-1.json").exists());
+        let _ = fs::remove_dir_all(store.dir());
+    }
+
     // --- The notice ---
 
     #[test]
-    fn the_notice_is_worded_for_the_window() {
-        let dir = Path::new("/data/conversations/damaged");
+    fn the_notice_is_short_and_has_no_path() {
         let report = |set_aside, restored, finished, newer| Report {
             set_aside,
             restored,
             finished,
             newer,
         };
-        assert_eq!(report(0, 0, 0, 0).describe(dir), "");
+        assert_eq!(report(0, 0, 0, 0).describe(), "");
         assert_eq!(
-            report(1, 0, 0, 0).describe(dir),
-            "1 conversation couldn't be read and was set aside in /data/conversations/damaged."
+            report(1, 0, 0, 0).describe(),
+            "1 conversation couldn't be read and was set aside."
         );
         assert_eq!(
-            report(3, 0, 0, 0).describe(dir),
-            "3 conversations couldn't be read and were set aside in /data/conversations/damaged."
+            report(3, 0, 0, 0).describe(),
+            "3 conversations couldn't be read and were set aside."
         );
         assert_eq!(
-            report(1, 1, 0, 0).describe(dir),
-            "1 conversation couldn't be read and was restored from its backup; the damaged file is in /data/conversations/damaged."
+            report(1, 1, 0, 0).describe(),
+            "1 conversation couldn't be read and was restored from a saved copy."
         );
         assert_eq!(
-            report(3, 2, 0, 0).describe(dir),
-            "1 conversation couldn't be read and was set aside in /data/conversations/damaged. 2 conversations couldn't be read and were restored from their backups; the damaged files are in /data/conversations/damaged."
+            report(2, 2, 0, 0).describe(),
+            "2 conversations couldn't be read and were restored from a saved copy."
         );
         assert_eq!(
-            report(0, 0, 1, 2).describe(dir),
-            "1 conversation was recovered from an interrupted save. 2 conversations were saved by a newer version of Telamon Gates and were left as they are."
+            report(2, 1, 0, 0).describe(),
+            "2 conversations couldn't be read: 1 was restored from a saved copy, 1 was set aside."
         );
         assert_eq!(
-            report(0, 0, 0, 1).describe(dir),
-            "1 conversation was saved by a newer version of Telamon Gates and was left as it is."
+            report(4, 3, 0, 0).describe(),
+            "4 conversations couldn't be read: 3 were restored from a saved copy, 1 was set aside."
         );
+        assert_eq!(
+            report(0, 0, 1, 2).describe(),
+            "1 conversation was recovered from an interrupted save. 2 conversations are from a newer version of Telamon Gates and were left as they are."
+        );
+        assert_eq!(
+            report(0, 0, 0, 1).describe(),
+            "1 conversation is from a newer version of Telamon Gates and was left as it is."
+        );
+        for r in [report(3, 1, 2, 1), report(1, 0, 0, 0)] {
+            assert!(!r.describe().contains('/'), "{}", r.describe());
+        }
     }
 
     #[test]

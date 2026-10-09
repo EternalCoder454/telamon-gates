@@ -154,7 +154,7 @@ impl qobject::Library {
         let folder = std::path::PathBuf::from(self.folder().to_string());
         let damaged = folder.join(DAMAGED_DIR);
         let report = self.rust().report.clone();
-        let text = report.describe(&damaged);
+        let text = report.describe();
         // Open Folder shows the files set aside, else the conversations.
         let open = if report.set_aside > 0 {
             damaged
