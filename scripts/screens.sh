@@ -39,11 +39,26 @@ dark_scheme() {
     printf '[Colors:Selection]\nBackgroundNormal=138,122,244\nForegroundNormal=20,18,31\n'
 }
 
+# An Agent mode conversation in its own sandbox (no folder chosen).
+seed_agent() {
+    local when
+    when=$(($(date +%s%3N) - 3 * 3600000))
+    printf '{"id":"000000000010-0000","title":"Tidy the build scripts","created":%s,"updated":%s,"mode":"agent","messages":[{"role":"user","text":"Tidy the build scripts"},{"role":"assistant","mode":"agent","text":"","tool_calls":[{"id":"a","name":"list_dir","arguments":"{}"}]},{"role":"tool","tool_call_id":"a","summary":"Listed . (3 entries)","text":"src/"},{"role":"assistant","mode":"agent","text":"The folder is empty but for src/. What should the scripts do?"}]}\n' "$when" "$when" >"$1/000000000010-0000.json"
+}
+
 seed_all() {
     local dir=$1
     seed "$dir" 000000000001-0000 "Show me what a reply can look like" 1 <<'EOF'
 [{"role":"user","text":"Show me what a reply can look like"},{"role":"assistant","speed":38.6,"text":"## Getting started\n\nHere is a short tour with **bold**, *italic*, `inline code` and a [link](https://example.com).\n\n1. Install the toolchain:\n\n   ```sh\n   dnf install cargo\n   ```\n\n2. Create a project\n3. Run it\n\n> Tip: run `cargo clippy` before every commit.\n\n| Command | What it does |\n|---|---|\n| `cargo build` | Compiles |\n| `cargo test` | Runs the tests |\n\n```rust\nfn main() {\n    let names = [\"Ada\", \"Grace\"];\n    for name in names {\n        println!(\"Hello, {name}!\");\n    }\n}\n```\n\nThat is all there is to it."}]
 EOF
+    # A message with a picture (kept in Gates' attachments folder) and a file.
+    local pics=$XDG_DATA_HOME/telamon-gates/attachments
+    mkdir -p "$pics"
+    magick -size 480x320 gradient:'#8a7af4'-'#f4a7c4' "$pics/0000000000000000000000aa.png"
+    seed "$dir" 000000000008-0000 "What is in this picture" 2 <<EOF
+[{"role":"user","text":"What is in this picture, and does the notes file match it?","attachments":[{"name":"sunset.png","image":"$pics/0000000000000000000000aa.png"},{"name":"notes.md","text":"# Notes"}]},{"role":"assistant","text":"A soft violet-to-pink gradient, like an evening sky."}]
+EOF
+    seed_agent "$dir"
     seed "$dir" 000000000002-0000 "Rust lifetimes" 2 <<'EOF'
 [{"role":"user","text":"What is a lifetime?"},{"role":"assistant","speed":41.2,"text":"A *lifetime* names how long a reference is valid."}]
 EOF
@@ -102,6 +117,8 @@ run_theme() {
 
     mkdir -p "$dir"
     seed_all "$dir"
+    # One mode of the user's own, beside the built-in ones.
+    printf '{"edits":[],"custom":[{"id":"my-1","name":"Pirate","prompt":"Answer like a friendly pirate.","temperature":0.9}]}' >"$XDG_DATA_HOME/telamon-gates/modes.json"
     # SCREENS_MODEL=<file.gguf>: replies from llama.cpp (installed in the
     # container) after the first run, which shows the no-model state.
     if [ -n "${SCREENS_MODEL:-}" ]; then
@@ -117,6 +134,15 @@ run_theme() {
     app=$!
     sleep 4
     shot 02-new-chat
+    # The mode button's menu.
+    xdotool mousemove 470 1035 click 1
+    sleep 0.6
+    shot 02b-mode-menu
+    # A click outside closes it; the field takes the typing again.
+    xdotool mousemove 900 500 click 1
+    sleep 0.3
+    xdotool mousemove 900 978 click 1
+    sleep 0.3
     xdotool type --delay 10 "Write a short story about"
     xdotool key shift+Return
     xdotool type --delay 10 "autumn in Lisbon"
@@ -138,6 +164,19 @@ run_theme() {
     shot 07-hover-sidebar
     open_chat "Show me"
     shot 08-showcase
+    # The pointer on your message: Edit and Branch From Here under it.
+    xdotool mousemove 1300 193
+    sleep 0.6
+    shot 08b-message-actions
+    xdotool mousemove 1092 197 click 1
+    sleep 0.6
+    shot 08c-editing
+    xdotool key Escape
+    sleep 0.4
+    open_chat "picture"
+    shot 08d-attachments
+    open_chat "build scripts"
+    shot 08e-agent-sandbox
     open_chat "migration"
     shot 09-long-end
     xdotool mousemove 900 500 click 4 click 4 click 4 click 4 click 4 click 4
@@ -165,6 +204,17 @@ run_theme() {
     xdotool mousemove 115 979 click 1
     sleep 1.2
     shot 16-settings
+    xdotool mousemove 900 600 click 5 click 5 click 5 click 5 click 5 click 5 click 5
+    sleep 0.8
+    shot 16b-settings-modes
+    # Edit one of the user's own modes.
+    xdotool mousemove 1380 227 click 1
+    sleep 0.8
+    shot 16c-mode-dialog
+    xdotool key Escape
+    sleep 0.4
+    xdotool mousemove 900 600 click 4 click 4 click 4 click 4 click 4 click 4 click 4
+    sleep 0.6
     # Keyboard focus, as Tab shows it.
     xdotool key Tab Tab
     sleep 0.4
@@ -192,6 +242,10 @@ run_theme() {
         sleep 1
         shot 24-models-cancelled
     fi
+    # The Fleet page, before any run.
+    xdotool mousemove 115 859 click 1
+    sleep 1.5
+    shot 25-fleet-empty
     # Narrow, on a conversation: the sidebar folds to icons.
     open_chat "Show me"
     win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)
@@ -200,10 +254,53 @@ run_theme() {
     import -window root -crop 640x900+0+0 +repage "$out/19-narrow.png"
     kill "$app"
     wait "$app" || true
+
+    # The Fleet page with sample agents (TELAMON_GATES_SEED, src/fleet.rs):
+    # one asking, one working at a narrow width, the coordinator planning.
+    TELAMON_GATES_SEED=fleet "$bin" >"$out/app-fleet.log" 2>&1 &
+    app=$!
+    sleep 4
+    # The window keeps the narrow size the last run left it at.
+    win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)
+    xdotool windowsize "$win" 1512 1080
+    sleep 1.5
+    xdotool mousemove 115 859 click 1
+    sleep 1.5
+    shot 26-fleet-cards
+    xdotool mousemove 900 700 click 5 click 5 click 5 click 5 click 5 click 5
+    sleep 0.8
+    shot 27-fleet-cards-scrolled
+    kill "$app"
+    wait "$app" || true
+    TELAMON_GATES_SEED=fleet-working "$bin" >"$out/app-fleet-working.log" 2>&1 &
+    app=$!
+    sleep 4
+    win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)
+    xdotool windowsize "$win" 1512 1080
+    sleep 1.5
+    xdotool mousemove 115 859 click 1
+    sleep 1.5
+    shot 28-fleet-working
+    xdotool windowsize "$win" 640 900
+    sleep 1.5
+    import -window root -crop 640x900+0+0 +repage "$out/29-fleet-narrow.png"
+    kill "$app"
+    wait "$app" || true
+    TELAMON_GATES_SEED=fleet-planning "$bin" >"$out/app-fleet-planning.log" 2>&1 &
+    app=$!
+    sleep 4
+    win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)
+    xdotool windowsize "$win" 1512 1080
+    sleep 1.5
+    xdotool mousemove 115 859 click 1
+    sleep 1.5
+    shot 30-fleet-planning
+    kill "$app"
+    wait "$app" || true
     rm -rf "$x"
 }
 
-export -f run_theme seed seed_all dark_scheme
+export -f run_theme seed seed_all seed_agent dark_scheme
 export bin root repo
 for theme in light dark; do
     xvfb-run -a -s "-screen 0 1600x1200x24" dbus-run-session -- bash -c "run_theme $theme" >/dev/null 2>&1

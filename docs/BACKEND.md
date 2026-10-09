@@ -79,7 +79,8 @@ the demo otherwise.
   it ends (`retire`), and Settings hands them over on the GUI thread, in the
   order they were made.
   - It listens on 127.0.0.1 only, on a free port, and wants a fresh random
-    `--api-key` each start, so no other program can use it.
+    API key each start, so no other program can use it. The key goes in the
+    server's environment (`LLAMA_API_KEY`), never on its command line.
   - It is started from one long-lived thread and dies with Gates
     (PR_SET_PDEATHSIG). That signal fires when the *thread* that started the
     child ends, so starting it from a reply's worker killed it after every
@@ -117,10 +118,17 @@ from advice on trust:
 - **KV cache** stays f16. q8_0 halves it at little quality cost, but a
   quantised V cache needs flash attention on. This is a Performant-phase
   option.
-- **Batch sizes** stay at the defaults (`-b 2048 -ub 512`). There is no
-  Vulkan/RDNA3 evidence for a larger `-ub`; benchmark before changing.
+- **Batch sizes** stay at the defaults (`-b 2048 -ub 512`): measured on the
+  RX 7900 with Qwen3-4B and a 13k-token prompt, `-ub 512` reads 3,060
+  tokens/s, `-ub 1024` 2,452 and `-ub 2048` 1,861.
 - **Context shift** stays off (the default). With `--keep 0` it can drop the
   system prompt. Gates trims long conversations instead (see below).
+- **Automatic context** is Gates' own choice, not llama.cpp's fit. Left to
+  itself, fit filled the RX 7900 with cache: a 129,024-token context for
+  Qwen3-4B, 23.1 of 24 GiB in use, and no room for Kev. Automatic is now
+  32,768 tokens, or the model's own context (`<arch>.context_length`) if
+  smaller (`context_for`): 9.9 GiB in use for the same model. GPU layers are
+  still fit's. Settings can set a bigger context.
 
 ### Long conversations
 
@@ -145,6 +153,28 @@ a context of 512 it shows trimming.
 Every reply is untrusted text. The window already treats it so (see
 `markdown.rs`: escaped, no raw HTML, no images, web links only): a backend
 passes the text through as it comes and does nothing to it.
+
+### Model facts
+
+What the Models page shows for each chat model, none of it loaded into the
+server:
+
+| Fact | From |
+|---|---|
+| Context | `<arch>.context_length` in the GGUF header (`gguf.rs`), in tokens; "32K", "128K", "1M" |
+| Tools | `tokenizer.chat_template` mentions tools (`gguf.rs`); the same test Agent mode warns with |
+| Images | a projector file beside the model: `projector_for` in `llama.rs` |
+
+`projector_for(model, all, projectors)` is pure; `local_projectors(dir)`
+lists the `mmproj-….gguf` files that `local_models` leaves out. A projector
+belongs to a model when their names match before the quantisation
+(`mmproj-gemma-3-4b-it-F16.gguf` and `gemma-3-4b-it-Q4_K_M.gguf`), or, with
+no model name in it (`mmproj-model-f16.gguf`, `mmproj-F16.gguf`), when the
+model is the only one in the folder. Of several precisions, F16 wins, then
+BF16. Images are shown but not yet sent: attachments are not built.
+
+`ModelLibrary` has them as lists beside `names`: `contexts` (tokens, 0 when
+the header doesn't say), `toolCapable` and `vision` (1 or 0).
 
 ## Modes and SystemOne
 
@@ -208,4 +238,209 @@ which is what Gates does. Measured 2026-10-09, telamon-llama 0.6.0:
   accuracy from 3/12 to 6/12.
 - **The threshold:** anywhere from 0.5 to 0.65 scored the same on this set, so
   it stays at 0.5 rather than being tuned to 36 messages.
+
+## Agent mode and tools
+
+**Agent** is a fourth mode, pinned by the user and never picked by
+SystemOne, so no tool runs unless the user asked for an agent. It works in
+one folder per conversation (`Conversation.workspace`), chosen above the
+composer.
+
+**The tools** (`tools.rs`) are plain Rust run inside Gates: no MCP, no
+interpreter, no server.
+
+| Tool | Does | Runs |
+|---|---|---|
+| `list_dir` | names, kinds and sizes in a folder | at once |
+| `read_file` | text with line numbers, 400 lines a part (2,000 at most) | at once |
+| `search` | a string in text files (smart case), `file:line: text` | at once |
+| `find_files` | paths containing a string, or `*`/`?` patterns | at once |
+| `now` | the local date, time, weekday and time zone | at once |
+| `calculate` | arithmetic: `+ - * / % ^` (and `**`), brackets, unary signs, decimals, `sqrt abs round floor ceil min max ln log10 sin cos tan`, `pi` and `e` | at once |
+| `write_file` | creates or replaces a file (atomic, keeps permissions) | after the user allows it |
+| `edit_file` | replaces text that is in the file once | after the user allows it |
+| `run_command` | `/bin/sh -c` in the folder, 60 s (300 s at most) | after the user allows it, every time |
+
+The limits:
+- **`now`** asks libc for the local time (`localtime_r`, so `TZ` and
+  `/etc/localtime` apply): "Thursday, 2026-10-08 14:32:05 UTC-04:00 (EDT)".
+- **`calculate`** is a small recursive-descent parser, with no `eval` and no
+  dependency. It reads 1,000 characters at most and nests 64 levels at most
+  (brackets, signs, powers and calls). `-2^2` is -4 and `2^3^2` is 2^9.
+  Division or remainder by zero, a result too large for a number (`9^9^9^9`),
+  a result that is not real (`sqrt(-1)`, `ln(0)`) and anything it can't read
+  come back as errors for the model to fix. Results show 12 significant
+  digits ("0.3" for 0.1 + 0.2). Angles are in radians.
+- **The folder:** `/`, a top folder (`/etc`) and the home folder or one
+  above it are refused as workspaces, since reading tools don't ask.
+- **Paths:** every path is resolved against the real folders, links
+  included. One that leaves the workspace is refused, and new folders are
+  made only under a real folder inside it. Writes go through a fresh
+  temporary file with a random name (`O_EXCL`, `O_NOFOLLOW`), so a link a
+  repository planted can't redirect them.
+- **The sandbox** (`sandbox.rs`): every command runs in bubblewrap, which
+  shows it the workspace (writable), `/usr` and a few files of `/etc`
+  (read-only), a private `/tmp`, `/dev` and `/run`, and new namespaces: no
+  home folder, no network, no other process, no session bus. Settings →
+  Agent can give it the network, or the home folder read-only (for the
+  user's toolchains); both are off. Without bubblewrap commands don't run.
+  Inside another container (the dev container, CI) it has no `/proc`:
+  binding the host's would reach other processes' files.
+- **Commands** run in their own process group: a timeout or Stop ends
+  everything they started, and leftovers end when they do. Their output
+  comes through a pipe, kept in memory as its first 8 KiB and last 22 KiB,
+  so nothing fills the disk.
+- **Asking:** the card shows the folder, the time limit, the line and
+  character count, and the full text wrapped. Hidden characters (controls,
+  bidi marks) show as `⟨U+202E⟩` and are called out. Arguments that can't
+  run are refused without asking. "Allow All Edits in This Reply" doesn't
+  cover hidden files and folders (`.git`, `.envrc`), build files (Makefile,
+  package.json, Cargo.toml…), scripts and programs: those always ask.
+- **Walks:** a search or find skips `.git`, `target`, `node_modules`, build
+  output and hidden folders, and doesn't follow links.
+- **Sizes:** a result is 32 KiB at most, and a file read is 4 MiB at most.
+- **Forgiving edits:** when the text isn't in the file as written,
+  `edit_file` takes off the line numbers models copy from `read_file`, then
+  lets lines match whatever their indentation; it must still be there once.
+- **Long runs:** to fit the context, whole turns before the task go first,
+  then the oldest tools' output gives way to a note. The task and every
+  call with its result stay (`trim_to_budget`).
+- **One mode per run:** the mode and folder can't change while it runs,
+  and Auto never continues in Agent.
+
+**The loop** (`agent.rs`):
+- **Each step:** the request carries the tools' schema. llama-server
+  (`--jinja`) streams `delta.tool_calls` in pieces, and `llama.rs` hands
+  them on whole (`Event::ToolCalls`) at `[DONE]`. Reads run at once; a
+  write or a command waits for Allow, Deny, or "Allow All Edits in This
+  Reply" (commands always ask). Each result goes back as a `tool` message,
+  and the model goes on.
+- **Limits:** the loop stops after 25 steps. Stop answers any waiting
+  question with no.
+- **Stopped runs:** `repair` gives calls left without a result "Stopped
+  before it ran.", so the conversation can still be sent.
+- **Cost:** llama-server's prompt cache keeps the conversation's prefix, so
+  each step only reads what is new.
+
+**Which models can:** a model's GGUF chat template has to mention tools
+(`gguf.rs` reads `tokenizer.chat_template`). For others the window says the
+agent can only talk.
+
+## The Fleet
+
+A fleet (`fleet.rs`) is several agents on one goal, in one workspace folder.
+`fleet::run` blocks, so the app calls it from a worker, and it tells the
+window through the `FleetHost` trait, event by event with the agent's number
+(`planned`, `status`, `step`, `speed`, `line`, `approve`, `judged`).
+
+- **The plan:** the coordinator is the chat model, asked once, with
+  `response_format: {"type": "json_object", "schema": …}` (the schema asks
+  for `{"tasks": [{"title", "instructions"}]}`, 1 to 6 of them), which
+  llama-server turns into a grammar. `Request.response_format` carries it
+  to `/v1/chat/completions`. `parse_plan` still doesn't trust the answer: it
+  takes the JSON out of a fence or a sentence, keeps the first 6 tasks,
+  makes a title one line of 60 characters and instructions 1,500 characters,
+  skips an entry with neither, and fails with a sentence when no task is
+  left. The goal is cut to 4,000 characters.
+- **The agents:** each task is `agent::run` in the same workspace, one after
+  another: the one server has `--parallel 1`, and agents that change the same
+  files shouldn't race. An agent's system prompt is the agent mode's, the
+  workspace, the goal, its own task, and one line from each agent before it
+  (what it reported), so later agents know what is done. A task that fails,
+  or is stopped, doesn't end the others; a server that can't be reached does.
+- **Asking:** each agent's questions come through `FleetHost::approve` with
+  the agent's number. The agents run one at a time, so the page has one
+  question at most. While it waits the agent is "waiting for you".
+- **Stopping:** `Control` stops the whole fleet (the coordinator, the agent
+  under way, those to come) or agent *i* (under way, or skipped if its turn
+  hasn't come); a waiting question is answered no.
+- **Judging:** when an agent ends as done, `Judge::finished` asks SystemOne a
+  `noul` question, "Did this agent complete its task?", about the task and the
+  end of the agent's last reply (`systemone::done_question`, `done_state`).
+  The answer is the probability of yes (`parse_noul`), shown as the card's
+  confidence. With no decision model, or when SystemOne is resting or
+  fails, nothing is shown. A model that ends a turn with "I will now
+  update…" and no tool call counts as done, which is what the question is
+  for.
+- **Its server:** Gates doesn't change `--parallel`: with one slot, a
+  request of the chat or of another fleet waits behind the agent's.
+
+**`examples/fleet-check`** runs a real fleet on the small Python project:
+`cargo run --release -p gates-core --example fleet-check -- <llama-server>
+<models dir>` (a chat model that takes tools, and optionally a decision
+model). Measured 2026-10-09 with Qwen3-4B-Instruct-2507 Q4_K_M and
+Laya-Q8_0 on the RX 7900, for a goal that asks for two tasks:
+
+| Run | Plan | Agents | Total | SystemOne (agent 1, 2) | Done |
+|---|---|---|---|---|---|
+| 1 | 2.3 s | 3 steps each | 7.3 s | 85%, 75% | both edits |
+| 2 | 2.3 s | 3 and 2 steps | 6.2 s | 89%, 49% | code only |
+
+In run 2 the second agent said what it would do and ended its turn without
+the tool call; SystemOne was right to doubt it. The same fleet ran in the
+app, headless, with a click on each Allow: 2 of 2 agents done, 81% and 87%.
+
+**`examples/agent-check`** runs a real model on a small Python project (change
+a greeting, add a run line to the README). Measured 2026-10-09 with
+Qwen3-4B-Instruct-2507 Q4_K_M on the RX 7900, about 170 tokens/s:
+
+| Version | Steps | Failed edits | Time | Done |
+|---|---|---|---|---|
+| exact `edit_file` | 11 | 4 | 10.0 s | yes |
+| forgiving `edit_file` (3 runs) | 6 | 0 | 5.5 s (median) | 3 of 3 |
+
+## Performance (measured 2026-10-09, RX 7900 XTX, Vulkan)
+
+Qwen3-4B-Instruct-2507 Q4_K_M unless said; temperature 0; scripts in
+`out/spec` (not in the repo).
+
+- **Speculative decoding, n-gram (on by default, `--spec-default`).** The
+  server guesses the next tokens from what is already in the conversation,
+  and the model checks them in one go. It costs about 16 MB and no extra
+  model.
+
+  | Prompt | Without | With |
+  |---|---|---|
+  | Rewrite a 6 KB Rust file (what an agent's edits are) | 178 tok/s, 9.0 s | **944 tok/s, 2.0 s** (99% accepted) |
+  | Explain heat pumps (chat) | 194 tok/s | 193 tok/s |
+  | A 400-word story | 192 tok/s | 193 tok/s |
+
+- **A small draft model** (Qwen3-0.6B Q8_0 for the 4B) is slower: only
+  27–36% of its tokens are accepted, and chat drops to 126 tok/s. It is not
+  used.
+- **Trained drafts.** A `dspark-<model>` file beside its model (as ggml-org
+  publishes them) is used with n-gram drafting (`llama::draft_for`). DFlash
+  drafts made chat slower and aren't used. Qwen3-8B Q8_0, tok/s:
+
+  | Draft | Chat | Rewrite a file | Story |
+  |---|---|---|---|
+  | none | 86 | 82 | 85 |
+  | n-gram | 86 | 726 | 86 |
+  | DFlash | 70 (8% accepted) | 310 | 68 |
+  | DSpark | 122 | 281 | 129 |
+  | **DSpark + n-gram** | **123** | **826** | **130** |
+
+  Drafts are kept out of the chat model list, and the Models page shows them
+  as Speed-Up.
+- **Context cache precision** (Settings → Smaller Context Cache, off by
+  default). A 32k context costs 7,104 MiB at f16 against 4,954 MiB at q8_0
+  (−30%), and generation drops from 154 to 139 tok/s (−10%).
+- **Prompt cache.** Within a conversation, the next message reads only
+  what's new: 16 tokens in 0.16 s after a 13k-token prompt.
+- **Trimming with room to spare.** Once a conversation overflows the
+  context, it is trimmed to 75% of the budget, not just under it. Dropping
+  the oldest turn changes the start, and the server then reads everything
+  again: 16,027 tokens in 6.4 s here, minutes on the processor.
+  `--cache-reuse 256` didn't avoid that in testing, so with room to spare
+  the next several messages share their start and come from the cache.
+- **Warm-up while typing.** The composer calls `prepare()` 400 ms into a
+  pause: the model server starts loading (once a minute at most), and in
+  Auto SystemOne picks the mode for the text then. Send then waits for
+  neither the load nor the pick.
+- **SystemOne on the processor.** Laya runs with half the logical CPUs (up
+  to 16): 307 ms a message against 606 ms with llama.cpp's 8 threads, at
+  the same accuracy.
+- **The binary.** HTTPS through the system's OpenSSL instead of a bundled
+  rustls/ring: 8.48 → 7.14 MB stripped for the same release build
+  (−1.34 MB, −16%).
 

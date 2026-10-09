@@ -18,6 +18,7 @@ struct TelamonObjects {
     void *library;
     void *vram;
     void *models;
+    void *fleet;
 };
 extern "C" TelamonObjects telamon_objects_new();
 // telamon-framework-ui (include/telamon/app.h), linked in with the Rust library.
@@ -59,6 +60,7 @@ int main(int argc, char *argv[])
         {"library", made.library},
         {"vram", made.vram},
         {"models", made.models},
+        {"fleet", made.fleet},
     };
     QVariantMap initial;
     for (const auto &[name, object] : objects) {

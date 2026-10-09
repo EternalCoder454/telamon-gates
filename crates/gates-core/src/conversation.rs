@@ -10,6 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum Role {
     User,
     Assistant,
+    /// What a tool gave back (Agent mode), for the call `tool_call_id`.
+    Tool,
 }
 
 impl Role {
@@ -17,8 +19,32 @@ impl Role {
         match self {
             Role::User => "user",
             Role::Assistant => "assistant",
+            Role::Tool => "tool",
         }
     }
+}
+
+/// A file sent with a message: a text file's text, or a picture kept in
+/// Gates' own folder (`attach.rs`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    /// The file's name, as the user had it.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Where Gates keeps the picture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+}
+
+/// A tool the model asked to run (Agent mode).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// The server's id for the call; the result answers to it.
+    pub id: String,
+    pub name: String,
+    /// The arguments, as the JSON text the model wrote.
+    pub arguments: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -37,6 +63,19 @@ pub struct Message {
     /// SystemOne picked that mode (the conversation was in Auto).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub picked: bool,
+    /// The tools a reply asked to run, in order (Agent mode).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
+    /// A tool result's call (`Role::Tool`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// A tool result in one line, for the window ("Read src/main.rs (40
+    /// lines)"); `text` is what the model got. `failed` when it didn't work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Files sent with your message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
 }
 
 impl Message {
@@ -48,6 +87,10 @@ impl Message {
             speed: None,
             mode: None,
             picked: false,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            summary: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -59,6 +102,19 @@ impl Message {
             speed: None,
             mode: None,
             picked: false,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            summary: None,
+            attachments: Vec::new(),
+        }
+    }
+
+    /// What tool call `id` gave back.
+    pub fn tool(id: impl Into<String>, text: impl Into<String>) -> Message {
+        Message {
+            role: Role::Tool,
+            tool_call_id: Some(id.into()),
+            ..Message::user(text)
         }
     }
 }
@@ -74,6 +130,9 @@ pub struct Conversation {
     /// "auto" (SystemOne picks per message) or a mode the user pinned.
     #[serde(default = "auto", skip_serializing_if = "is_auto")]
     pub mode: String,
+    /// The folder Agent mode's tools work in; None until one is chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 fn auto() -> String {
@@ -106,6 +165,7 @@ impl Conversation {
             updated: now,
             messages: Vec::new(),
             mode: auto(),
+            workspace: None,
         }
     }
 
@@ -119,6 +179,24 @@ impl Conversation {
 
     pub fn touch(&mut self) {
         self.updated = now_ms();
+    }
+
+    /// A new conversation with this one's messages up to and including
+    /// message `upto`, its mode and folder: a way to try something else
+    /// from there without losing what came after.
+    pub fn branch(&self, upto: usize) -> Conversation {
+        let now = now_ms();
+        let end = (upto + 1).min(self.messages.len());
+        Conversation {
+            id: new_id(now),
+            title: format!("{} (branch)", self.title.trim_end_matches(" (branch)")),
+            created: now,
+            updated: now,
+            // Every tool call answered (a branch can cut between them).
+            messages: crate::agent::repair(self.messages[..end].to_vec()),
+            mode: self.mode.clone(),
+            workspace: self.workspace.clone(),
+        }
     }
 }
 
@@ -179,6 +257,23 @@ mod tests {
         let a = Conversation::new("a");
         let b = Conversation::new("b");
         assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn branches() {
+        let mut c = Conversation::new("Story");
+        c.mode = "story".into();
+        for t in ["one", "two", "three", "four"] {
+            c.messages.push(Message::user(t));
+        }
+        let b = c.branch(1);
+        assert_ne!(b.id, c.id);
+        assert_eq!(b.title, "Story (branch)");
+        assert_eq!(b.messages.len(), 2);
+        assert_eq!(b.mode, "story");
+        // A branch of a branch isn't "(branch) (branch)".
+        assert_eq!(b.branch(0).title, "Story (branch)");
+        assert_eq!(c.branch(99).messages.len(), 4);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(telamon-gates VERSION 0.1.0 LANGUAGES CXX)
+project(telamon-gates VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,6 +16,8 @@ qt_policy(SET QTP0004 NEW)
 find_package(KF6DBusAddons REQUIRED)
 find_package(KF6WindowSystem REQUIRED)
 find_package(Corrosion REQUIRED)
+# Hugging Face downloads use the system's TLS (gates-core, through ureq).
+find_package(OpenSSL REQUIRED)
 
 set(WORKSPACE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
@@ -49,12 +51,15 @@ qt_add_qml_module(telamon-gates-app
         qml/SettingsPage.qml
         qml/AboutPage.qml
         qml/ModelsPage.qml
+        qml/AgentPanel.qml
+        qml/FleetPage.qml
 )
 
 target_link_libraries(telamon-gates-app PRIVATE
     telamon_gates
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Widgets
-    KF6::DBusAddons KF6::WindowSystem)
+    KF6::DBusAddons KF6::WindowSystem
+    OpenSSL::SSL OpenSSL::Crypto)
 
 install(TARGETS telamon-gates-app RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES data/net.eterneon.telamon.gates.desktop

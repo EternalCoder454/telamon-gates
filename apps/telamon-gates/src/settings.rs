@@ -13,6 +13,12 @@ pub const GPU_LAYERS: &str = "GpuLayers";
 pub const CONTEXT: &str = "ContextSize";
 /// A llama-server already running elsewhere; unset runs one here.
 pub const SERVER_URL: &str = "ServerUrl";
+/// "true": the context cache at 8 bits (less video memory, a little slower).
+pub const SMALL_CACHE: &str = "SmallCache";
+/// "true" lets an agent's commands use the network (off by default).
+pub const AGENT_NETWORK: &str = "AgentNetwork";
+/// "true" shows them the home folder, read-only (off by default).
+pub const AGENT_HOME: &str = "AgentHome";
 /// "false" turns SystemOne off; unset or anything else leaves it on.
 pub const SYSTEM_ONE: &str = "SystemOne";
 /// The decision model SystemOne uses (a file name without `.gguf`); unset
@@ -39,6 +45,7 @@ pub fn backend_options() -> gates_core::Options {
         gpu_layers: get_u32(GPU_LAYERS),
         context: get_u32(CONTEXT),
         server_url: get(SERVER_URL).trim().to_string(),
+        small_cache: get(SMALL_CACHE) == "true",
     }
 }
 

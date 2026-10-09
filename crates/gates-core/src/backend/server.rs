@@ -17,6 +17,7 @@ use std::net::TcpListener;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -39,14 +40,30 @@ pub struct Launch {
     /// decision model reads each prompt in one micro-batch, so it must hold
     /// the longest.
     pub batch: Option<u32>,
+    /// The model's image projector (`--mmproj`), so it reads pictures.
+    pub projector: Option<PathBuf>,
+    /// The context cache at 8 bits (`--cache-type-k/v q8_0`).
+    pub small_cache: bool,
+    /// Processor threads; None for llama.cpp's choice.
+    pub threads: Option<u32>,
+    /// n-gram speculative decoding (`--spec-default`): the server guesses
+    /// the next tokens from what it has already seen and checks them in one
+    /// go. Free (about 16 MB), and 5× faster where text repeats, as when an
+    /// agent rewrites a file; no slower elsewhere.
+    pub speculative: bool,
+    /// A DSpark draft model, used with n-gram drafting in place of
+    /// `--spec-default` alone (see `llama::draft_for`).
+    pub draft: Option<PathBuf>,
 }
 
 impl Launch {
-    /// The command line, after the binary. GPU layers and context are
-    /// passed only when the user set them: left out, llama.cpp fits both to
-    /// the graphics card's free memory itself (its `--fit`, on by default),
-    /// which a number given here would turn off.
-    pub fn args(&self, port: u16, api_key: &str) -> Vec<String> {
+    /// The command line, after the binary. GPU layers are passed only when
+    /// the user set them: left out, llama.cpp fits them to the graphics
+    /// card's free memory itself (its `--fit`). The API key is not here:
+    /// anyone on the computer can read a command line (`/proc/<pid>/cmdline`),
+    /// so it goes in the environment (`LLAMA_API_KEY`), which only the user
+    /// can read.
+    pub fn args(&self, port: u16) -> Vec<String> {
         let mut args: Vec<String> = vec![
             "--model".into(),
             self.model.to_string_lossy().into_owned(),
@@ -54,8 +71,6 @@ impl Launch {
             "127.0.0.1".into(),
             "--port".into(),
             port.to_string(),
-            "--api-key".into(),
-            api_key.into(),
             // One conversation at a time: all of the context for it.
             "--parallel".into(),
             "1".into(),
@@ -68,6 +83,34 @@ impl Launch {
         }
         if let Some(n) = self.context {
             args.extend(["--ctx-size".into(), n.to_string()]);
+        }
+        match (&self.draft, self.speculative) {
+            (Some(draft), _) => args.extend([
+                "--model-draft".into(),
+                draft.to_string_lossy().into_owned(),
+                "--spec-type".into(),
+                "draft-dspark,ngram-mod".into(),
+                "--spec-draft-n-max".into(),
+                "7".into(),
+                "--flash-attn".into(),
+                "on".into(),
+            ]),
+            (None, true) => args.push("--spec-default".into()),
+            (None, false) => {}
+        }
+        if let Some(n) = self.threads {
+            args.extend([
+                "--threads".into(),
+                n.to_string(),
+                "--threads-batch".into(),
+                n.to_string(),
+            ]);
+        }
+        if self.small_cache {
+            args.extend(["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"].map(String::from));
+        }
+        if let Some(p) = &self.projector {
+            args.extend(["--mmproj".into(), p.to_string_lossy().into_owned()]);
         }
         if let Some(n) = self.batch {
             args.extend([
@@ -150,12 +193,20 @@ impl Server {
         let _ = std::thread::Builder::new()
             .name("llama-idle".into())
             .spawn(move || {
+                // Every 15 s while a server runs; with none, a minute is
+                // plenty (it only has to notice the Server is gone).
+                let mut wait = Duration::from_secs(15);
                 loop {
-                    std::thread::sleep(Duration::from_secs(15));
+                    std::thread::sleep(wait);
                     let Some(server) = weak.upgrade() else {
                         return;
                     };
                     server.stop_if_idle(Instant::now());
+                    wait = if server.is_running() {
+                        Duration::from_secs(15)
+                    } else {
+                        Duration::from_secs(60)
+                    };
                 }
             });
         server
@@ -165,6 +216,16 @@ impl Server {
     /// with something else, and ready to answer. Counts as in use until
     /// `release`.
     pub fn acquire(&self, launch: &Launch) -> Result<Endpoint, BackendError> {
+        self.acquire_until(launch, &AtomicBool::new(false))
+    }
+
+    /// As `acquire`; `cancel` turning true while the model loads stops the
+    /// start (Stop, before the reply even began).
+    pub fn acquire_until(
+        &self,
+        launch: &Launch,
+        cancel: &AtomicBool,
+    ) -> Result<Endpoint, BackendError> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let alive = match state.running.as_mut() {
             Some(r) => r.launch == *launch && matches!(r.child.try_wait(), Ok(None)),
@@ -175,7 +236,7 @@ impl Server {
             if let Some(old) = state.running.take() {
                 stop(old.child);
             }
-            state.running = Some(self.start(launch)?);
+            state.running = Some(self.start(launch, cancel)?);
         }
         let Some(endpoint) = state.running.as_ref().map(|r| r.endpoint.clone()) else {
             return Err(BackendError::Other(
@@ -238,14 +299,14 @@ impl Server {
         }
     }
 
-    fn start(&self, launch: &Launch) -> Result<Running, BackendError> {
+    fn start(&self, launch: &Launch, cancel: &AtomicBool) -> Result<Running, BackendError> {
         let port = free_port()
             .map_err(|e| BackendError::Other(format!("No free port for the model server: {e}.")))?;
         let api_key = random_key().map_err(|e| {
             BackendError::Other(format!("Couldn't make a key for the model server: {e}."))
         })?;
         if let Some(dir) = self.log.parent() {
-            let _ = fs::create_dir_all(dir);
+            let _ = crate::store::private_dir(dir);
         }
         let log = File::create(&self.log).map_err(|e| {
             BackendError::Other(format!("Couldn't open {}: {e}.", self.log.display()))
@@ -255,7 +316,8 @@ impl Server {
         })?;
         let mut command = Command::new(&launch.binary);
         command
-            .args(launch.args(port, &api_key))
+            .args(launch.args(port))
+            .env("LLAMA_API_KEY", &api_key)
             .stdin(Stdio::null())
             .stdout(log)
             .stderr(log2);
@@ -283,7 +345,7 @@ impl Server {
             base: format!("http://127.0.0.1:{port}"),
             api_key,
         };
-        match wait_ready(&mut child, &endpoint.base, self.load) {
+        match wait_ready(&mut child, &endpoint.base, self.load, cancel) {
             Ok(()) => Ok(Running {
                 child,
                 launch: launch.clone(),
@@ -333,6 +395,10 @@ pub fn should_stop(busy: usize, last_used: Option<Instant>, now: Instant) -> boo
 
 /// Asks the server to quit, then makes sure.
 fn stop(mut child: Child) {
+    // Already gone (and reaped): its number may be another process's now.
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
     let pid = child.id() as libc::pid_t;
     // SAFETY: a signal to our own child, which has not been reaped yet.
     unsafe {
@@ -351,11 +417,19 @@ fn stop(mut child: Child) {
 
 /// Polls `/health` (no key needed) until the model is loaded. Fails when
 /// the process ends or `limit` passes.
-fn wait_ready(child: &mut Child, base: &str, limit: Duration) -> Result<(), String> {
+fn wait_ready(
+    child: &mut Child,
+    base: &str,
+    limit: Duration,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
     let agent = super::llama::agent(Some(Duration::from_secs(2)));
     let url = format!("{base}/health");
     let deadline = Instant::now() + limit;
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("it was stopped while it loaded.".into());
+        }
         if let Ok(Some(status)) = child.try_wait() {
             return Err(format!("it stopped ({status})."));
         }
@@ -404,12 +478,17 @@ mod tests {
             gpu_layers: Some(30),
             context: Some(8192),
             batch: None,
+            projector: None,
+            small_cache: false,
+            threads: None,
+            speculative: false,
+            draft: None,
         }
     }
 
     #[test]
     fn the_command_line() {
-        let args = launch().args(4242, "k3y");
+        let args = launch().args(4242);
         let pair = |flag: &str| {
             let i = args.iter().position(|a| a == flag).expect(flag);
             args[i + 1].clone()
@@ -417,7 +496,8 @@ mod tests {
         assert_eq!(pair("--model"), "/m/qwen.gguf");
         assert_eq!(pair("--host"), "127.0.0.1");
         assert_eq!(pair("--port"), "4242");
-        assert_eq!(pair("--api-key"), "k3y");
+        // The key is never on the command line.
+        assert!(!args.iter().any(|a| a == "--api-key" || a == "k3y"));
         assert_eq!(pair("--n-gpu-layers"), "30");
         assert_eq!(pair("--ctx-size"), "8192");
         assert!(args.iter().any(|a| a == "--no-webui"));
@@ -430,7 +510,7 @@ mod tests {
             batch: Some(2048),
             ..launch()
         }
-        .args(1, "k");
+        .args(1);
         let i = decision.iter().position(|a| a == "--ubatch-size").unwrap();
         assert_eq!(decision[i + 1], "2048");
         // Automatic: neither is passed, so llama.cpp's fit chooses.
@@ -439,7 +519,7 @@ mod tests {
             context: None,
             ..launch()
         }
-        .args(1, "k");
+        .args(1);
         assert!(
             !auto
                 .iter()

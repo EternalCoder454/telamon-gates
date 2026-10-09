@@ -74,12 +74,19 @@ impl Store {
     /// Writes the conversation whole: a temporary file, then a rename, so a
     /// crash never leaves half a file.
     pub fn save(&self, c: &Conversation) -> io::Result<()> {
+        use std::os::unix::fs::OpenOptionsExt;
         let path = self.path(&c.id)?;
-        fs::create_dir_all(&self.dir)?;
+        private_dir(&self.dir)?;
         let tmp = self.dir.join(format!(".{}.json.tmp", c.id));
         let json = serde_json::to_vec_pretty(c).map_err(io::Error::other)?;
         {
-            let mut f = fs::File::create(&tmp)?;
+            // Yours alone: conversations can hold anything.
+            let mut f = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)?;
             f.write_all(&json)?;
             f.sync_all()?;
         }
@@ -102,6 +109,28 @@ impl Store {
         }
         Ok(self.dir.join(format!("{id}.json")))
     }
+}
+
+/// Makes `dir` (and the folders above it it needs) private to the user:
+/// Gates' own folders hold conversations, pictures and agents' work.
+pub fn private_dir(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+}
+
+/// A conversation's own folder for Agent mode: the sandbox it works in
+/// unless the user chooses a folder on the computer.
+pub fn sandbox_dir(conversation: &str) -> PathBuf {
+    data_dir().join("workspaces").join(conversation)
+}
+
+/// Where pictures sent with messages are kept.
+pub fn attachments_dir() -> PathBuf {
+    data_dir().join("attachments")
 }
 
 /// `$XDG_DATA_HOME/telamon-gates` (`~/.local/share/telamon-gates`): the
@@ -144,6 +173,20 @@ mod tests {
             std::env::temp_dir().join(format!("gates-core-test-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         Store::at(dir)
+    }
+
+    #[test]
+    fn files_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("gates-private-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let store = Store::at(dir.join("conversations"));
+        let c = Conversation::new("secret");
+        store.save(&c).unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(store.dir()), 0o700);
+        assert_eq!(mode(&store.dir().join(format!("{}.json", c.id))), 0o600);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

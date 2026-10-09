@@ -8,5 +8,6 @@ fn main() {
         .file("src/library.rs")
         .file("src/vram.rs")
         .file("src/models.rs")
+        .file("src/fleet.rs")
         .build();
 }

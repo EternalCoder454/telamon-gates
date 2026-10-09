@@ -26,6 +26,13 @@ Item {
     // SystemOne.
     required property string mode
     required property bool picked
+    // Agent mode: a tool result's line ("Read src/main.rs"), and a reply
+    // that asked for tools.
+    required property string summary
+    required property bool hasCalls
+    // Files sent with your message, and where its pictures are kept.
+    required property list<string> files
+    required property list<string> images
 
     required property var chat
     required property real columnWidth
@@ -33,6 +40,12 @@ Item {
     required property bool last
 
     readonly property bool mine: role === "user"
+    readonly property bool tool: role === "tool"
+    // An agent turn that only asked for tools: its results say it all.
+    readonly property bool quiet: role === "assistant" && hasCalls && text.length === 0 && !streaming
+    property bool open: false
+    // Your message, being edited in place.
+    property bool editing: false
     readonly property real pad: Kirigami.Units.largeSpacing
 
     // What gives a reply's rich text the Telamon look. The text itself is
@@ -46,7 +59,14 @@ Item {
     readonly property color muted: Qt.tint(Kirigami.Theme.backgroundColor, Qt.alpha(Kirigami.Theme.textColor, 0.72))
     readonly property string css: "a { color: " + linkColor + "; } " + "h3 { font-size: x-large; } h4 { font-size: large; } h5 { font-size: medium; } h3, h4, h5 { margin-top: 12px; margin-bottom: 4px; } " + "p { margin-top: 4px; margin-bottom: 4px; } " + "ul, ol { margin-top: 2px; margin-bottom: 2px; -qt-list-indent: 1; } li { margin-top: 2px; margin-bottom: 2px; } " + "code, pre { font-family: '" + TelamonStyle.monoFamily + "'; } code { background-color: " + message.surface + "; } " + "table.quote { margin-top: 6px; margin-bottom: 6px; } td.bar { background-color: " + TelamonStyle.accent + "; } td.quoted { padding-left: 10px; color: " + message.muted + "; } " + "table { border-collapse: collapse; border-color: " + message.rule + "; } th { text-align: left; } " + "pre { margin-top: 4px; margin-bottom: 4px; }"
 
-    implicitHeight: column.implicitHeight
+    // The gap above: none for a turn that shows nothing, a little for a
+    // tool's line under its reply, the usual between messages.
+    readonly property real gap: message.quiet ? 0 : message.tool ? Kirigami.Units.smallSpacing * 2 : Kirigami.Units.largeSpacing * 2
+    implicitHeight: message.quiet ? 0 : column.implicitHeight + message.gap
+
+    HoverHandler {
+        id: hover
+    }
 
     // "38.2 tokens/s", small and muted.
     // The mode that wrote the reply, with its symbol: shown when SystemOne
@@ -58,14 +78,14 @@ Item {
         Accessible.name: modeText.text
 
         Symbol {
-            icon: message.mode === "story" ? Symbols.AutoStories : message.mode === "code" ? Symbols.Code : Symbols.Chat
+            icon: message.mode === "story" ? Symbols.AutoStories : message.mode === "code" ? Symbols.Code : message.mode === "agent" ? Symbols.SmartToy : Symbols.Chat
             size: Math.round(Kirigami.Units.iconSizes.small * 1.2)
             color: message.picked ? TelamonStyle.accent : Kirigami.Theme.disabledTextColor
         }
         TelamonLabel {
             id: modeText
             textStyle: TelamonLabel.Caption
-            readonly property string name: message.mode === "story" ? qsTr("Story") : message.mode === "code" ? qsTr("Code") : qsTr("Chat")
+            readonly property string name: message.mode === "story" ? qsTr("Story") : message.mode === "code" ? qsTr("Code") : message.mode === "agent" ? qsTr("Agent") : qsTr("Chat")
             text: message.picked ? qsTr("%1, picked by SystemOne").arg(name) : name
         }
     }
@@ -90,41 +110,212 @@ Item {
 
     ColumnLayout {
         id: column
+        y: message.gap
         width: message.columnWidth
         anchors.horizontalCenter: parent.horizontalCenter
         spacing: Kirigami.Units.smallSpacing
 
-        // Yours.
-        Rectangle {
-            visible: message.mine
-            Layout.alignment: Qt.AlignRight
-            implicitWidth: Math.min(mineText.implicitWidth, column.width * 0.8 - message.pad * 2) + message.pad * 2
-            implicitHeight: mineText.implicitHeight + message.pad * 2
-            radius: TelamonStyle.radiusLarge
-            color: Qt.alpha(TelamonStyle.accent, 0.16)
+        // Yours, being edited: the text, then Cancel and Send.
+        ColumnLayout {
+            visible: message.mine && message.editing
+            Layout.fillWidth: true
+            spacing: TelamonStyle.spacingSmall
 
-            TextEdit {
-                id: mineText
-                x: message.pad
-                y: message.pad
-                width: parent.width - message.pad * 2
-                readOnly: true
-                selectByMouse: true
-                textFormat: TextEdit.PlainText
+            TelamonTextArea {
+                id: editor
+                Layout.fillWidth: true
+                // As tall as the text (not the control's six lines), up to
+                // about twelve.
+                implicitHeight: Math.min(contentHeight, Kirigami.Units.gridUnit * 16) + topPadding + bottomPadding
                 wrapMode: TextEdit.Wrap
-                text: message.mine ? message.text : ""
-                color: Kirigami.Theme.textColor
-                selectionColor: TelamonStyle.selection
-                selectedTextColor: Kirigami.Theme.highlightedTextColor
-                font: Kirigami.Theme.defaultFont
-                Accessible.role: Accessible.StaticText
-                Accessible.name: qsTr("You: %1").arg(message.text)
+                Accessible.name: qsTr("Edit your message")
+                Keys.onPressed: event => {
+                    if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !(event.modifiers & Qt.ShiftModifier)) {
+                        message.chat.editMessage(message.index, editor.text);
+                        message.editing = false;
+                        event.accepted = true;
+                    } else if (event.key === Qt.Key_Escape) {
+                        message.editing = false;
+                        event.accepted = true;
+                    }
+                }
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                spacing: TelamonStyle.spacing
+
+                TelamonLabel {
+                    textStyle: TelamonLabel.Caption
+                    opacity: 0.75
+                    text: qsTr("What came after this message is replaced.")
+                }
+                SecondaryButton {
+                    text: qsTr("Cancel")
+                    onClicked: message.editing = false
+                }
+                PrimaryButton {
+                    text: qsTr("Send")
+                    enabled: editor.text.trim().length > 0
+                    onClicked: {
+                        message.chat.editMessage(message.index, editor.text);
+                        message.editing = false;
+                    }
+                }
+            }
+        }
+
+        // Yours, with Edit and Branch beside it while the pointer is on it
+        // (beside, so they take no room of their own).
+        RowLayout {
+            visible: message.mine && !message.editing
+            Layout.alignment: Qt.AlignRight
+            spacing: TelamonStyle.spacingSmall
+
+            RowLayout {
+                Layout.alignment: Qt.AlignVCenter
+                spacing: 2
+                opacity: hover.hovered ? 1 : 0
+                enabled: hover.hovered
+
+                ToolbarButton {
+                    symbol: Symbols.Edit
+                    text: qsTr("Edit")
+                    enabled: !message.chat.generating
+                    onClicked: {
+                        editor.text = message.text;
+                        message.editing = true;
+                        editor.forceActiveFocus();
+                        editor.cursorPosition = editor.length;
+                    }
+                }
+                ToolbarButton {
+                    symbol: Symbols.CallSplit
+                    text: qsTr("Branch From Here")
+                    onClicked: message.chat.branchFrom(message.index)
+                }
+
+                Behavior on opacity {
+                    NumberAnimation {
+                        duration: TelamonStyle.durationShort
+                    }
+                }
+            }
+            Rectangle {
+                visible: message.mine && !message.editing
+                Layout.alignment: Qt.AlignRight
+                implicitWidth: Math.min(mineText.implicitWidth, column.width * 0.75 - message.pad * 2) + message.pad * 2
+                implicitHeight: mineText.implicitHeight + message.pad * 2
+                radius: TelamonStyle.radiusLarge
+                color: Qt.alpha(TelamonStyle.accent, 0.16)
+
+                TextEdit {
+                    id: mineText
+                    x: message.pad
+                    y: message.pad
+                    width: parent.width - message.pad * 2
+                    readOnly: true
+                    selectByMouse: true
+                    textFormat: TextEdit.PlainText
+                    wrapMode: TextEdit.Wrap
+                    text: message.mine ? message.text : ""
+                    color: Kirigami.Theme.textColor
+                    selectionColor: TelamonStyle.selection
+                    selectedTextColor: Kirigami.Theme.highlightedTextColor
+                    font: Kirigami.Theme.defaultFont
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: qsTr("You: %1").arg(message.text)
+                }
+            }
+        }
+
+        // The files sent with your message: pictures small, text by name.
+        Flow {
+            visible: message.mine && message.files.length > 0 && !message.editing
+            Layout.alignment: Qt.AlignRight
+            Layout.maximumWidth: column.width * 0.75
+            spacing: TelamonStyle.spacingSmall
+            layoutDirection: Qt.RightToLeft
+
+            Repeater {
+                model: message.mine ? message.files : []
+
+                Item {
+                    id: file
+                    required property int index
+                    required property string modelData
+                    readonly property string picture: message.images[index] ?? ""
+                    implicitWidth: file.picture.length > 0 ? thumb.width : chip.implicitWidth
+                    implicitHeight: file.picture.length > 0 ? thumb.height : chip.implicitHeight
+
+                    Image {
+                        id: thumb
+                        visible: file.picture.length > 0
+                        width: Kirigami.Units.gridUnit * 6
+                        height: Kirigami.Units.gridUnit * 6
+                        fillMode: Image.PreserveAspectCrop
+                        asynchronous: true
+                        sourceSize.width: width * 2
+                        sourceSize.height: height * 2
+                        // Gates' own copy, from its own folder.
+                        source: file.picture.length > 0 ? "file://" + file.picture : ""
+                        Accessible.name: file.modelData
+                    }
+                    TelamonChip {
+                        id: chip
+                        visible: file.picture.length === 0
+                        text: file.modelData
+                        symbol: Symbols.Description
+                        maximumWidth: Kirigami.Units.gridUnit * 14
+                    }
+                }
+            }
+        }
+
+        // A tool's result (Agent mode): one line under the reply's text,
+        // which opens to what the tool gave back. Plain text: it comes from
+        // files and commands.
+        ColumnLayout {
+            visible: message.tool
+            Layout.fillWidth: true
+            Layout.leftMargin: Kirigami.Units.gridUnit * 1.6 + Kirigami.Units.largeSpacing
+            spacing: TelamonStyle.spacingSmall
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: TelamonStyle.spacingSmall
+
+                Symbol {
+                    icon: message.failed ? Symbols.Error : Symbols.CheckCircle
+                    size: Math.round(Kirigami.Units.iconSizes.small * 1.2)
+                    color: message.failed ? TelamonStyle.error : TelamonStyle.success
+                }
+                TelamonLabel {
+                    Layout.fillWidth: true
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    opacity: 0.85
+                    text: message.summary
+                }
+                ToolbarButton {
+                    symbol: Symbols.ExpandMore
+                    iconRotation: message.open ? 180 : 0
+                    text: message.open ? qsTr("Hide Output") : qsTr("Show Output")
+                    focusable: true
+                    onClicked: message.open = !message.open
+                }
+            }
+            TelamonCodeView {
+                visible: message.open
+                Layout.fillWidth: true
+                text: message.tool ? message.text : ""
+                maximumHeight: Kirigami.Units.gridUnit * 14
+                Accessible.name: qsTr("Tool output")
             }
         }
 
         // A reply.
         RowLayout {
-            visible: !message.mine
+            visible: !message.mine && !message.tool && !message.quiet
             Layout.fillWidth: true
             spacing: Kirigami.Units.largeSpacing
 
@@ -263,8 +454,9 @@ Item {
                 }
 
                 RowLayout {
-                    // A failed reply with no text still offers Regenerate.
-                    visible: !message.streaming && (message.text.length > 0 || message.failed)
+                    // A failed reply with no text still offers Regenerate; an
+                    // agent's in-between turns have none.
+                    visible: !message.streaming && !message.hasCalls && (message.text.length > 0 || message.failed)
                     spacing: 2
                     // The buttons' symbols, not their padding, line up with
                     // the text above.
@@ -280,6 +472,11 @@ Item {
                         symbol: Symbols.Refresh
                         text: qsTr("Regenerate")
                         onClicked: message.chat.regenerate()
+                    }
+                    ToolbarButton {
+                        symbol: Symbols.CallSplit
+                        text: qsTr("Branch From Here")
+                        onClicked: message.chat.branchFrom(message.index)
                     }
                     SpeedLabel {
                         Layout.leftMargin: Kirigami.Units.smallSpacing

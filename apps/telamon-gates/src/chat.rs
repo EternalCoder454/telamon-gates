@@ -17,6 +17,7 @@ pub mod qobject {
         type QHash_i32_QByteArray = cxx_qt_lib::QHash<cxx_qt_lib::QHashPair_i32_QByteArray>;
         include!("cxx-qt-lib/qlist.h");
         type QList_i32 = cxx_qt_lib::QList<i32>;
+        type QList_f64 = cxx_qt_lib::QList<f64>;
         include!(<QtCore/QAbstractListModel>);
         type QAbstractListModel;
     }
@@ -51,12 +52,24 @@ pub mod qobject {
         #[qproperty(i32, context_size, cxx_name = "contextSize")]
         /// A llama-server elsewhere; "" runs one here.
         #[qproperty(QString, server_url, cxx_name = "serverUrl")]
+        /// The context cache at 8 bits (Settings).
+        #[qproperty(bool, small_cache, cxx_name = "smallCache")]
         /// Where the backend's model files go; "" when it has no folder.
         #[qproperty(QString, models_folder, cxx_name = "modelsFolder")]
         /// The context the model ran with last, in tokens; 0 until known.
         #[qproperty(i32, active_context, cxx_name = "activeContext")]
         /// The open conversation's mode choice: "auto" or a mode's id.
         #[qproperty(QString, mode)]
+        /// Files to go with the next message: their names, and for a
+        /// picture where Gates keeps it ("" for text).
+        #[qproperty(QStringList, pending_names, cxx_name = "pendingNames")]
+        #[qproperty(QStringList, pending_images, cxx_name = "pendingImages")]
+        /// Every mode, in order: the built-ins, then the user's own. Their
+        /// ids, names, prompts and temperatures (-1: the model's own).
+        #[qproperty(QStringList, mode_ids, cxx_name = "modeIds")]
+        #[qproperty(QStringList, mode_names, cxx_name = "modeNames")]
+        #[qproperty(QStringList, mode_prompts, cxx_name = "modePrompts")]
+        #[qproperty(QList_f64, mode_temps, cxx_name = "modeTemps")]
         /// SystemOne is on (Settings).
         #[qproperty(bool, system_one, cxx_name = "systemOne")]
         /// SystemOne can pick: it is on, a decision model is there and
@@ -65,6 +78,24 @@ pub mod qobject {
         /// The decision models in the models folder, and the one in use.
         #[qproperty(QStringList, decision_models, cxx_name = "decisionModels")]
         #[qproperty(QString, decision_model, cxx_name = "decisionModel")]
+        /// The models here whose chat template takes tools (Agent mode).
+        #[qproperty(QStringList, tool_models, cxx_name = "toolModels")]
+        /// The open conversation's folder for Agent mode; "" for none yet.
+        #[qproperty(QString, workspace)]
+        /// That folder is the conversation's own sandbox (Gates' folder),
+        /// not one of the user's.
+        #[qproperty(bool, sandboxed)]
+        /// What an agent's sandboxed commands may reach (Settings), and
+        /// whether they can run at all (bubblewrap is there).
+        #[qproperty(bool, agent_network, cxx_name = "agentNetwork")]
+        #[qproperty(bool, agent_home, cxx_name = "agentHome")]
+        #[qproperty(bool, commands_available, cxx_name = "commandsAvailable")]
+        /// The agent waits for the user to allow a change: what it is
+        /// (a title, the text or command), and "write" or "run".
+        #[qproperty(bool, approving)]
+        #[qproperty(QString, approval_title, cxx_name = "approvalTitle")]
+        #[qproperty(QString, approval_detail, cxx_name = "approvalDetail")]
+        #[qproperty(QString, approval_kind, cxx_name = "approvalKind")]
         #[namespace = "telamon_gates"]
         type Chat = super::ChatRust;
     }
@@ -93,6 +124,22 @@ pub mod qobject {
         #[qinvokable]
         fn regenerate(self: Pin<&mut Chat>);
 
+        /// Opens a new conversation with the messages up to `row`.
+        #[qinvokable]
+        #[cxx_name = "branchFrom"]
+        fn branch_from(self: Pin<&mut Chat>, row: i32);
+
+        /// Your message at `row` becomes `text`; what came after it goes,
+        /// and a new reply comes.
+        #[qinvokable]
+        #[cxx_name = "editMessage"]
+        fn edit_message(self: Pin<&mut Chat>, row: i32, text: &QString);
+
+        /// Saves the open conversation to `path`, as "markdown" or "json".
+        #[qinvokable]
+        #[cxx_name = "exportTo"]
+        fn export_to(self: Pin<&mut Chat>, path: &QString, format: &QString);
+
         #[qinvokable]
         #[cxx_name = "pickModel"]
         fn pick_model(self: Pin<&mut Chat>, name: &QString);
@@ -112,6 +159,15 @@ pub mod qobject {
             server_url: &QString,
         );
 
+        #[qinvokable]
+        #[cxx_name = "useSmallCache"]
+        fn set_small_cache_option(self: Pin<&mut Chat>, on: bool);
+
+        /// The user is writing `text`: gets the model ready, and in Auto has
+        /// SystemOne pick the mode now, so Send waits for neither.
+        #[qinvokable]
+        fn prepare(self: Pin<&mut Chat>, text: &QString);
+
         /// Asks the backend again for its models.
         #[qinvokable]
         #[cxx_name = "refreshModels"]
@@ -127,6 +183,32 @@ pub mod qobject {
         #[cxx_name = "chooseMode"]
         fn choose_mode(self: Pin<&mut Chat>, mode: &QString);
 
+        /// Saves a mode: a built-in's prompt and temperature, or one of the
+        /// user's ("" for a new one). `temperature` below 0: the model's own.
+        #[qinvokable]
+        #[cxx_name = "saveMode"]
+        fn save_mode(
+            self: Pin<&mut Chat>,
+            id: &QString,
+            name: &QString,
+            prompt: &QString,
+            temperature: f64,
+        );
+
+        /// Deletes one of the user's modes, or puts a built-in back.
+        #[qinvokable]
+        #[cxx_name = "deleteMode"]
+        fn delete_mode(self: Pin<&mut Chat>, id: &QString);
+
+        /// Reads files to send with the next message (on a worker).
+        #[qinvokable]
+        #[cxx_name = "attachFiles"]
+        fn attach_files(self: Pin<&mut Chat>, paths: &QStringList);
+
+        #[qinvokable]
+        #[cxx_name = "removeAttachment"]
+        fn remove_attachment(self: Pin<&mut Chat>, index: i32);
+
         #[qinvokable]
         #[cxx_name = "enableSystemOne"]
         fn enable_system_one(self: Pin<&mut Chat>, on: bool);
@@ -134,6 +216,27 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "pickDecisionModel"]
         fn pick_decision_model(self: Pin<&mut Chat>, name: &QString);
+
+        /// The folder Agent mode works in, for the open conversation: one
+        /// of the user's, chosen on purpose.
+        #[qinvokable]
+        #[cxx_name = "chooseWorkspace"]
+        fn choose_workspace(self: Pin<&mut Chat>, path: &QString);
+
+        /// Back to the conversation's own sandbox folder.
+        #[qinvokable]
+        #[cxx_name = "useSandbox"]
+        fn use_sandbox(self: Pin<&mut Chat>);
+
+        #[qinvokable]
+        #[cxx_name = "setAgentAccess"]
+        fn set_agent_access(self: Pin<&mut Chat>, network: bool, home: bool);
+
+        /// The answer to the change the agent waits on: 0 deny, 1 allow,
+        /// 2 allow it and the rest of this reply's edits.
+        #[qinvokable]
+        #[cxx_name = "answerApproval"]
+        fn answer_approval(self: Pin<&mut Chat>, choice: i32);
 
         #[inherit]
         #[cxx_name = "beginInsertRows"]
@@ -194,14 +297,18 @@ use cxx_qt::{CxxQtThread, CxxQtType, Threading};
 use cxx_qt_lib::{
     QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex, QString, QStringList, QVariant,
 };
+use gates_core::agent::{self, Approval};
 use gates_core::backend::llama::{LocalModel, find_server, local_models};
+use gates_core::conversation::ToolCall;
 use gates_core::markdown::{self, Block};
-use gates_core::modes::{self, Mode};
+use gates_core::modes::{self, Active, Library, Preset};
 use gates_core::systemone::{self, SystemOne};
+use gates_core::tools::Workspace;
 use gates_core::{Backend, Conversation, Event, Message, Request, Role};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 /// How often streamed text is handed to the window: often enough to look
@@ -209,7 +316,7 @@ use std::time::{Duration, Instant};
 const BATCH: Duration = Duration::from_millis(33);
 
 const FIRST_ROLE: i32 = 0x0100; // Qt::UserRole
-const ROLES: [&str; 10] = [
+const ROLES: [&str; 14] = [
     "role",      // "user" or "assistant"
     "text",      // the message as written (Markdown for a reply)
     "kinds",     // each block's kind: "prose" or "code"
@@ -220,6 +327,10 @@ const ROLES: [&str; 10] = [
     "speed",     // tokens per second of a reply, 0 when not known
     "mode",      // the mode that wrote a reply ("story"), "" when none
     "picked",    // SystemOne picked that mode
+    "summary",   // a tool result in one line ("Read src/main.rs")
+    "hasCalls",  // a reply that asked for tools (Agent mode)
+    "files",     // the names of files sent with your message
+    "images",    // where Gates keeps its pictures ("" for a text file)
 ];
 
 /// A message as the view shows it, made once per change.
@@ -233,7 +344,7 @@ struct Row {
 impl Row {
     fn of(message: &Message) -> Row {
         let mut row = Row::default();
-        if message.role == Role::User {
+        if message.role != Role::Assistant {
             return row;
         }
         for block in markdown::blocks(&message.text) {
@@ -272,15 +383,36 @@ pub struct ChatRust {
     gpu_layers: i32,
     context_size: i32,
     server_url: QString,
+    small_cache: bool,
     models_folder: QString,
     active_context: i32,
     mode: QString,
+    pending_names: QStringList,
+    pending_images: QStringList,
+    /// The files read for the next message.
+    pending: Vec<gates_core::conversation::Attachment>,
+    mode_ids: QStringList,
+    mode_names: QStringList,
+    mode_prompts: QStringList,
+    mode_temps: QList<f64>,
     system_one: bool,
     system_one_ready: bool,
     decision_models: QStringList,
     decision_model: QString,
+    tool_models: QStringList,
+    workspace: QString,
+    sandboxed: bool,
+    agent_network: bool,
+    agent_home: bool,
+    commands_available: bool,
+    approving: bool,
+    approval_title: QString,
+    approval_detail: QString,
+    approval_kind: QString,
 
     conversation: Option<Conversation>,
+    /// Where the agent waits for the user's answer.
+    approval: Option<Sender<Approval>>,
     rows: Vec<Row>,
     /// The reply under way, if any, stops when this turns true.
     cancel: Option<Arc<AtomicBool>>,
@@ -297,11 +429,22 @@ pub struct ChatRust {
     system_one_model: Option<Arc<SystemOne>>,
     /// llama-server, which runs the decision model too.
     server_binary: Option<PathBuf>,
+    /// The modes as the user has them (`modes.json`).
+    modes: Arc<Library>,
     /// The decision model chosen in Settings ("" for none yet): read once,
     /// then kept here as the file is written behind.
     chosen_decision: String,
     /// Bumped by each look for decision models: an older one drops.
     looking: u64,
+    /// The same for the backend's model list.
+    listing: u64,
+    /// When the model was last warmed up (`prepare`).
+    warmed: Option<Instant>,
+    /// SystemOne's pick for the text being written: the text, the mode,
+    /// and whether SystemOne picked it.
+    prepick: Option<(String, Active, bool)>,
+    /// Bumped by each `prepare`: an older pick drops.
+    preparing: u64,
     pub io: Option<Io>,
     // Boxed: a thread handle is not Unpin, and the struct must be.
     pub library: Option<Box<CxxQtThread<library::qobject::Library>>>,
@@ -337,15 +480,95 @@ impl Rate {
     }
 }
 
+/// A reply on its way to the window: its text in batches, and in Agent
+/// mode its steps, results and the questions it asks.
+struct Stream {
+    qt: CxxQtThread<qobject::Chat>,
+    generation: u64,
+    pending: String,
+    sent: Instant,
+    rate: Rate,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Stream {
+    fn flush(&mut self) {
+        self.sent = Instant::now();
+        let text = std::mem::take(&mut self.pending);
+        let speed = self.rate.speed();
+        let generation = self.generation;
+        let _ = self
+            .qt
+            .queue(move |chat| chat.append_reply(generation, &text, speed));
+    }
+}
+
+impl agent::Host for Stream {
+    fn text(&mut self, piece: &str) {
+        self.pending.push_str(piece);
+        self.rate.token();
+        if self.sent.elapsed() >= BATCH {
+            self.flush();
+        }
+    }
+
+    fn speed(&mut self, speed: f64) {
+        self.rate.reported(speed);
+    }
+
+    fn calls(&mut self, calls: &[ToolCall]) {
+        self.flush();
+        let (generation, calls) = (self.generation, calls.to_vec());
+        let _ = self
+            .qt
+            .queue(move |chat| chat.agent_calls(generation, calls));
+    }
+
+    fn approve(&mut self, call: &ToolCall, title: &str, detail: &str) -> Approval {
+        let (tx, rx) = mpsc::channel();
+        let kind = if call.name == "run_command" {
+            "run"
+        } else {
+            "write"
+        };
+        let (generation, title, detail) = (self.generation, title.to_string(), detail.to_string());
+        let _ = self
+            .qt
+            .queue(move |chat| chat.ask_approval(generation, title, detail, kind, tx));
+        // Waits for the answer; Stop (or a reply left) is a no.
+        loop {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(answer) => return answer,
+                Err(RecvTimeoutError::Timeout) if !self.cancel.load(Ordering::Relaxed) => {}
+                Err(_) => return Approval::Deny,
+            }
+        }
+    }
+
+    fn result(&mut self, message: Message) {
+        let generation = self.generation;
+        let _ = self
+            .qt
+            .queue(move |chat| chat.agent_result(generation, message));
+    }
+
+    fn next_turn(&mut self) {
+        self.rate = Rate::default();
+        let generation = self.generation;
+        let _ = self.qt.queue(move |chat| chat.agent_next(generation));
+    }
+}
+
 /// The mode for a reply: the one `pinned`, else what SystemOne (`picker`)
 /// is sure `asked` wants, else the `previous` reply's (Chat to begin with).
 /// True when SystemOne picked it.
 fn pick_mode(
-    pinned: Option<Mode>,
+    pinned: Option<Active>,
     picker: Option<&SystemOne>,
     asked: &str,
-    previous: Mode,
-) -> (Mode, bool) {
+    previous: Active,
+    library: &Library,
+) -> (Active, bool) {
     if let Some(mode) = pinned {
         return (mode, false);
     }
@@ -362,7 +585,7 @@ fn pick_mode(
                 started.elapsed().as_millis()
             );
             if c.confidence >= systemone::MIN_CONFIDENCE && modes::valid_choice(&c.choice) {
-                (modes::mode(&c.choice), true)
+                (library.resolve(&c.choice), true)
             } else {
                 (previous, false)
             }
@@ -373,6 +596,21 @@ fn pick_mode(
             (previous, false)
         }
     }
+}
+
+/// Whether `folder` is one of Gates' own sandbox folders.
+fn is_sandbox(folder: &str) -> bool {
+    std::path::Path::new(folder).starts_with(gates_core::store::data_dir().join("workspaces"))
+}
+
+/// Where the user's modes are kept.
+fn modes_file() -> PathBuf {
+    gates_core::store::data_dir().join("modes.json")
+}
+
+/// A new id for one of the user's modes.
+fn new_mode_id() -> String {
+    format!("my-{:x}", gates_core::conversation::now_ms())
 }
 
 fn int(n: usize) -> i32 {
@@ -396,6 +634,7 @@ impl qobject::Chat {
             settings::get(settings::SYSTEM_PROMPT).as_str(),
         ));
         let options = settings::backend_options();
+        self.as_mut().set_small_cache(options.small_cache);
         self.as_mut()
             .set_gpu_layers(i32::try_from(options.gpu_layers).unwrap_or(0));
         self.as_mut()
@@ -403,8 +642,21 @@ impl qobject::Chat {
         self.as_mut()
             .set_server_url(QString::from(options.server_url.as_str()));
         self.as_mut().set_mode(QString::from(modes::AUTO));
+        // Read once at start, like the settings (a small file).
+        let library = Library::load(&modes_file());
+        self.as_mut().use_modes(library);
         self.as_mut()
             .set_system_one(settings::get(settings::SYSTEM_ONE) != "false");
+        self.as_mut()
+            .set_agent_network(settings::get(settings::AGENT_NETWORK) == "true");
+        self.as_mut()
+            .set_agent_home(settings::get(settings::AGENT_HOME) == "true");
+        // Trying bubblewrap runs it: on a worker.
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let available = gates_core::sandbox::available();
+            let _ = qt.queue(move |chat| chat.set_commands_available(available));
+        });
         {
             let mut rust = self.as_mut().rust_mut();
             rust.server_binary = find_server();
@@ -470,13 +722,26 @@ impl qobject::Chat {
     pub fn send(mut self: Pin<&mut Self>, text: &QString) -> bool {
         let text = text.to_string();
         let text = text.trim();
-        if text.is_empty() || *self.generating() || *self.loading() {
+        let files = !self.rust().pending.is_empty();
+        if (text.is_empty() && !files) || *self.generating() || *self.loading() {
             return false;
         }
+        let title = if text.is_empty() {
+            self.rust()
+                .pending
+                .first()
+                .map(|a| a.name.clone())
+                .unwrap_or_default()
+        } else {
+            text.to_string()
+        };
+        let text = text.to_string();
         if self.rust().conversation.is_none() {
-            let mut c = Conversation::new(text);
-            // The mode chosen before the first message.
+            let mut c = Conversation::new(&title);
+            // The mode and folder chosen before the first message.
             c.mode = self.mode().to_string();
+            let workspace = self.workspace().to_string();
+            c.workspace = (!workspace.is_empty()).then_some(workspace);
             self.as_mut()
                 .set_conversation_id(QString::from(c.id.as_str()));
             self.as_mut().set_title(QString::from(c.title.as_str()));
@@ -486,9 +751,69 @@ impl qobject::Chat {
         if let Some(c) = self.as_mut().rust_mut().conversation.as_mut() {
             c.touch();
         }
-        self.as_mut().push(Message::user(text));
+        let attachments = std::mem::take(&mut self.as_mut().rust_mut().pending);
+        self.as_mut().show_pending();
+        self.as_mut().push(Message {
+            attachments,
+            ..Message::user(text)
+        });
         self.ask();
         true
+    }
+
+    pub fn attach_files(self: Pin<&mut Self>, paths: &QStringList) {
+        let room = gates_core::attach::MAX_FILES.saturating_sub(self.rust().pending.len());
+        let paths: Vec<PathBuf> = paths
+            .iter()
+            .take(room)
+            .map(|p| PathBuf::from(p.to_string()))
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let store = gates_core::store::attachments_dir();
+            let read: Vec<_> = paths
+                .iter()
+                .map(|p| gates_core::attach::read(p, &store))
+                .collect();
+            let _ = qt.queue(move |mut chat| {
+                let mut errors = Vec::new();
+                for r in read {
+                    match r {
+                        Ok(a) if chat.rust().pending.len() < gates_core::attach::MAX_FILES => {
+                            chat.as_mut().rust_mut().pending.push(a);
+                        }
+                        Ok(_) => {}
+                        Err(e) => errors.push(e),
+                    }
+                }
+                chat.as_mut().show_pending();
+                if !errors.is_empty() {
+                    chat.set_error(QString::from(errors.join(" ").as_str()));
+                }
+            });
+        });
+    }
+
+    pub fn remove_attachment(mut self: Pin<&mut Self>, index: i32) {
+        if let Ok(i) = usize::try_from(index)
+            && i < self.rust().pending.len()
+        {
+            self.as_mut().rust_mut().pending.remove(i);
+            self.show_pending();
+        }
+    }
+
+    fn show_pending(mut self: Pin<&mut Self>) {
+        let (mut names, mut images) = (QStringList::default(), QStringList::default());
+        for a in &self.rust().pending {
+            names.append(QString::from(a.name.as_str()));
+            images.append(QString::from(a.image.as_deref().unwrap_or("")));
+        }
+        self.as_mut().set_pending_names(names);
+        self.set_pending_images(images);
     }
 
     pub fn stop(mut self: Pin<&mut Self>) {
@@ -516,13 +841,104 @@ impl qobject::Chat {
             return;
         };
         self.as_mut().set_error(QString::default());
-        if last == Role::Assistant {
-            self.as_mut().pop();
+        // Back to your last message: a reply, and an agent's steps with it.
+        if last != Role::User {
+            while self
+                .rust()
+                .conversation
+                .as_ref()
+                .and_then(|c| c.messages.last())
+                .is_some_and(|m| m.role != Role::User)
+            {
+                self.as_mut().pop();
+            }
         }
         if let Some(c) = self.as_mut().rust_mut().conversation.as_mut() {
             c.touch();
         }
         self.ask();
+    }
+
+    pub fn branch_from(mut self: Pin<&mut Self>, row: i32) {
+        if *self.loading() {
+            return;
+        }
+        let Some(branch) = usize::try_from(row).ok().and_then(|row| {
+            self.rust()
+                .conversation
+                .as_ref()
+                .filter(|c| row < c.messages.len())
+                .map(|c| c.branch(row))
+        }) else {
+            return;
+        };
+        self.as_mut().leave();
+        self.as_mut().rust_mut().opening += 1;
+        self.as_mut().show(Some(branch));
+        self.save();
+    }
+
+    pub fn edit_message(mut self: Pin<&mut Self>, row: i32, text: &QString) {
+        let text = text.to_string();
+        let text = text.trim();
+        if text.is_empty() || *self.generating() || *self.loading() {
+            return;
+        }
+        let Ok(row) = usize::try_from(row) else {
+            return;
+        };
+        let mine = self
+            .rust()
+            .conversation
+            .as_ref()
+            .and_then(|c| c.messages.get(row))
+            .is_some_and(|m| m.role == Role::User);
+        if !mine {
+            return;
+        }
+        // The files sent with it stay with it.
+        let attachments = self
+            .rust()
+            .conversation
+            .as_ref()
+            .and_then(|c| c.messages.get(row))
+            .map(|m| m.attachments.clone())
+            .unwrap_or_default();
+        while self.rust().rows.len() > row {
+            self.as_mut().pop();
+        }
+        self.as_mut().set_error(QString::default());
+        if let Some(c) = self.as_mut().rust_mut().conversation.as_mut() {
+            c.touch();
+        }
+        self.as_mut().push(Message {
+            attachments,
+            ..Message::user(text)
+        });
+        self.ask();
+    }
+
+    pub fn export_to(self: Pin<&mut Self>, path: &QString, format: &QString) {
+        let (Some(c), Some(io)) = (self.rust().conversation.clone(), self.rust().io.clone()) else {
+            return;
+        };
+        let path = PathBuf::from(path.to_string());
+        let text = if format.to_string() == "json" {
+            gates_core::export::json(&c)
+        } else {
+            gates_core::export::markdown(&c)
+        };
+        let qt = self.qt_thread();
+        io.run(move |_| {
+            // Whole or not at all: a file beside it, then a rename.
+            let tmp = path.with_extension("gates-export.tmp");
+            let result = std::fs::write(&tmp, &text).and_then(|()| std::fs::rename(&tmp, &path));
+            if let Err(e) = result {
+                let _ = std::fs::remove_file(&tmp);
+                let message = format!("Couldn't save {}: {e}.", path.display());
+                let _ = qt.queue(move |chat| chat.set_error(QString::from(message.as_str())));
+            }
+        });
     }
 
     pub fn pick_model(mut self: Pin<&mut Self>, name: &QString) {
@@ -559,6 +975,7 @@ impl qobject::Chat {
                 .trim()
                 .trim_end_matches('/')
                 .to_string(),
+            small_cache: *self.small_cache(),
         };
         self.as_mut()
             .set_gpu_layers(i32::try_from(options.gpu_layers).unwrap_or(0));
@@ -582,15 +999,91 @@ impl qobject::Chat {
         self.refresh_models();
     }
 
+    pub fn prepare(mut self: Pin<&mut Self>, text: &QString) {
+        let text = text.to_string().trim().to_string();
+        if text.is_empty() || *self.generating() {
+            return;
+        }
+        // The model, loading while the user writes (once a minute at most:
+        // after that it is loaded, or idle-stopped minutes later).
+        let due = self
+            .rust()
+            .warmed
+            .is_none_or(|t| t.elapsed() > Duration::from_secs(60));
+        if due && let Some(backend) = self.rust().backend.clone() {
+            self.as_mut().rust_mut().warmed = Some(Instant::now());
+            let model = self.model().to_string();
+            std::thread::spawn(move || backend.warm(&model));
+        }
+        // SystemOne's pick, made now (Auto only).
+        let picker = match self.mode().to_string() == modes::AUTO {
+            true => self.rust().system_one_model.clone(),
+            false => None,
+        };
+        let Some(picker) = picker else {
+            return;
+        };
+        let library = self.rust().modes.clone();
+        let previous = self
+            .rust()
+            .conversation
+            .as_ref()
+            .and_then(|c| c.messages.iter().rev().find_map(|m| m.mode.clone()))
+            .filter(|id| id != modes::AGENT.id)
+            .map(|id| library.resolve(&id))
+            .unwrap_or_else(|| library.resolve(modes::CHAT.id));
+        let preparing = {
+            let mut rust = self.as_mut().rust_mut();
+            rust.preparing += 1;
+            rust.preparing
+        };
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let (mode, picked) = pick_mode(None, Some(&picker), &text, previous, &library);
+            let _ = qt.queue(move |mut chat| {
+                if chat.rust().preparing == preparing {
+                    chat.as_mut().rust_mut().prepick = Some((text, mode, picked));
+                }
+            });
+        });
+    }
+
+    pub fn set_small_cache_option(mut self: Pin<&mut Self>, on: bool) {
+        if *self.small_cache() == on {
+            return;
+        }
+        self.as_mut().set_small_cache(on);
+        if let Some(io) = &self.rust().io {
+            settings::set(
+                io,
+                settings::SMALL_CACHE,
+                if on { "true".into() } else { String::new() },
+            );
+        }
+        let (gpu, ctx, url) = (
+            *self.gpu_layers(),
+            *self.context_size(),
+            self.server_url().clone(),
+        );
+        self.save_server_options(gpu, ctx, &url);
+    }
+
     pub fn refresh_models(mut self: Pin<&mut Self>) {
         self.as_mut().refresh_decision_models();
         let Some(backend) = self.rust().backend.clone() else {
             return;
         };
+        // A slow answer can't replace a newer one.
+        let listing = {
+            let mut rust = self.as_mut().rust_mut();
+            rust.listing += 1;
+            rust.listing
+        };
         let qt = self.qt_thread();
         std::thread::spawn(move || {
             let result = backend.models();
             let _ = qt.queue(move |mut chat| match result {
+                _ if chat.rust().listing != listing => {}
                 Ok(models) => {
                     let mut list = QStringList::default();
                     for m in &models {
@@ -621,8 +1114,12 @@ impl qobject::Chat {
     }
 
     pub fn choose_mode(mut self: Pin<&mut Self>, mode: &QString) {
+        // Not while a reply runs: an agent keeps the mode and folder it began with.
+        if *self.generating() {
+            return;
+        }
         let mode = mode.to_string();
-        if !modes::valid_choice(&mode) || *self.mode() == QString::from(mode.as_str()) {
+        if !self.rust().modes.has(&mode) || *self.mode() == QString::from(mode.as_str()) {
             return;
         }
         self.as_mut().set_mode(QString::from(mode.as_str()));
@@ -637,6 +1134,70 @@ impl qobject::Chat {
         if saved {
             self.save();
         }
+    }
+
+    pub fn save_mode(
+        self: Pin<&mut Self>,
+        id: &QString,
+        name: &QString,
+        prompt: &QString,
+        temperature: f64,
+    ) {
+        let mut library = (*self.rust().modes).clone();
+        library.put(
+            Preset {
+                id: id.to_string(),
+                name: name.to_string(),
+                prompt: prompt.to_string(),
+                temperature: (temperature >= 0.0).then_some(temperature as f32),
+            },
+            new_mode_id,
+        );
+        self.keep_modes(library);
+    }
+
+    pub fn delete_mode(mut self: Pin<&mut Self>, id: &QString) {
+        let id = id.to_string();
+        let mut library = (*self.rust().modes).clone();
+        library.remove(&id);
+        // A conversation in a mode that's gone is back in Auto.
+        if self.mode().to_string() == id && !library.has(&id) {
+            self.as_mut().choose_mode(&QString::from(modes::AUTO));
+        }
+        self.keep_modes(library);
+    }
+
+    /// Uses `library` from now on, and writes it (on the file thread).
+    fn keep_modes(mut self: Pin<&mut Self>, library: Library) {
+        if let Some(io) = &self.rust().io {
+            let copy = library.clone();
+            io.run(move |_| {
+                if let Err(e) = copy.save(&modes_file()) {
+                    log::warn!("cannot save the modes: {e}");
+                }
+            });
+        }
+        self.as_mut().use_modes(library);
+    }
+
+    fn use_modes(mut self: Pin<&mut Self>, library: Library) {
+        let (mut ids, mut names, mut prompts, mut temps) = (
+            QStringList::default(),
+            QStringList::default(),
+            QStringList::default(),
+            QList::<f64>::default(),
+        );
+        for p in library.list() {
+            ids.append(QString::from(p.id.as_str()));
+            names.append(QString::from(p.name.as_str()));
+            prompts.append(QString::from(p.prompt.as_str()));
+            temps.append(p.temperature.map_or(-1.0, f64::from));
+        }
+        self.as_mut().rust_mut().modes = Arc::new(library);
+        self.as_mut().set_mode_ids(ids);
+        self.as_mut().set_mode_names(names);
+        self.as_mut().set_mode_prompts(prompts);
+        self.set_mode_temps(temps);
     }
 
     pub fn enable_system_one(mut self: Pin<&mut Self>, on: bool) {
@@ -663,6 +1224,154 @@ impl qobject::Chat {
         self.refresh_decision_models();
     }
 
+    pub fn choose_workspace(self: Pin<&mut Self>, path: &QString) {
+        if *self.generating() {
+            return;
+        }
+        let path = path.to_string();
+        let conversation = self.conversation_id().to_string();
+        // Only a real folder, and not a too wide one (checked on a worker:
+        // it may be on a slow disk); the tools check every path against it.
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let checked = Workspace::open(std::path::Path::new(&path))
+                .map(|ws| ws.root().to_string_lossy().into_owned());
+            let _ = qt.queue(move |chat| {
+                if chat.conversation_id().to_string() != conversation {
+                    return;
+                }
+                match checked {
+                    Ok(root) => chat.use_workspace(root),
+                    Err(e) => chat.set_error(QString::from(
+                        format!("The agent can't work in {path}: {e}.").as_str(),
+                    )),
+                }
+            });
+        });
+    }
+
+    fn use_workspace(mut self: Pin<&mut Self>, path: String) {
+        self.as_mut().set_sandboxed(is_sandbox(&path));
+        self.as_mut().set_workspace(QString::from(path.as_str()));
+        let saved = match self.as_mut().rust_mut().conversation.as_mut() {
+            Some(c) => {
+                c.workspace = Some(path);
+                true
+            }
+            None => false,
+        };
+        if saved {
+            self.save();
+        }
+    }
+
+    pub fn use_sandbox(mut self: Pin<&mut Self>) {
+        if *self.generating() {
+            return;
+        }
+        self.as_mut().set_sandboxed(true);
+        self.as_mut().set_workspace(QString::default());
+        let saved = match self.as_mut().rust_mut().conversation.as_mut() {
+            Some(c) => {
+                c.workspace = None;
+                true
+            }
+            None => false,
+        };
+        if saved {
+            self.save();
+        }
+    }
+
+    pub fn set_agent_access(mut self: Pin<&mut Self>, network: bool, home: bool) {
+        self.as_mut().set_agent_network(network);
+        self.as_mut().set_agent_home(home);
+        if let Some(io) = &self.rust().io {
+            let flag = |on: bool| {
+                if on {
+                    "true".to_string()
+                } else {
+                    String::new()
+                }
+            };
+            settings::set(io, settings::AGENT_NETWORK, flag(network));
+            settings::set(io, settings::AGENT_HOME, flag(home));
+        }
+    }
+
+    pub fn answer_approval(mut self: Pin<&mut Self>, choice: i32) {
+        let answer = match choice {
+            1 => Approval::Allow,
+            2 => Approval::AllowEdits,
+            _ => Approval::Deny,
+        };
+        if let Some(tx) = self.as_mut().rust_mut().approval.take() {
+            let _ = tx.send(answer);
+        }
+        self.set_approving(false);
+    }
+
+    /// The agent asks whether a change may happen (`kind`: "write" or
+    /// "run"); the answer goes to `tx`.
+    fn ask_approval(
+        mut self: Pin<&mut Self>,
+        generation: u64,
+        title: String,
+        detail: String,
+        kind: &str,
+        tx: Sender<Approval>,
+    ) {
+        if self.rust().generation != generation {
+            return;
+        }
+        self.as_mut().rust_mut().approval = Some(tx);
+        self.as_mut()
+            .set_approval_title(QString::from(title.as_str()));
+        self.as_mut()
+            .set_approval_detail(QString::from(detail.as_str()));
+        self.as_mut().set_approval_kind(QString::from(kind));
+        self.set_approving(true);
+    }
+
+    /// The agent's turn under way ended by asking for `calls`.
+    fn agent_calls(mut self: Pin<&mut Self>, generation: u64, calls: Vec<ToolCall>) {
+        if self.rust().generation != generation {
+            return;
+        }
+        if let Some(m) = self
+            .as_mut()
+            .rust_mut()
+            .conversation
+            .as_mut()
+            .and_then(|c| c.messages.last_mut())
+            .filter(|m| m.role == Role::Assistant)
+        {
+            m.tool_calls = calls;
+        }
+        self.as_mut().last_changed();
+        self.save();
+    }
+
+    /// A tool's result, from the agent.
+    fn agent_result(mut self: Pin<&mut Self>, generation: u64, message: Message) {
+        if self.rust().generation != generation {
+            return;
+        }
+        self.as_mut().push(message);
+        self.save();
+    }
+
+    /// The agent's next turn: a new, empty reply that streams.
+    fn agent_next(self: Pin<&mut Self>, generation: u64) {
+        if self.rust().generation != generation {
+            return;
+        }
+        self.push(Message {
+            mode: Some(modes::AGENT.id.to_string()),
+            ..Message::assistant("")
+        });
+    }
+
     /// Looks for decision models in the models folder (on a worker) and
     /// sets up SystemOne with the chosen one: the saved choice, else Laya,
     /// which runs on the processor, else the first.
@@ -677,12 +1386,22 @@ impl qobject::Chat {
         };
         let qt = self.qt_thread();
         std::thread::spawn(move || {
-            let found: Vec<LocalModel> = local_models(&dir)
+            let (found, chat_models): (Vec<LocalModel>, Vec<LocalModel>) = local_models(&dir)
                 .into_iter()
-                .filter(|m| !m.info.decision.is_empty())
+                .partition(|m| !m.info.decision.is_empty());
+            // And which chat models can work as an agent.
+            let tools: Vec<String> = chat_models
+                .into_iter()
+                .filter(|m| m.info.tools)
+                .map(|m| m.name)
                 .collect();
-            let _ = qt.queue(move |chat| {
+            let _ = qt.queue(move |mut chat| {
                 if chat.rust().looking == looking {
+                    let mut list = QStringList::default();
+                    for name in &tools {
+                        list.append(QString::from(name.as_str()));
+                    }
+                    chat.as_mut().set_tool_models(list);
                     chat.use_decision_models(found);
                 }
             });
@@ -731,6 +1450,15 @@ impl qobject::Chat {
         }
         let ready = self.rust().system_one_model.is_some();
         self.set_system_one_ready(ready);
+    }
+
+    /// What a fleet takes from the chat: the model picked, and SystemOne
+    /// while it can judge.
+    pub fn fleet_setup(&self) -> (String, Option<Arc<SystemOne>>) {
+        (
+            self.model().to_string(),
+            self.rust().system_one_model.clone(),
+        )
     }
 
     /// The reply under way is written in `mode`, which SystemOne `picked`.
@@ -793,6 +1521,22 @@ impl qobject::Chat {
             7 => QVariant::from(&message.speed.unwrap_or(0.0)),
             8 => QVariant::from(&QString::from(message.mode.as_deref().unwrap_or(""))),
             9 => QVariant::from(&message.picked),
+            10 => QVariant::from(&QString::from(message.summary.as_deref().unwrap_or(""))),
+            11 => QVariant::from(&!message.tool_calls.is_empty()),
+            12 => {
+                let mut names = QStringList::default();
+                for a in &message.attachments {
+                    names.append(QString::from(a.name.as_str()));
+                }
+                QVariant::from(&names)
+            }
+            13 => {
+                let mut images = QStringList::default();
+                for a in &message.attachments {
+                    images.append(QString::from(a.image.as_deref().unwrap_or("")));
+                }
+                QVariant::from(&images)
+            }
             _ => QVariant::default(),
         }
     }
@@ -827,10 +1571,18 @@ impl qobject::Chat {
             .as_ref()
             .map(|c| (c.id.clone(), c.title.clone()))
             .unwrap_or_default();
+        let workspace = conversation
+            .as_ref()
+            .and_then(|c| c.workspace.clone())
+            .unwrap_or_default();
+        self.as_mut()
+            .set_sandboxed(workspace.is_empty() || is_sandbox(&workspace));
+        self.as_mut()
+            .set_workspace(QString::from(workspace.as_str()));
         let mode = conversation
             .as_ref()
             .map(|c| c.mode.clone())
-            .filter(|m| modes::valid_choice(m))
+            .filter(|m| self.rust().modes.has(m))
             .unwrap_or_else(|| modes::AUTO.to_string());
         self.as_mut().set_mode(QString::from(mode.as_str()));
         self.as_mut().begin_reset_model();
@@ -865,6 +1617,13 @@ impl qobject::Chat {
             }
         }
         self.as_mut().end_insert_rows();
+        // The row before is no longer the last: it stops showing as
+        // streaming (an agent's turn, once its results come).
+        if at > 0 {
+            let before = self.index(at - 1, 0, &QModelIndex::default());
+            self.as_mut()
+                .data_changed(&before, &before, &QList::<i32>::default());
+        }
         self.as_mut().set_count(at + 1);
         self.update_retryable();
     }
@@ -917,13 +1676,20 @@ impl qobject::Chat {
             .rust()
             .conversation
             .as_ref()
-            // A failed or empty reply is not part of what the model said.
+            // A failed or empty reply is not part of what the model said;
+            // tool calls and their results are, every one answered.
             .map(|c| {
-                c.messages
-                    .iter()
-                    .filter(|m| m.role == Role::User || (!m.failed && !m.text.is_empty()))
-                    .cloned()
-                    .collect::<Vec<_>>()
+                agent::repair(
+                    c.messages
+                        .iter()
+                        .filter(|m| {
+                            m.role != Role::Assistant
+                                || !m.tool_calls.is_empty()
+                                || (!m.failed && !m.text.is_empty())
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
             })
         else {
             return;
@@ -931,10 +1697,28 @@ impl qobject::Chat {
         // The mode: the one pinned, or in Auto SystemOne's pick (made on
         // the worker), else Chat.
         let choice = self.mode().to_string();
-        let pinned = (choice != modes::AUTO).then(|| modes::mode(&choice));
-        let picker = match pinned {
-            None => self.rust().system_one_model.clone(),
+        let library = self.rust().modes.clone();
+        let pinned = (choice != modes::AUTO).then(|| library.resolve(&choice));
+        // A pick made while the message was written, for this very text.
+        let asked_now = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::User)
+            .map(|m| m.text.trim().to_string())
+            .unwrap_or_default();
+        let prepicked = match pinned {
+            None => self
+                .as_mut()
+                .rust_mut()
+                .prepick
+                .take()
+                .filter(|(text, _, _)| *text == asked_now)
+                .map(|(_, mode, picked)| (mode, picked)),
             Some(_) => None,
+        };
+        let picker = match (&pinned, &prepicked) {
+            (None, None) => self.rust().system_one_model.clone(),
+            _ => None,
         };
         let asked = messages
             .iter()
@@ -944,18 +1728,39 @@ impl qobject::Chat {
             .unwrap_or_default();
         // When SystemOne isn't sure ("continue", "make it darker"), the
         // conversation stays in the mode its last reply had.
+        // Never Agent: outside Agent mode there is no folder and no tools.
         let previous = messages
             .iter()
             .rev()
             .find_map(|m| m.mode.as_deref())
-            .map(modes::mode)
-            .unwrap_or(modes::CHAT);
+            .filter(|id| *id != modes::AGENT.id)
+            .map(|id| library.resolve(id))
+            .unwrap_or_else(|| library.resolve(modes::CHAT.id));
         let user_prompt = self.system_prompt().to_string();
+        // Agent mode works in the conversation's folder, which it needs
+        // (opened on the worker: a folder can be on a slow disk).
+        // No folder chosen: the conversation's own sandbox, made on the worker.
+        let workspace = if pinned.as_ref().is_some_and(|m| m.id == modes::AGENT.id) {
+            let folder = self.workspace().to_string();
+            Some(if folder.is_empty() {
+                gates_core::store::sandbox_dir(&self.conversation_id().to_string())
+            } else {
+                PathBuf::from(folder)
+            })
+        } else {
+            None
+        };
+        let access = gates_core::sandbox::Access {
+            network: *self.agent_network(),
+            home: *self.agent_home(),
+        };
         let mut request = Request {
             model: self.model().to_string(),
             system_prompt: String::new(),
             messages,
             sampling: None,
+            tools: Vec::new(),
+            response_format: None,
         };
         // Saved with the user's message, before the reply's row (empty
         // until its text comes) is there.
@@ -973,35 +1778,53 @@ impl qobject::Chat {
         self.as_mut().set_generating(true);
         let qt = self.qt_thread();
         std::thread::spawn(move || {
-            let (mode, picked) = pick_mode(pinned, picker.as_deref(), &asked, previous);
+            let (mode, picked) = match prepicked {
+                Some(ready) => ready,
+                None => pick_mode(pinned, picker.as_deref(), &asked, previous, &library),
+            };
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
-            let id = mode.id;
-            let _ = qt.queue(move |chat| chat.set_reply_mode(generation, id, picked));
-            request.system_prompt = modes::system_prompt(&mode, &user_prompt);
+            let id = mode.id.clone();
+            let _ = qt.queue(move |chat| chat.set_reply_mode(generation, &id, picked));
+            request.system_prompt = modes::system_prompt_for(&mode, &user_prompt);
             request.sampling = mode.sampling;
-            let mut pending = String::new();
-            let mut sent = Instant::now();
-            let mut rate = Rate::default();
+            let mut stream = Stream {
+                qt: qt.clone(),
+                generation,
+                pending: String::new(),
+                sent: Instant::now(),
+                rate: Rate::default(),
+                cancel: cancel.clone(),
+            };
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                backend.complete(&request, &cancel, &mut |event| {
-                    match event {
-                        Event::Text(piece) => {
-                            pending.push_str(piece);
-                            rate.token();
+                match &workspace {
+                    Some(folder) => {
+                        if folder.starts_with(gates_core::store::data_dir().join("workspaces")) {
+                            let _ = gates_core::store::private_dir(folder);
                         }
-                        Event::Speed(s) => rate.reported(s),
+                        let ws = Workspace::open(folder).map_err(|e| {
+                            gates_core::BackendError::Other(format!(
+                                "The agent can't work in {}: {e}.",
+                                folder.display()
+                            ))
+                        })?;
+                        request
+                            .system_prompt
+                            .push_str(&format!("\n\nThe workspace is {}.", ws.root().display()));
+                        let ws = ws.with_access(access);
+                        agent::run(backend.as_ref(), request, &ws, &cancel, &mut stream)
                     }
-                    if sent.elapsed() >= BATCH {
-                        sent = Instant::now();
-                        let text = std::mem::take(&mut pending);
-                        let speed = rate.speed();
-                        let _ = qt.queue(move |chat| chat.append_reply(generation, &text, speed));
-                    }
-                })
+                    None => backend.complete(&request, &cancel, &mut |event| match event {
+                        Event::Text(piece) => agent::Host::text(&mut stream, piece),
+                        Event::Speed(s) => stream.rate.reported(s),
+                        // Tools weren't offered: nothing to run.
+                        Event::ToolCalls(_) => {}
+                    }),
+                }
             }));
-            let speed = rate.speed();
+            let pending = std::mem::take(&mut stream.pending);
+            let speed = stream.rate.speed();
             let error = match result {
                 Ok(Ok(())) => None,
                 Ok(Err(e)) => Some(e.to_string()),
@@ -1066,6 +1889,8 @@ impl qobject::Chat {
             let mut rust = self.as_mut().rust_mut();
             rust.cancel = None;
             rust.streaming = false;
+            // An agent waiting on an answer gets a no (the sender goes).
+            rust.approval = None;
             if let Some(message) = rust
                 .conversation
                 .as_mut()
@@ -1100,6 +1925,7 @@ impl qobject::Chat {
             self.as_mut().set_error(QString::from(e.as_str()));
         }
         self.as_mut().set_generating(false);
+        self.as_mut().set_approving(false);
         if let Some(c) = self.as_mut().rust_mut().conversation.as_mut() {
             c.touch();
         }

@@ -47,6 +47,8 @@ fn main() {
         system_prompt: "Be brief.".into(),
         messages,
         sampling: None,
+        tools: Vec::new(),
+        response_format: None,
     };
     let started = std::time::Instant::now();
     let result = llama.complete(&request, &AtomicBool::new(false), &mut |e| match e {
@@ -55,6 +57,7 @@ fn main() {
             let _ = std::io::stdout().flush();
         }
         Event::Speed(s) => println!("\n[speed: {s:.1} tokens/s]"),
+        Event::ToolCalls(calls) => println!("\n[tool calls: {calls:?}]"),
     });
     println!(
         "\n[result: {result:?}; context: {:?} tokens; {:.1} s]",

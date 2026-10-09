@@ -36,14 +36,19 @@ its place, and the ones left out are listed with the reason.
    mode for a conversation.
    - **Built:** the three modes, with their temperature and top-p, and Auto
      or a pinned mode per conversation.
-   - **Not yet:** editing modes and adding your own.
+   - **Built:** editing the built-in modes' prompt and temperature, and adding
+     your own (Settings → Modes, kept in `modes.json`). Your own modes show
+     in "Your Modes" beside the mode switch.
 3. **Edit and Branch.** Edit a sent message, or "Branch From Here" on any
    message, to get a new conversation up to that point. This lets you try a
    story another way without losing the first. Export a conversation as
    Markdown or JSON.
+   - **Built.**
 4. **Model facts.** Each model's context length, whether it reads images (a
    matching `mmproj`) and whether its chat template takes tools. These come
    from the GGUF header and show on the Models page and in the picker.
+   - **Built** on the Models page: context, Tools and Images badges.
+   - **Not yet:** in the chat's model picker.
 5. **Tools, our own.** A Rust registry in gates-core: no MCP, no Python, and
    nothing to spawn per call. Tools go through llama-server's OpenAI
    `tools`/`tool_calls` with `--jinja`.
@@ -52,15 +57,50 @@ its place, and the ones left out are listed with the reason.
      arithmetic.
    - **Tools that change things ask first.** Model output is untrusted, so
      the app asks you each time.
+   - **Built**, as Agent mode:
+     - **Reading:** list, read, search and find files in the conversation's
+       folder.
+     - **Changing:** write and edit files, and run commands, each after
+       you allow it.
+     - **Tested:** with Qwen3-4B it did a small coding task in 6 steps and
+       5.5 s (`docs/BACKEND.md`).
+     - **Date and arithmetic:** `now` (local date, time and zone) and
+       `calculate` (`+ - * / % ^`, brackets and common functions) are built;
+       both run at once.
+     - **Not yet:** searching conversations.
 6. **Fleet.** A dashboard page in the Telamon style showing:
    - each subagent as a card: its model, its task, a live status from
      SystemOne, tokens/s and context used;
    - a timeline of what each agent did, with Stop, Pause and Talk To on each.
    It runs on the same llama-server with `--parallel N` slots.
+   - **Built**, simply:
+     - **The plan:** a goal and a folder. The chat model, asked once for a
+       JSON plan, splits the goal into 1 to 6 tasks, and each runs as an
+       agent in that folder, one after another on the one server slot.
+     - **The page:** a card for each agent with its status (idle, working,
+       waiting for you, done, failed, stopped), last line, steps and tokens
+       per second; Stop for one agent or all; every change an agent asks for
+       waits on the page for your answer.
+     - **SystemOne:** when an agent ends, a decision model is asked "Did
+       this agent complete its task?" and the card shows how sure it is.
+       With no decision model, nothing is asked.
+     - **Tested:** with Qwen3-4B and Laya, a two-task goal ran in 6 to 7 s
+       and SystemOne said 85% and 75% sure (`docs/BACKEND.md`).
+     - **Not yet:** `--parallel N` (agents at the same time), Pause, Talk To,
+       a timeline, each agent's model and context used, saved runs, and
+       routing a task to an agent by SystemOne.
 7. **Attachments.** Text and code files go into the message. Retrieval with
    embeddings over many documents comes later, if attachments prove too
    small.
+   - **Built.**
 8. **Images.** Attach an image for models with a projector (`--mmproj`).
+   - **Built:** tested with SmolVLM-256M and its projector.
+
+## Secure (after Functionable)
+
+- **Sandboxed workspaces** (built): an agent works in its own folder unless
+  the user lets it into one of theirs, and every command runs in a
+  bubblewrap sandbox without the home folder or the network unless allowed.
 
 ## Left out
 

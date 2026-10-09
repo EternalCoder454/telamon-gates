@@ -5,7 +5,7 @@
 %global debug_package %{nil}
 
 Name:           telamon-gates
-Version:        0.1.0
+Version:        1.0.0
 Release:        1%{?dist}
 Summary:        Telamon Gates, the AI chat of Telamon OS
 License:        MIT
@@ -24,6 +24,10 @@ BuildRequires:  corrosion
 # Cargo fetches the telamon-framework crates from GitHub.
 BuildRequires:  git-core
 BuildRequires:  desktop-file-utils
+# The agent's commands run in a bubblewrap sandbox (the tests run one too).
+BuildRequires:  bubblewrap
+# Downloads from Hugging Face use the system's TLS.
+BuildRequires:  pkgconfig(openssl)
 BuildRequires:  libappstream-glib
 BuildRequires:  cmake(Qt6Core)
 BuildRequires:  cmake(Qt6Gui)
@@ -47,6 +51,7 @@ Requires:       kf6-qqc2-desktop-style
 Requires:       qt6-qtdeclarative
 Requires:       qt6-qtsvg
 # The model server (llama.cpp with Vulkan); without it the demo answers.
+Requires:       bubblewrap
 Recommends:     telamon-llama
 
 %description
@@ -82,5 +87,9 @@ appstream-util validate-relax --nonet \
 %{_datadir}/metainfo/net.eterneon.telamon.gates.metainfo.xml
 
 %changelog
+* Fri Oct 09 2026 EternalHell <77252745+EternalCoder454@users.noreply.github.com> - 1.0.0-1
+- Local models with llama.cpp, SystemOne and modes, Agent mode in a sandbox,
+  the Fleet, attachments, edit/branch/export, and performance work
+
 * Thu Oct 08 2026 EternalHell <77252745+EternalCoder454@users.noreply.github.com> - 0.1.0-1
 - First package

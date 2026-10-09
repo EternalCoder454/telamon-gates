@@ -38,8 +38,15 @@ pub struct ModelFile {
 }
 
 fn https_agent() -> ureq::Agent {
+    use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
     ureq::Agent::config_builder()
         .https_only(true)
+        .tls_config(
+            TlsConfig::builder()
+                .provider(TlsProvider::NativeTls)
+                .root_certs(RootCerts::PlatformVerifier)
+                .build(),
+        )
         .timeout_connect(Some(Duration::from_secs(15)))
         .http_status_as_error(false)
         .max_redirects(5)
