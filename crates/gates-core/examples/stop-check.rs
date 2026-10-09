@@ -43,7 +43,10 @@ fn main() {
     std::thread::sleep(Duration::from_millis(500));
     cancel.store(true, Ordering::Relaxed);
     let (result, took) = worker.join().unwrap();
-    println!("long prompt stopped: {result:?} after {} ms", took.as_millis());
+    println!(
+        "long prompt stopped: {result:?} after {} ms",
+        took.as_millis()
+    );
 
     let t = Instant::now();
     let mut first = None;
