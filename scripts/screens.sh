@@ -271,6 +271,38 @@ run_theme() {
     kill "$app"
     wait "$app" || true
 
+    # The Models page with downloads left behind: two Gates noted the
+    # repository of, one without a note, and one untouched for 40 days, which
+    # opening the page deletes. Sparse files, so they take no room.
+    local models=$XDG_DATA_HOME/telamon-gates/models
+    mkdir -p "$models"
+    truncate -s 7516192768 "$models/.Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf.part"
+    printf '{"repo":"unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF","size":17665334432}' >"$models/.Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf.part.json"
+    truncate -s 1288490189 "$models/.gpt-oss-20b-MXFP4.gguf.part"
+    printf '{"repo":"ggml-org/gpt-oss-20b-GGUF","size":12109566624}' >"$models/.gpt-oss-20b-MXFP4.gguf.part.json"
+    truncate -s 314572800 "$models/.Mystery-Q4_K_M.gguf.part"
+    truncate -s 1048576 "$models/.Ancient-Q8_0.gguf.part"
+    touch -d "40 days ago" "$models/.Ancient-Q8_0.gguf.part"
+    "$bin" >"$out/app-partials.log" 2>&1 &
+    app=$!
+    sleep 4
+    win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)
+    xdotool windowsize "$win" 1512 1080
+    sleep 1.5
+    xdotool mousemove 115 919 click 1
+    sleep 2
+    shot 20b-models-partials
+    ls -A "$models" >"$out/partials-after-opening.txt"
+    # Delete asks first.
+    xdotool mousemove "${PARTIAL_DELETE_X:-1419}" "${PARTIAL_DELETE_Y:-424}" click 1
+    sleep 0.8
+    shot 20c-models-partial-delete
+    xdotool key Escape
+    sleep 0.4
+    kill "$app"
+    wait "$app" || true
+    rm -f "$models"/.*.part "$models"/.*.part.json
+
     # The Fleet page with sample agents (TELAMON_GATES_SEED, src/fleet.rs):
     # one asking, one working at a narrow width, the coordinator planning.
     TELAMON_GATES_SEED=fleet "$bin" >"$out/app-fleet.log" 2>&1 &
