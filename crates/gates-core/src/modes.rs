@@ -27,8 +27,8 @@ pub struct Mode {
     pub sampling: Option<Sampling>,
     /// Short reasoning (`Request::brief`): Chat and Story, where reasoning
     /// costs time and adds little. Code and Agent reason as the model does:
-    /// it gets more code right, at 2.6 to 16 times the tokens (BACKEND.md →
-    /// Recommended models).
+    /// it gets more code right, at a cost (gpt-oss: 2.7 times the tokens;
+    /// Qwen3-8B: 29 times the time; BACKEND.md → Recommended models).
     pub brief: bool,
 }
 

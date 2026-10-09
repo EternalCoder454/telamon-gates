@@ -477,8 +477,8 @@ temperature 0.2, and each model was run 3–4 times.
   - Its eagle3 draft (`--spec-type draft-eagle3`) doesn't change the score,
     and it slows chat from 204 to 182 tok/s and rewrites from 800 to
     247 tok/s, so it isn't used.
-  - Without `reasoning_effort` it reasons at medium. In one story test, its
-    1,500 tokens all went to reasoning and none to the story.
+  - Without `reasoning_effort` it reasons at medium, and a story request
+    can go entirely to reasoning (below).
 - **Qwen3-4B-2507** is the pick for cards of 8 GiB or less, and it wrote the
   most inventive story.
 - **Qwen3.5-9B** with thinking off was the weakest at Rust and the slowest,

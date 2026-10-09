@@ -193,14 +193,17 @@ TelamonPage {
     // Models tested on Telamon's checks (docs/BACKEND.md → Recommended
     // models): one click gets one, and Use puts it to work. `code` is for
     // Code and Agent mode (Model for Code); the others become the Model.
+    // `experts`: a mixture of experts, which still runs, slower, when part
+    // of it is in system memory, so it is never Too Big.
     readonly property var recommended: [
         {
             use: qsTr("For Coding"),
-            about: qsTr("Qwen3 Coder 30B: the best Rust, Go and Python in the tests, and quick for its size"),
+            about: qsTr("Qwen3 Coder 30B: the best code in the tests, and quick for its size"),
             repo: "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
             file: "Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf",
             bytes: 17665334432,
-            code: true
+            code: true,
+            experts: true
         },
         {
             use: qsTr("For Chat and Stories"),
@@ -208,7 +211,8 @@ TelamonPage {
             repo: "ggml-org/gpt-oss-20b-GGUF",
             file: "gpt-oss-20b-MXFP4.gguf",
             bytes: 12109566624,
-            code: false
+            code: false,
+            experts: true
         },
         {
             use: qsTr("Small and Fast"),
@@ -216,7 +220,8 @@ TelamonPage {
             repo: "unsloth/Qwen3-4B-Instruct-2507-GGUF",
             file: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
             bytes: 2497281120,
-            code: false
+            code: false,
+            experts: false
         }
     ]
 
@@ -238,10 +243,14 @@ TelamonPage {
                 required property var modelData
                 readonly property string name: modelData.file.replace(/\.gguf$/, "")
                 readonly property bool have: page.models.names.indexOf(name) >= 0
-                readonly property bool inUse: modelData.code ? page.chat.codeModel === name : page.chat.model === name
+                // The coding pick is in use as the Model for Code, or as the
+                // Model when Code uses that.
+                readonly property bool inUse: page.chat.model === name && (!modelData.code || page.chat.codeModel.length === 0) || modelData.code && page.chat.codeModel === name
+                readonly property bool downloading: page.models.downloading === modelData.file
 
                 title: modelData.use
-                subtitle: modelData.about + " · " + page.size(modelData.bytes)
+                subtitle: pick.downloading ? qsTr("Downloading… %1%").arg(Math.floor(page.models.progress * 100)) : modelData.about + " · " + page.size(modelData.bytes)
+                busy: pick.downloading
                 leading: [
                     Symbol {
                         icon: pick.modelData.code ? Symbols.Code : Symbols.Psychology
@@ -250,15 +259,23 @@ TelamonPage {
                 ]
 
                 FitBadge {
-                    fit: page.fit(pick.modelData.bytes)
+                    readonly property string plain: page.fit(pick.modelData.bytes)
+                    fit: pick.modelData.experts && plain === "big" ? "tight" : plain
                 }
                 SecondaryButton {
-                    visible: !pick.have
+                    visible: !pick.have && !pick.downloading
                     implicitWidth: Math.max(downloadWidth.width, useWidth.width) + TelamonStyle.spacingLarge * 4
                     text: qsTr("Download")
                     symbol: Symbols.Download
                     enabled: page.models.downloading.length === 0
                     onClicked: page.models.downloadFrom(pick.modelData.repo, pick.modelData.file)
+                }
+                SecondaryButton {
+                    visible: pick.downloading
+                    implicitWidth: Math.max(downloadWidth.width, useWidth.width) + TelamonStyle.spacingLarge * 4
+                    text: qsTr("Cancel")
+                    symbol: Symbols.Close
+                    onClicked: page.models.cancelDownload()
                 }
                 SecondaryButton {
                     visible: pick.have

@@ -67,10 +67,13 @@ beside it.
   into place; the chat's model list follows. *Recommended* (hidden when a
   model server URL is set) offers three tested models, one per use, from
   `docs/BACKEND.md` → Recommended models: For Coding, For Chat and Stories,
-  and Small and Fast. Each shows a fit badge and Download (`downloadFrom`,
-  the same checked download); once it's on the computer, Use makes the
-  coding pick the Model for Code and the others the Model, and In Use
-  marks the current one.
+  and Small and Fast. Each shows a fit badge (never Too Big for a mixture of
+  experts, which runs with part of it in system memory) and Download
+  (`downloadFrom`, the same checked download). While it downloads, the row
+  shows the percentage and Cancel. Once it's on the computer, Use makes the
+  coding pick the Model for Code and the others the Model, and In Use marks
+  the current one (the coding pick too when it is the Model and Code uses
+  that).
 - **Attachments**:
   - **Adding them:** Attach Files… under the message field, or drop files on
     the chat. Up to 8 a message, shown as removable chips above the field.
@@ -92,6 +95,10 @@ beside it.
   modes.json` (bounded, validated on reading). The user's modes show in a
   "Your Modes" list beside the mode switch; SystemOne picks only Chat, Story
   and Code, as changed.
+  Chat and Story (and edits of them) ask the model for brief reasoning:
+  gpt-oss at low effort, Qwen3 with thinking off. Code, Agent and the user's
+  own modes leave reasoning to the model (`docs/BACKEND.md` → Recommended
+  models has the costs).
 - **Edit, Branch, Export**:
   - **Your messages:** with the pointer on one, Edit and Branch From Here
     show beside it. Edit turns it into a text box: Send replaces what came
