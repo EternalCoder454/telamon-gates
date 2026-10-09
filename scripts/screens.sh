@@ -112,6 +112,22 @@ run_theme() {
     app=$!
     sleep 4
     shot 01-first-run
+    # Dismissed with its cross.
+    xdotool mousemove 1444 130 click 1
+    sleep 0.8
+    shot 01b-banner-dismissed
+    kill "$app"
+    wait "$app" || true
+
+    # The model server is there (a stand-in on $PATH) but the container has
+    # no render node: the graphics banner.
+    mkdir -p "$out/fakebin"
+    printf '#!/bin/sh\nexit 0\n' >"$out/fakebin/llama-server"
+    chmod +x "$out/fakebin/llama-server"
+    PATH="$out/fakebin:$PATH" "$bin" >"$out/app-no-gpu.log" 2>&1 &
+    app=$!
+    sleep 4
+    shot 01c-no-graphics
     kill "$app"
     wait "$app" || true
 
