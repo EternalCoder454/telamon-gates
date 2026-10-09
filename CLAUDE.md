@@ -35,7 +35,7 @@ When in doubt, do what it does.
 
 | Task | Command (from the repo root on the host) |
 |---|---|
-| First run (builds the dev image) | `ATLAS_LOCAL_RPMS=<dir with telamon-ui and telamon-symbols-fonts 2.0.7 RPMs> scripts/dev.sh true` |
+| First run (builds the dev image) | `ATLAS_LOCAL_RPMS=<dir with telamon-ui and telamon-symbols-fonts 2.0.10 RPMs> scripts/dev.sh true` |
 | Format | `scripts/dev.sh cargo fmt --all --check` |
 | Lint | `scripts/dev.sh env QMAKE=/usr/bin/qmake6 cargo clippy --workspace --all-targets --locked -- -D warnings` |
 | Tests | `scripts/dev.sh env QMAKE=/usr/bin/qmake6 cargo test --workspace --locked` |
@@ -50,7 +50,7 @@ When in doubt, do what it does.
 
 The framework RPMs come from the framework checkout's
 `packaging/build-rpm.sh <out>` run in `registry.fedoraproject.org/fedora:44`
-at the tag `Cargo.toml` pins (v2.0.7).
+at the tag `Cargo.toml` pins (v2.0.10).
 
 ## CI
 
@@ -61,6 +61,12 @@ run in the public dev image `ghcr.io/eternalcoder454/telamon-gates-dev`
 (`ci/Containerfile`), which a main-only job builds weekly or when the
 Containerfile or spec changes, checks with `ci/check-image-secrets.sh`
 before logging in, and pushes; without it they fall back to fedora:44.
+`.github/workflows/bundle.yml` builds the Telamon bundle for a `v*` tag
+and signs `telamon-bundle.json` with the repository secrets `MINISIGN_KEY`
+and `MINISIGN_PASSWORD`. The run fails without them; the release is then
+signed by hand with `minisign -Sm telamon-bundle.json` and the `.minisig` is
+uploaded. The public key, which the Store's catalog pins, is in the workflow.
+The secret key is the owner's alone: never create, read or store it.
 Actions are pinned by commit. Moving the framework tag means changing
 `Cargo.toml` and the `telamon` job (`app-checks.yml@<tag commit> # <tag>`
 and `framework-ref`) together: the framework job fails when they disagree.

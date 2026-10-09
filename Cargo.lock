@@ -825,8 +825,8 @@ dependencies = [
 
 [[package]]
 name = "telamon-framework-core"
-version = "2.0.7"
-source = "git+https://github.com/EternalCoder454/atlas-framework?tag=v2.0.7#3ed2ad20c1038c9d29b8e18149d68c156f1ecdea"
+version = "2.0.10"
+source = "git+https://github.com/EternalCoder454/atlas-framework?tag=v2.0.10#e4c988e7e1cc81198e1979f3f6ae8eb711d962c8"
 dependencies = [
  "libc",
  "log",
@@ -835,8 +835,8 @@ dependencies = [
 
 [[package]]
 name = "telamon-framework-system"
-version = "2.0.7"
-source = "git+https://github.com/EternalCoder454/atlas-framework?tag=v2.0.7#3ed2ad20c1038c9d29b8e18149d68c156f1ecdea"
+version = "2.0.10"
+source = "git+https://github.com/EternalCoder454/atlas-framework?tag=v2.0.10#e4c988e7e1cc81198e1979f3f6ae8eb711d962c8"
 dependencies = [
  "getrandom 0.3.4",
  "libc",
@@ -849,8 +849,8 @@ dependencies = [
 
 [[package]]
 name = "telamon-framework-ui"
-version = "2.0.7"
-source = "git+https://github.com/EternalCoder454/atlas-framework?tag=v2.0.7#3ed2ad20c1038c9d29b8e18149d68c156f1ecdea"
+version = "2.0.10"
+source = "git+https://github.com/EternalCoder454/atlas-framework?tag=v2.0.10#e4c988e7e1cc81198e1979f3f6ae8eb711d962c8"
 dependencies = [
  "cxx-qt-build",
  "libc",
@@ -880,7 +880,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys",
