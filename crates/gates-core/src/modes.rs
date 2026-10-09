@@ -355,7 +355,11 @@ mod tests {
             )
         };
         // Agent and Deep Research are never picked for the user.
-        assert!(PICKABLE.iter().all(|m| m.id != "agent" && m.id != "research"));
+        assert!(
+            PICKABLE
+                .iter()
+                .all(|m| m.id != "agent" && m.id != "research")
+        );
         assert!(valid_choice("research") && mode("research").id == "research");
     }
 

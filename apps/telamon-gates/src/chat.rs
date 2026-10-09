@@ -1744,12 +1744,14 @@ impl qobject::Chat {
         } else if !ready {
             note.clone()
         } else if !self.model_can_use_tools(&self.model().to_string()) {
-            "The model in use can't call tools (see the Tools badge on the Models page).".to_string()
+            "The model in use can't call tools (see the Tools badge on the Models page)."
+                .to_string()
         } else {
             String::new()
         };
         self.as_mut().set_web_ready(ready);
-        self.as_mut().set_research_note(QString::from(research.as_str()));
+        self.as_mut()
+            .set_research_note(QString::from(research.as_str()));
         self.set_web_note(QString::from(note.as_str()));
     }
 
@@ -2304,7 +2306,9 @@ impl qobject::Chat {
             home: *self.agent_home(),
         };
         // Deep Research needs the web, and a model that can call tools.
-        if pinned.as_ref().is_some_and(|m| m.id == modes::DEEP_RESEARCH.id)
+        if pinned
+            .as_ref()
+            .is_some_and(|m| m.id == modes::DEEP_RESEARCH.id)
             && !self.research_note().is_empty()
         {
             let note = format!("Deep Research can't run. {}", self.research_note());
