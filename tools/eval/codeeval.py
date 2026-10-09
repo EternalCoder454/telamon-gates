@@ -10,7 +10,7 @@ Environment: THINK=1 lets the model reason first (Qwen3 thinking, gpt-oss
 medium effort); see README.md for the rest."""
 import os, re, shutil, subprocess, sys, tempfile
 
-from common import chat, no_thinking, out_path, server
+from common import chat, max_tokens, out_path, reasoning, server
 
 PORT = int(os.environ.get("EVAL_PORT", "18300"))
 # THINK=1: the model reasons first (Qwen3 thinking, gpt-oss medium effort).
@@ -160,7 +160,7 @@ def main():
                 r, took = chat(PORT, {"messages": [
                     {"role": "system", "content": "You are an expert programmer."},
                     {"role": "user", "content": prompt(lang, desc, sig)}],
-                    "temperature": 0.2, "max_tokens": 8000 if THINK else 1500, **no_thinking(THINK)})
+                    "temperature": 0.2, "max_tokens": max_tokens(8000 if THINK else 1500), **reasoning(THINK)})
                 wall += took
                 t = r.get("timings", {})
                 speeds.append(t.get("predicted_per_second", 0))

@@ -2,6 +2,7 @@
 # The real llama backend against a real, tiny model on the processor, inside
 # the dev container (or CI) with the telamon-llama RPM installed:
 #   scripts/dev.sh scripts/real-model.sh [llama-server] [scenario ...]
+#   scripts/real-model.sh fetch          only fetches (and checks) the model
 # (no --device /dev/dri: there is no graphics card, and none is needed)
 # Fetches the model (pinned by commit and sha256, kept in out/real-model),
 # then runs crates/gates-core/examples/real-model-check.rs: streaming, Stop,
@@ -20,6 +21,24 @@ out=$repo/out/real-model
 mkdir -p "$out/models" "$out/logs"
 rm -f "$out"/logs/*
 
+model=$out/models/$MODEL_FILE
+if ! { [ -f "$model" ] && echo "$MODEL_SHA256  $model" | sha256sum -c --quiet; }; then
+    echo "real-model: fetching $MODEL_FILE"
+    curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --max-time 600 -o "$model.part" "$MODEL_URL"
+    echo "$MODEL_SHA256  $model.part" | sha256sum -c --quiet || {
+        echo "real-model: $MODEL_FILE is not the file pinned in this script" >&2
+        rm -f "$model.part"
+        exit 1
+    }
+    mv "$model.part" "$model"
+fi
+
+# `fetch`: only the model (CI caches it between the two).
+if [ "${1:-}" = fetch ]; then
+    echo "real-model: $MODEL_FILE is in $out/models"
+    exit 0
+fi
+
 server=
 if [[ ${1:-} == /* ]]; then
     server=$1
@@ -34,18 +53,6 @@ if [ -z "$server" ]; then
             exit 1
         }
     fi
-fi
-
-model=$out/models/$MODEL_FILE
-if ! { [ -f "$model" ] && echo "$MODEL_SHA256  $model" | sha256sum -c --quiet; }; then
-    echo "real-model: fetching $MODEL_FILE"
-    curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --max-time 600 -o "$model.part" "$MODEL_URL"
-    echo "$MODEL_SHA256  $model.part" | sha256sum -c --quiet || {
-        echo "real-model: $MODEL_FILE is not the file pinned in this script" >&2
-        rm -f "$model.part"
-        exit 1
-    }
-    mv "$model.part" "$model"
 fi
 
 echo "--- $("$server" --version 2>&1 | head -1)"

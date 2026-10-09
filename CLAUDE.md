@@ -59,6 +59,9 @@ When in doubt, do what it does.
 | RPM | `podman run --rm --security-opt label=disable -v "$PWD":/src:ro -v <framework rpms>:/fw:ro -v <out>:/out -e ATLAS_LOCAL_RPMS=/fw registry.fedoraproject.org/fedora:44 /src/packaging/build-rpm.sh /out` |
 | telamon-llama RPM | `podman run --rm --security-opt label=disable -v "$PWD/packaging/telamon-llama":/pkg:ro -v <out>:/out registry.fedoraproject.org/fedora:44 /pkg/build-rpm.sh /out` (about 3 min) |
 | Smoke run with a real model | install the telamon-llama RPM in the dev container, then `SMOKE_MODEL=<file.gguf> scripts/smoke.sh` (also `SCREENS_MODEL` for screens.sh) |
+| Real model on the CPU | install the telamon-llama RPM in the dev container (`dnf -y install <rpm>`), then `scripts/dev.sh scripts/real-model.sh [stream\|stop\|trim\|agent]`. No `--device /dev/dri`. Fetches SmolLM2-135M (105 MB, sha256-pinned) into `out/real-model`; about 30 s |
+| Bundle install test | build the bundle with the framework's `tools/make-bundle.sh --app-dir apps/telamon-gates --spec packaging/telamon-gates.spec --out out/bundle --build-dir build/bundle` (in the dev container, `SOURCE_DATE_EPOCH` set: the worktree's `.git` isn't mounted), then `scripts/dev.sh scripts/bundle-install.sh out/bundle` |
+| Coding eval (GPU, not CI) | `tools/eval/README.md` |
 | Telamon checks | `<framework checkout>/tools/lint-app.sh apps/telamon-gates` and `tools/check-app-names.sh apps/telamon-gates` |
 
 The framework RPMs come from the framework checkout's
@@ -69,7 +72,11 @@ at the tag `Cargo.toml` pins (v2.0.10).
 
 `.github/workflows/ci.yml`: the framework's app checks, the framework RPMs
 (built once per release and Fedora Qt, cached), fmt · clippy · tests,
-build · qmllint · smoke (screenshots kept as an artifact) and the RPM. Jobs
+build · qmllint · smoke (screenshots kept as an artifact), the RPM,
+`real model · CPU` (the telamon-llama RPM, from `llama.yml`, and a tiny
+GGUF: `scripts/real-model.sh`) and `bundle · install · launch` (the bundle
+built with the framework's tools at the pinned release, installed as Telamon
+Store does and started under Xvfb: `scripts/bundle-install.sh`). Jobs
 run in the public dev image `ghcr.io/eternalcoder454/telamon-gates-dev`
 (`ci/Containerfile`), which a main-only job builds weekly or when the
 Containerfile or spec changes, checks with `ci/check-image-secrets.sh`

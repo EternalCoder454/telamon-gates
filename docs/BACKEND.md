@@ -148,6 +148,41 @@ Before each reply, Gates checks the conversation fits the server's context.
 `cargo run -p gates-core --example llama-check -- <llama-server> <models dir>
 [context]` checks a build, a model and a graphics card outside the app. With
 a context of 512 it shows trimming.
+
+CI runs the real backend against a real model on the processor
+(`scripts/real-model.sh`, the `real model · CPU` job): the telamon-llama RPM
+and SmolLM2-135M-Instruct Q4_K_M (105 MB, pinned by commit and sha256 in the
+script, cached). `examples/real-model-check.rs` asserts what holds whatever
+the model says:
+
+- **stream**: tokens arrive one by one, then the server's speed; the server
+  runs with the context asked for.
+- **stop**: Stop in the middle of a reply, and in the middle of reading a
+  long prompt, ends the reply within 3 s, and the server logs a cancelled task
+  (the connection was shut). The next message is answered at once. On the
+  processor the server only notices a closed connection between two batches
+  of 2048 tokens (about 20 s of reading here), so how long it stays busy is
+  not asserted; `stop-check` measures that on a graphics card.
+- **trim**: eight turns at a context of 512, through a recording proxy to a
+  server of the check's own: every request starts with the system prompt,
+  ends with the latest question, starts its history with a user turn, and is
+  accepted by the server; the oldest turns are the ones left out.
+- **agent**: a model this small can't call tools, so the first turn's calls
+  (read a file, edit it) are scripted. The real model then gets the
+  conversation, and the proxy shows what it was sent: the assistant's calls,
+  each result under its call's id, the tools on offer. The file is changed,
+  and the model answers after the results.
+
+  Checked by breaking the backend on purpose: Stop that doesn't shut the
+  connection (30 s late), no trimming (the server refuses the request), the
+  latest message dropped, and tool results without their ids each fail it.
+
+  **No graphics card on a runner.** The Vulkan build finds no device and runs
+  on its built-in CPU backend. Mesa's software Vulkan (lavapipe,
+  `mesa-vulkan-drivers`) is installed with the RPM and is ignored: ggml-vulkan
+  skips devices of type CPU ("If only CPU devices are available, return
+  without devices"), so `--list-devices` shows none and neither `-ngl 0` nor
+  `GGML_VK_VISIBLE_DEVICES` is needed.
 - **Speculative decoding** is not used: there are no gains measured on AMD,
   and it needs a matching draft model.
 
@@ -558,7 +593,7 @@ requirement is conservative):
 ## Performance (measured 2026-10-09, RX 7900 XTX, Vulkan)
 
 Qwen3-4B-Instruct-2507 Q4_K_M unless said; temperature 0; scripts in
-`out/spec` (not in the repo).
+[`tools/eval/`](../tools/eval/README.md) (`bench.py`, run on the GPU).
 
 - **Speculative decoding, n-gram (on by default, `--spec-default`).** The
   server guesses the next tokens from what is already in the conversation,
@@ -634,9 +669,10 @@ Qwen3-4B-Instruct-2507 Q4_K_M unless said; temperature 0; scripts in
 
 ### Recommended models
 
-The Models page's *Recommended* list comes from this test (`out/spec/
-codeeval.py`, `bench.py`; RX 7900 XTX, 24 GiB, telamon-llama 0.6.0, n-gram
-drafting on). The code test has 8 tasks (palindromes, merging intervals,
+The Models page's *Recommended* list comes from this test
+([`tools/eval/`](../tools/eval/README.md): `codeeval.py`, `bench.py`, and how
+to run them in the GPU container; RX 7900 XTX, 24 GiB, telamon-llama 0.6.0,
+n-gram drafting on). The code test has 8 tasks (palindromes, merging intervals,
 Roman numerals, top-k words, durations, brackets, RPN, version sorting),
 each written in Rust, Go and Python: 24 answers. Each answer is compiled
 (`rustc`, `go`) and run against fixed tests. Thinking is off, at
@@ -692,7 +728,7 @@ more tokens.
 | Qwen3-8B, thinking on (its default) | 21 | 559 s | 90k |
 
 In chat and stories, reasoning only costs time, and gpt-oss can loop
-(`out/spec/brief.py`, temperature 0):
+(`tools/eval/brief.py`, temperature 0):
 
 | Prompt | Model's own reasoning | Brief |
 |---|---|---|

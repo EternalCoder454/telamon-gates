@@ -16,6 +16,13 @@ PACKAGED = "/usr/libexec/telamon-llama/llama-server"
 OUT = os.environ.get("EVAL_OUT", "out/eval")
 # Context for every run, in tokens (-c); a flag in the arguments wins.
 CONTEXT = os.environ.get("EVAL_CTX", "16384")
+# A cap on every reply's tokens (0 for none), to try the scripts on a tiny
+# model on the processor; the scores then mean nothing.
+CAP = int(os.environ.get("EVAL_MAX_TOKENS", "0"))
+
+
+def max_tokens(n):
+    return min(n, CAP) if CAP else n
 
 
 def find_server():
