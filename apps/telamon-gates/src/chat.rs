@@ -17,6 +17,7 @@ pub mod qobject {
         type QHash_i32_QByteArray = cxx_qt_lib::QHash<cxx_qt_lib::QHashPair_i32_QByteArray>;
         include!("cxx-qt-lib/qlist.h");
         type QList_i32 = cxx_qt_lib::QList<i32>;
+        type QList_f64 = cxx_qt_lib::QList<f64>;
         include!(<QtCore/QAbstractListModel>);
         type QAbstractListModel;
     }
@@ -57,6 +58,12 @@ pub mod qobject {
         #[qproperty(i32, active_context, cxx_name = "activeContext")]
         /// The open conversation's mode choice: "auto" or a mode's id.
         #[qproperty(QString, mode)]
+        /// Every mode, in order: the built-ins, then the user's own. Their
+        /// ids, names, prompts and temperatures (-1: the model's own).
+        #[qproperty(QStringList, mode_ids, cxx_name = "modeIds")]
+        #[qproperty(QStringList, mode_names, cxx_name = "modeNames")]
+        #[qproperty(QStringList, mode_prompts, cxx_name = "modePrompts")]
+        #[qproperty(QList_f64, mode_temps, cxx_name = "modeTemps")]
         /// SystemOne is on (Settings).
         #[qproperty(bool, system_one, cxx_name = "systemOne")]
         /// SystemOne can pick: it is on, a decision model is there and
@@ -153,6 +160,23 @@ pub mod qobject {
         #[cxx_name = "chooseMode"]
         fn choose_mode(self: Pin<&mut Chat>, mode: &QString);
 
+        /// Saves a mode: a built-in's prompt and temperature, or one of the
+        /// user's ("" for a new one). `temperature` below 0: the model's own.
+        #[qinvokable]
+        #[cxx_name = "saveMode"]
+        fn save_mode(
+            self: Pin<&mut Chat>,
+            id: &QString,
+            name: &QString,
+            prompt: &QString,
+            temperature: f64,
+        );
+
+        /// Deletes one of the user's modes, or puts a built-in back.
+        #[qinvokable]
+        #[cxx_name = "deleteMode"]
+        fn delete_mode(self: Pin<&mut Chat>, id: &QString);
+
         #[qinvokable]
         #[cxx_name = "enableSystemOne"]
         fn enable_system_one(self: Pin<&mut Chat>, on: bool);
@@ -235,7 +259,7 @@ use gates_core::agent::{self, Approval};
 use gates_core::backend::llama::{LocalModel, find_server, local_models};
 use gates_core::conversation::ToolCall;
 use gates_core::markdown::{self, Block};
-use gates_core::modes::{self, Mode};
+use gates_core::modes::{self, Active, Library, Preset};
 use gates_core::systemone::{self, SystemOne};
 use gates_core::tools::Workspace;
 use gates_core::{Backend, Conversation, Event, Message, Request, Role};
@@ -318,6 +342,10 @@ pub struct ChatRust {
     models_folder: QString,
     active_context: i32,
     mode: QString,
+    mode_ids: QStringList,
+    mode_names: QStringList,
+    mode_prompts: QStringList,
+    mode_temps: QList<f64>,
     system_one: bool,
     system_one_ready: bool,
     decision_models: QStringList,
@@ -348,6 +376,8 @@ pub struct ChatRust {
     system_one_model: Option<Arc<SystemOne>>,
     /// llama-server, which runs the decision model too.
     server_binary: Option<PathBuf>,
+    /// The modes as the user has them (`modes.json`).
+    modes: Arc<Library>,
     /// The decision model chosen in Settings ("" for none yet): read once,
     /// then kept here as the file is written behind.
     chosen_decision: String,
@@ -471,11 +501,12 @@ impl agent::Host for Stream {
 /// is sure `asked` wants, else the `previous` reply's (Chat to begin with).
 /// True when SystemOne picked it.
 fn pick_mode(
-    pinned: Option<Mode>,
+    pinned: Option<Active>,
     picker: Option<&SystemOne>,
     asked: &str,
-    previous: Mode,
-) -> (Mode, bool) {
+    previous: Active,
+    library: &Library,
+) -> (Active, bool) {
     if let Some(mode) = pinned {
         return (mode, false);
     }
@@ -492,7 +523,7 @@ fn pick_mode(
                 started.elapsed().as_millis()
             );
             if c.confidence >= systemone::MIN_CONFIDENCE && modes::valid_choice(&c.choice) {
-                (modes::mode(&c.choice), true)
+                (library.resolve(&c.choice), true)
             } else {
                 (previous, false)
             }
@@ -503,6 +534,16 @@ fn pick_mode(
             (previous, false)
         }
     }
+}
+
+/// Where the user's modes are kept.
+fn modes_file() -> PathBuf {
+    gates_core::store::data_dir().join("modes.json")
+}
+
+/// A new id for one of the user's modes.
+fn new_mode_id() -> String {
+    format!("my-{:x}", gates_core::conversation::now_ms())
 }
 
 fn int(n: usize) -> i32 {
@@ -533,6 +574,9 @@ impl qobject::Chat {
         self.as_mut()
             .set_server_url(QString::from(options.server_url.as_str()));
         self.as_mut().set_mode(QString::from(modes::AUTO));
+        // Read once at start, like the settings (a small file).
+        let library = Library::load(&modes_file());
+        self.as_mut().use_modes(library);
         self.as_mut()
             .set_system_one(settings::get(settings::SYSTEM_ONE) != "false");
         {
@@ -838,7 +882,7 @@ impl qobject::Chat {
             return;
         }
         let mode = mode.to_string();
-        if !modes::valid_choice(&mode) || *self.mode() == QString::from(mode.as_str()) {
+        if !self.rust().modes.has(&mode) || *self.mode() == QString::from(mode.as_str()) {
             return;
         }
         self.as_mut().set_mode(QString::from(mode.as_str()));
@@ -853,6 +897,70 @@ impl qobject::Chat {
         if saved {
             self.save();
         }
+    }
+
+    pub fn save_mode(
+        self: Pin<&mut Self>,
+        id: &QString,
+        name: &QString,
+        prompt: &QString,
+        temperature: f64,
+    ) {
+        let mut library = (*self.rust().modes).clone();
+        library.put(
+            Preset {
+                id: id.to_string(),
+                name: name.to_string(),
+                prompt: prompt.to_string(),
+                temperature: (temperature >= 0.0).then_some(temperature as f32),
+            },
+            new_mode_id,
+        );
+        self.keep_modes(library);
+    }
+
+    pub fn delete_mode(mut self: Pin<&mut Self>, id: &QString) {
+        let id = id.to_string();
+        let mut library = (*self.rust().modes).clone();
+        library.remove(&id);
+        // A conversation in a mode that's gone is back in Auto.
+        if self.mode().to_string() == id && !library.has(&id) {
+            self.as_mut().choose_mode(&QString::from(modes::AUTO));
+        }
+        self.keep_modes(library);
+    }
+
+    /// Uses `library` from now on, and writes it (on the file thread).
+    fn keep_modes(mut self: Pin<&mut Self>, library: Library) {
+        if let Some(io) = &self.rust().io {
+            let copy = library.clone();
+            io.run(move |_| {
+                if let Err(e) = copy.save(&modes_file()) {
+                    log::warn!("cannot save the modes: {e}");
+                }
+            });
+        }
+        self.as_mut().use_modes(library);
+    }
+
+    fn use_modes(mut self: Pin<&mut Self>, library: Library) {
+        let (mut ids, mut names, mut prompts, mut temps) = (
+            QStringList::default(),
+            QStringList::default(),
+            QStringList::default(),
+            QList::<f64>::default(),
+        );
+        for p in library.list() {
+            ids.append(QString::from(p.id.as_str()));
+            names.append(QString::from(p.name.as_str()));
+            prompts.append(QString::from(p.prompt.as_str()));
+            temps.append(p.temperature.map_or(-1.0, f64::from));
+        }
+        self.as_mut().rust_mut().modes = Arc::new(library);
+        self.as_mut().set_mode_ids(ids);
+        self.as_mut().set_mode_names(names);
+        self.as_mut().set_mode_prompts(prompts);
+        self.set_mode_temps(temps);
     }
 
     pub fn enable_system_one(mut self: Pin<&mut Self>, on: bool) {
@@ -1177,7 +1285,7 @@ impl qobject::Chat {
         let mode = conversation
             .as_ref()
             .map(|c| c.mode.clone())
-            .filter(|m| modes::valid_choice(m))
+            .filter(|m| self.rust().modes.has(m))
             .unwrap_or_else(|| modes::AUTO.to_string());
         self.as_mut().set_mode(QString::from(mode.as_str()));
         self.as_mut().begin_reset_model();
@@ -1292,7 +1400,8 @@ impl qobject::Chat {
         // The mode: the one pinned, or in Auto SystemOne's pick (made on
         // the worker), else Chat.
         let choice = self.mode().to_string();
-        let pinned = (choice != modes::AUTO).then(|| modes::mode(&choice));
+        let library = self.rust().modes.clone();
+        let pinned = (choice != modes::AUTO).then(|| library.resolve(&choice));
         let picker = match pinned {
             None => self.rust().system_one_model.clone(),
             Some(_) => None,
@@ -1310,13 +1419,13 @@ impl qobject::Chat {
             .iter()
             .rev()
             .find_map(|m| m.mode.as_deref())
-            .map(modes::mode)
-            .filter(|m| m.id != modes::AGENT.id)
-            .unwrap_or(modes::CHAT);
+            .filter(|id| *id != modes::AGENT.id)
+            .map(|id| library.resolve(id))
+            .unwrap_or_else(|| library.resolve(modes::CHAT.id));
         let user_prompt = self.system_prompt().to_string();
         // Agent mode works in the conversation's folder, which it needs
         // (opened on the worker: a folder can be on a slow disk).
-        let workspace = if pinned.is_some_and(|m| m.id == modes::AGENT.id) {
+        let workspace = if pinned.as_ref().is_some_and(|m| m.id == modes::AGENT.id) {
             let folder = self.workspace().to_string();
             if folder.is_empty() {
                 self.set_error(QString::from(
@@ -1351,13 +1460,13 @@ impl qobject::Chat {
         self.as_mut().set_generating(true);
         let qt = self.qt_thread();
         std::thread::spawn(move || {
-            let (mode, picked) = pick_mode(pinned, picker.as_deref(), &asked, previous);
+            let (mode, picked) = pick_mode(pinned, picker.as_deref(), &asked, previous, &library);
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
-            let id = mode.id;
-            let _ = qt.queue(move |chat| chat.set_reply_mode(generation, id, picked));
-            request.system_prompt = modes::system_prompt(&mode, &user_prompt);
+            let id = mode.id.clone();
+            let _ = qt.queue(move |chat| chat.set_reply_mode(generation, &id, picked));
+            request.system_prompt = modes::system_prompt_for(&mode, &user_prompt);
             request.sampling = mode.sampling;
             let mut stream = Stream {
                 qt: qt.clone(),

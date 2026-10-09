@@ -36,7 +36,9 @@ its place, and the ones left out are listed with the reason.
    mode for a conversation.
    - **Built:** the three modes, with their temperature and top-p, and Auto
      or a pinned mode per conversation.
-   - **Not yet:** editing modes and adding your own.
+   - **Built:** editing the built-in modes' prompt and temperature, and adding
+     your own (Settings → Modes, kept in `modes.json`). Your own modes show
+     in "Your Modes" beside the mode switch.
 3. **Edit and Branch.** Edit a sent message, or "Branch From Here" on any
    message, to get a new conversation up to that point. This lets you try a
    story another way without losing the first. Export a conversation as

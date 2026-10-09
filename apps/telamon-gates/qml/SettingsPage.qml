@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
@@ -152,6 +154,158 @@ TelamonPage {
                 }
                 Accessible.name: qsTr("Server Address")
             }
+        }
+    }
+
+    Section {
+        title: qsTr("Modes")
+        footer: qsTr("Each mode is a system prompt and a temperature. Change the built-in ones, or add your own: they show beside the mode switch under the message field.")
+
+        Repeater {
+            model: page.chat.modeIds
+
+            SectionRow {
+                id: modeRow
+                required property int index
+                required property string modelData
+                readonly property bool own: index >= 4
+                readonly property real temperature: page.chat.modeTemps[index] ?? -1
+                readonly property string prompt: page.chat.modePrompts[index] ?? ""
+
+                title: page.chat.modeNames[index] ?? ""
+                // The prompt's start, so every row stays one line or two.
+                readonly property string gist: modeRow.prompt.split("\n")[0]
+                subtitle: (modeRow.prompt.length === 0 ? qsTr("No prompt of its own") : modeRow.gist.length > 70 ? modeRow.gist.slice(0, 70).trim() + "…" : modeRow.gist) + " · " + (modeRow.temperature < 0 ? qsTr("the model's temperature") : qsTr("temperature %1").arg(Number(modeRow.temperature).toLocaleString(Qt.locale(), "f", 2)))
+                leading: [
+                    Symbol {
+                        icon: modeRow.modelData === "story" ? Symbols.AutoStories : modeRow.modelData === "code" ? Symbols.Code : modeRow.modelData === "agent" ? Symbols.SmartToy : modeRow.own ? Symbols.EditNote : Symbols.Chat
+                        color: TelamonStyle.accent
+                    }
+                ]
+
+                SecondaryButton {
+                    text: qsTr("Edit…")
+                    onClicked: modeDialog.edit(modeRow.modelData, modeRow.title, modeRow.prompt, modeRow.temperature, modeRow.own)
+                }
+            }
+        }
+        SectionRow {
+            title: qsTr("Add a Mode")
+            subtitle: qsTr("Your own prompt, such as a character to talk with or a house style")
+            leading: [
+                Symbol {
+                    icon: Symbols.Add
+                    color: TelamonStyle.accent
+                }
+            ]
+
+            SecondaryButton {
+                text: qsTr("Add…")
+                onClicked: modeDialog.edit("", "", "", -1, true)
+            }
+        }
+    }
+
+    TelamonDialog {
+        id: modeDialog
+
+        property string modeId
+        property bool own
+
+        function edit(id, name, prompt, temperature, own) {
+            modeDialog.modeId = id;
+            modeDialog.own = own;
+            nameField.text = name;
+            promptArea.text = prompt;
+            ownTemperature.checked = temperature < 0;
+            temperatureSlider.value = temperature < 0 ? 0.7 : temperature;
+            modeDialog.title = id.length === 0 ? qsTr("Add a Mode") : qsTr("Edit %1").arg(name);
+            modeDialog.open();
+        }
+
+        footerContent: [
+            SecondaryButton {
+                visible: modeDialog.modeId.length > 0
+                text: modeDialog.own ? qsTr("Delete") : qsTr("Reset")
+                onClicked: {
+                    page.chat.deleteMode(modeDialog.modeId);
+                    modeDialog.close();
+                }
+            },
+            SecondaryButton {
+                text: qsTr("Cancel")
+                onClicked: modeDialog.close()
+            },
+            PrimaryButton {
+                text: qsTr("Save")
+                enabled: !modeDialog.own || nameField.text.trim().length > 0
+                onClicked: {
+                    page.chat.saveMode(modeDialog.modeId, nameField.text, promptArea.text, ownTemperature.checked ? -1 : temperatureSlider.value);
+                    modeDialog.close();
+                }
+            }
+        ]
+
+        TelamonLabel {
+            text: qsTr("Name")
+        }
+        TelamonTextField {
+            id: nameField
+            Layout.fillWidth: true
+            enabled: modeDialog.own
+            placeholderText: qsTr("Such as Pirate or Tutor")
+        }
+        TelamonLabel {
+            Layout.topMargin: TelamonStyle.spacing
+            text: qsTr("System Prompt")
+        }
+        TelamonTextArea {
+            id: promptArea
+            Layout.fillWidth: true
+            Layout.preferredHeight: Kirigami.Units.gridUnit * 8
+            wrapMode: TextEdit.Wrap
+            placeholderText: qsTr("How replies in this mode should be written")
+        }
+        RowLayout {
+            Layout.topMargin: TelamonStyle.spacing
+            Layout.fillWidth: true
+            spacing: TelamonStyle.spacing
+
+            TelamonLabel {
+                Layout.fillWidth: true
+                text: qsTr("The Model's Own Temperature")
+            }
+            TelamonSwitch {
+                id: ownTemperature
+                Accessible.name: qsTr("The Model's Own Temperature")
+            }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            visible: !ownTemperature.checked
+            spacing: TelamonStyle.spacing
+
+            TelamonSlider {
+                id: temperatureSlider
+                Layout.fillWidth: true
+                from: 0
+                to: 2
+                stepSize: 0.05
+                Accessible.name: qsTr("Temperature")
+            }
+            TelamonLabel {
+                Layout.preferredWidth: Kirigami.Units.gridUnit * 2
+                horizontalAlignment: Text.AlignRight
+                text: Number(temperatureSlider.value).toLocaleString(Qt.locale(), "f", 2)
+            }
+        }
+        TelamonLabel {
+            visible: !ownTemperature.checked
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            textStyle: TelamonLabel.Caption
+            opacity: 0.75
+            text: qsTr("Lower is steadier and more exact; higher is freer and more surprising.")
         }
     }
 

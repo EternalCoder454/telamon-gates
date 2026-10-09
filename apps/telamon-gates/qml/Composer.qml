@@ -206,11 +206,29 @@ ColumnLayout {
                         text: c[1],
                         toolTip: c[2]
                     }))
-            currentIndex: Math.max(0, modes.choices.findIndex(c => c[0] === composer.chat.mode))
+            // None when the conversation is in one of the user's own modes.
+            currentIndex: modes.choices.findIndex(c => c[0] === composer.chat.mode)
             // Not while a reply runs: an agent keeps its mode and folder.
             enabled: !composer.chat.generating
             onActivated: index => composer.chat.chooseMode(modes.choices[index][0])
             Accessible.name: qsTr("Mode")
+        }
+
+        // The user's own modes (Settings), after the built-in four.
+        TelamonComboBox {
+            id: mine
+            readonly property var ids: composer.chat.modeIds.slice(4)
+            visible: mine.ids.length > 0
+            enabled: !composer.chat.generating
+            Layout.preferredWidth: Kirigami.Units.gridUnit * 8
+            model: [qsTr("Your Modes")].concat(composer.chat.modeNames.slice(4))
+            currentIndex: mine.ids.indexOf(composer.chat.mode) + 1
+            onActivated: index => {
+                if (index > 0) {
+                    composer.chat.chooseMode(mine.ids[index - 1]);
+                }
+            }
+            Accessible.name: qsTr("Your Modes")
         }
 
         // Asks for no width of its own, so a narrow window keeps the field (and
@@ -228,12 +246,15 @@ ColumnLayout {
 
                 KeyHint {
                     id: sendHint
+                    // Whole or not at all: never half a pill.
+                    visible: hints.parent.width >= sendHint.implicitWidth
                     //: The Enter key, as printed on it
                     keys: qsTr("Enter")
                     action: qsTr("Send")
                 }
                 KeyHint {
                     id: lineHint
+                    visible: hints.parent.width >= sendHint.implicitWidth + lineHint.implicitWidth + hints.spacing
                     //: The keys Shift and Enter together
                     keys: qsTr("Shift+Enter")
                     action: qsTr("New Line")

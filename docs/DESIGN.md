@@ -59,6 +59,14 @@ beside it.
   Cancel. A download goes to a hidden `.name.part`, resumes from it, is
   checked against the sha256 Hugging Face publishes, and only then is renamed
   into place; the chat's model list follows.
+- **Modes** (in Settings): a row per mode, with the start of its prompt and
+  its temperature, and Edit…; Add a Mode. The dialog has the name (the
+  user's own modes only), the system prompt, and the temperature: the
+  model's own, or a slider from 0 to 2. Reset puts a built-in back; Delete
+  removes one of the user's. They are kept in `$XDG_DATA_HOME/telamon-gates/
+  modes.json` (bounded, validated on reading). The user's modes show in a
+  "Your Modes" list beside the mode switch; SystemOne picks only Chat, Story
+  and Code, as changed.
 - **Edit, Branch, Export**:
   - **Your messages:** with the pointer on one, Edit and Branch From Here
     show beside it. Edit turns it into a text box: Send replaces what came

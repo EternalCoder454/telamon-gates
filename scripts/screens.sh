@@ -102,6 +102,8 @@ run_theme() {
 
     mkdir -p "$dir"
     seed_all "$dir"
+    # One mode of the user's own, beside the built-in ones.
+    printf '{"edits":[],"custom":[{"id":"my-1","name":"Pirate","prompt":"Answer like a friendly pirate.","temperature":0.9}]}' >"$XDG_DATA_HOME/telamon-gates/modes.json"
     # SCREENS_MODEL=<file.gguf>: replies from llama.cpp (installed in the
     # container) after the first run, which shows the no-model state.
     if [ -n "${SCREENS_MODEL:-}" ]; then
@@ -174,6 +176,17 @@ run_theme() {
     xdotool mousemove 115 979 click 1
     sleep 1.2
     shot 16-settings
+    xdotool mousemove 900 600 click 5 click 5 click 5 click 5 click 5 click 5 click 5
+    sleep 0.8
+    shot 16b-settings-modes
+    # Edit one of the user's own modes.
+    xdotool mousemove 1380 227 click 1
+    sleep 0.8
+    shot 16c-mode-dialog
+    xdotool key Escape
+    sleep 0.4
+    xdotool mousemove 900 600 click 4 click 4 click 4 click 4 click 4 click 4 click 4
+    sleep 0.6
     # Keyboard focus, as Tab shows it.
     xdotool key Tab Tab
     sleep 0.4
