@@ -105,6 +105,22 @@ pub const TOOLS: &[Spec] = &[
         },
     },
     Spec {
+        name: "now",
+        effect: Effect::Read,
+        description: "The current local date, time, weekday and time zone. Use it for anything that depends on today's date.",
+        parameters: || json!({"type": "object", "properties": {}}),
+    },
+    Spec {
+        name: "calculate",
+        effect: Effect::Read,
+        description: "Evaluate an arithmetic expression exactly, such as \"(3 + 4) * 2^10 / 7\". Operators + - * / % ^ and brackets; functions sqrt, abs, round, floor, ceil, min, max, ln, log10, sin, cos, tan (radians); constants pi and e.",
+        parameters: || {
+            json!({"type": "object", "properties": {
+                "expression": {"type": "string"}
+            }, "required": ["expression"]})
+        },
+    },
+    Spec {
         name: "write_file",
         effect: Effect::Write,
         description: "Create or replace a file in the workspace with the given text. The user is asked first.",
@@ -303,6 +319,11 @@ pub fn run(ws: &Workspace, name: &str, arguments: &str, cancel: &AtomicBool) -> 
             Some(p) => find_files(ws, p, cancel),
             None => Outcome::err("find_files needs a pattern."),
         },
+        "now" => now(),
+        "calculate" => match text("expression").filter(|e| !e.trim().is_empty()) {
+            Some(e) => calculate(e),
+            None => Outcome::err("calculate needs an expression."),
+        },
         "write_file" => match (text("path"), text("content")) {
             (Some(p), Some(c)) => write_file(ws, p, c),
             _ => Outcome::err("write_file needs a path and content."),
@@ -350,6 +371,8 @@ pub fn label(name: &str, arguments: &str) -> String {
         "read_file" => format!("Read {}", text("path")),
         "search" => format!("Search for \"{}\"", text("query")),
         "find_files" => format!("Find files \"{}\"", text("pattern")),
+        "now" => "Check the date and time".into(),
+        "calculate" => format!("Calculate {}", text("expression")),
         "write_file" => format!("Write {}", text("path")),
         "edit_file" => format!("Edit {}", text("path")),
         "run_command" => format!("Run {}", text("command")),
@@ -1112,6 +1135,345 @@ fn run_command(ws: &Workspace, command: &str, limit: Duration, cancel: &AtomicBo
     }
 }
 
+/// The local date, time and zone, in words a model can read.
+fn now() -> Outcome {
+    // SAFETY: `tm` is zeroed plain data that localtime_r fills; the zone
+    // name it points to is libc's own string, copied at once.
+    let (fields, offset, zone) = unsafe {
+        let secs = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&secs, &mut tm).is_null() {
+            return Outcome::err("The local time isn't available.");
+        }
+        let zone = if tm.tm_zone.is_null() {
+            String::new()
+        } else {
+            std::ffi::CStr::from_ptr(tm.tm_zone)
+                .to_string_lossy()
+                .into_owned()
+        };
+        let fields = [
+            tm.tm_wday,
+            tm.tm_year + 1900,
+            tm.tm_mon + 1,
+            tm.tm_mday,
+            tm.tm_hour,
+            tm.tm_min,
+            tm.tm_sec,
+        ];
+        (fields, tm.tm_gmtoff, zone)
+    };
+    let text = when(fields, offset, &zone);
+    Outcome::ok(text.clone(), format!("Checked the time: {text}"))
+}
+
+/// "Thursday, 2026-10-08 14:32:05 UTC-04:00 (EDT)" from a broken-down time
+/// (weekday with Sunday 0, year, month, day, hour, minute, second), the
+/// offset from UTC in seconds and the zone's name.
+fn when(f: [i32; 7], offset: i64, zone: &str) -> String {
+    const DAYS: [&str; 7] = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    ];
+    let sign = if offset < 0 { '-' } else { '+' };
+    let off = offset.unsigned_abs();
+    let zone = if zone.is_empty() {
+        String::new()
+    } else {
+        format!(" ({zone})")
+    };
+    format!(
+        "{}, {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC{sign}{:02}:{:02}{zone}",
+        DAYS[f[0].rem_euclid(7) as usize],
+        f[1],
+        f[2],
+        f[3],
+        f[4],
+        f[5],
+        f[6],
+        off / 3600,
+        off % 3600 / 60,
+    )
+}
+
+/// The longest expression `calculate` reads, in characters.
+const MAX_EXPRESSION: usize = 1000;
+/// How deeply brackets, signs and powers may nest.
+const MAX_DEPTH: usize = 64;
+
+/// `calculate`: evaluates `expression` and gives the number.
+fn calculate(expression: &str) -> Outcome {
+    let chars: Vec<char> = expression.chars().collect();
+    if chars.len() > MAX_EXPRESSION {
+        return Outcome::err(format!(
+            "The expression is too long ({MAX_EXPRESSION} characters at most)."
+        ));
+    }
+    let mut calc = Calc {
+        chars,
+        at: 0,
+        depth: 0,
+    };
+    match calc.all() {
+        Ok(value) => {
+            let shown: String = expression.trim().chars().take(60).collect();
+            let result = number_text(value);
+            Outcome::ok(result.clone(), format!("{shown} = {result}"))
+        }
+        Err(e) => Outcome::err(e),
+    }
+}
+
+/// `value` to 12 significant digits, as plain as it goes: "0.3" for
+/// 0.1 + 0.2, "1e300" for the huge.
+fn number_text(value: f64) -> String {
+    if value == 0.0 {
+        return "0".into();
+    }
+    let rounded: f64 = format!("{value:.11e}").parse().unwrap_or(value);
+    if (1e-6..1e15).contains(&rounded.abs()) {
+        format!("{rounded}")
+    } else {
+        format!("{rounded:e}")
+    }
+}
+
+/// A recursive-descent parser that evaluates as it reads: sum → product →
+/// sign → power → value. A power binds tighter than the sign before it
+/// (`-2^2` is -4) and groups to the right (`2^3^2` is 2^9). `**` is `^`.
+struct Calc {
+    chars: Vec<char>,
+    at: usize,
+    depth: usize,
+}
+
+impl Calc {
+    fn all(&mut self) -> Result<f64, String> {
+        let value = self.sum()?;
+        match self.peek() {
+            None => Ok(value),
+            Some(c) => Err(format!("Unexpected \"{c}\" at position {}.", self.at + 1)),
+        }
+    }
+
+    /// The next character past any spaces.
+    fn peek(&mut self) -> Option<char> {
+        while self.chars.get(self.at).is_some_and(|c| c.is_whitespace()) {
+            self.at += 1;
+        }
+        self.chars.get(self.at).copied()
+    }
+
+    /// Takes `c` if it is next.
+    fn eat(&mut self, c: char) -> bool {
+        let found = self.peek() == Some(c);
+        if found {
+            self.at += 1;
+        }
+        found
+    }
+
+    /// Whether a `*` is next that is not the start of `**`.
+    fn times(&mut self) -> bool {
+        self.peek() == Some('*') && self.chars.get(self.at + 1) != Some(&'*')
+    }
+
+    /// One level deeper, unless that is too deep.
+    fn enter(&mut self) -> Result<(), String> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err("The expression is nested too deeply.".into());
+        }
+        Ok(())
+    }
+
+    fn sum(&mut self) -> Result<f64, String> {
+        let mut value = self.product()?;
+        loop {
+            if self.eat('+') {
+                value = check(value + self.product()?)?;
+            } else if self.eat('-') {
+                value = check(value - self.product()?)?;
+            } else {
+                return Ok(value);
+            }
+        }
+    }
+
+    fn product(&mut self) -> Result<f64, String> {
+        let mut value = self.sign()?;
+        loop {
+            if self.times() {
+                self.at += 1;
+                value = check(value * self.sign()?)?;
+            } else if matches!(self.peek(), Some('/' | '%')) {
+                let divide = self.chars[self.at] == '/';
+                self.at += 1;
+                let by = self.sign()?;
+                if by == 0.0 {
+                    return Err("Division by zero.".into());
+                }
+                value = check(if divide { value / by } else { value % by })?;
+            } else {
+                return Ok(value);
+            }
+        }
+    }
+
+    fn sign(&mut self) -> Result<f64, String> {
+        self.enter()?;
+        let value = if self.eat('-') {
+            -self.sign()?
+        } else {
+            self.eat('+');
+            self.power()?
+        };
+        self.depth -= 1;
+        Ok(value)
+    }
+
+    fn power(&mut self) -> Result<f64, String> {
+        let base = self.value()?;
+        if !self.eat('^') {
+            if self.peek() == Some('*') && self.chars.get(self.at + 1) == Some(&'*') {
+                self.at += 2;
+            } else {
+                return Ok(base);
+            }
+        }
+        // The exponent may carry a sign and is a power itself: 2^-3, 2^3^2.
+        let exponent = self.sign()?;
+        check(base.powf(exponent))
+    }
+
+    fn value(&mut self) -> Result<f64, String> {
+        let Some(c) = self.peek() else {
+            return Err("The expression ends too soon.".into());
+        };
+        if c == '(' {
+            self.at += 1;
+            self.enter()?;
+            let value = self.sum()?;
+            self.depth -= 1;
+            if !self.eat(')') {
+                return Err("A bracket is not closed.".into());
+            }
+            return Ok(value);
+        }
+        if c.is_ascii_digit() || c == '.' {
+            return self.number();
+        }
+        if !c.is_ascii_alphabetic() {
+            return Err(format!("Unexpected \"{c}\" at position {}.", self.at + 1));
+        }
+        let start = self.at;
+        while self
+            .chars
+            .get(self.at)
+            .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
+        {
+            self.at += 1;
+        }
+        let name = self.chars[start..self.at]
+            .iter()
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if !self.eat('(') {
+            return match name.as_str() {
+                "pi" => Ok(std::f64::consts::PI),
+                "e" => Ok(std::f64::consts::E),
+                _ => Err(format!("\"{name}\" is not a known name.")),
+            };
+        }
+        self.enter()?;
+        let mut args = vec![self.sum()?];
+        while self.eat(',') {
+            args.push(self.sum()?);
+        }
+        self.depth -= 1;
+        if !self.eat(')') {
+            return Err("A bracket is not closed.".into());
+        }
+        function(&name, &args)
+    }
+
+    /// Digits with an optional point and exponent ("1.5e3").
+    fn number(&mut self) -> Result<f64, String> {
+        fn digits(c: &mut Calc) {
+            while c.chars.get(c.at).is_some_and(char::is_ascii_digit) {
+                c.at += 1;
+            }
+        }
+        let start = self.at;
+        digits(self);
+        if self.chars.get(self.at) == Some(&'.') {
+            self.at += 1;
+            digits(self);
+        }
+        if matches!(self.chars.get(self.at), Some('e' | 'E')) {
+            let mut next = self.at + 1;
+            if matches!(self.chars.get(next), Some('+' | '-')) {
+                next += 1;
+            }
+            if self.chars.get(next).is_some_and(char::is_ascii_digit) {
+                self.at = next;
+                digits(self);
+            }
+        }
+        let text: String = self.chars[start..self.at].iter().collect();
+        match text.parse::<f64>() {
+            Ok(v) if v.is_finite() => Ok(v),
+            Ok(_) => Err(format!("{text} is too large.")),
+            Err(_) => Err(format!("\"{text}\" is not a number.")),
+        }
+    }
+}
+
+/// `value` if it is a real number a computer can hold.
+fn check(value: f64) -> Result<f64, String> {
+    if value.is_nan() {
+        Err("The result is not a real number.".into())
+    } else if value.is_infinite() {
+        Err("The result is too large.".into())
+    } else {
+        Ok(value)
+    }
+}
+
+/// Function `name` of `args`.
+fn function(name: &str, args: &[f64]) -> Result<f64, String> {
+    let one = |f: fn(f64) -> f64| match args {
+        [x] => check(f(*x)),
+        _ => Err(format!("{name} takes one number.")),
+    };
+    match name {
+        "sqrt" if args.first().is_some_and(|x| *x < 0.0) => {
+            Err("sqrt of a negative number is not real.".into())
+        }
+        "ln" | "log10" if args.first().is_some_and(|x| *x <= 0.0) => {
+            Err(format!("{name} needs a number above zero."))
+        }
+        "sqrt" => one(f64::sqrt),
+        "abs" => one(f64::abs),
+        "round" => one(f64::round),
+        "floor" => one(f64::floor),
+        "ceil" => one(f64::ceil),
+        "ln" => one(f64::ln),
+        "log10" => one(f64::log10),
+        "sin" => one(f64::sin),
+        "cos" => one(f64::cos),
+        "tan" => one(f64::tan),
+        "min" => Ok(args.iter().copied().fold(f64::INFINITY, f64::min)),
+        "max" => Ok(args.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
+        _ => Err(format!("\"{name}\" is not a known function.")),
+    }
+}
+
 /// 16 random hex characters.
 fn random_hex() -> io::Result<String> {
     let mut bytes = [0u8; 8];
@@ -1166,6 +1528,182 @@ mod tests {
         }
         assert_eq!(spec("run_command").unwrap().effect, Effect::Run);
         assert_eq!(spec("read_file").unwrap().effect, Effect::Read);
+        assert_eq!(spec("now").unwrap().effect, Effect::Read);
+        assert_eq!(spec("calculate").unwrap().effect, Effect::Read);
+    }
+
+    /// `calculate`'s answer, or its error text.
+    fn calc(expression: &str) -> Result<String, String> {
+        let out = calculate(expression);
+        if out.ok {
+            Ok(out.output)
+        } else {
+            Err(out.output)
+        }
+    }
+
+    #[test]
+    fn calculates() {
+        for (expression, expected) in [
+            ("2 + 3 * 4", "14"),
+            ("(2 + 3) * 4", "20"),
+            ("10 / 4", "2.5"),
+            ("17 % 5", "2"),
+            ("-7 % 3", "-1"),
+            ("2 ^ 10", "1024"),
+            ("2 ** 10", "1024"),
+            ("2 ^ 3 ^ 2", "512"),
+            ("-2 ^ 2", "-4"),
+            ("2 ^ -1", "0.5"),
+            ("2 * -3", "-6"),
+            ("--4 + +1", "5"),
+            ("0.1 + 0.2", "0.3"),
+            (".5 + 1.", "1.5"),
+            ("1.5e3 + 2E-1", "1500.2"),
+            ("sqrt(16) + abs(-3)", "7"),
+            ("round(2.5) + floor(2.9) + ceil(2.1)", "8"),
+            ("min(3, 1, 2) + max(3, 1, 2)", "4"),
+            ("SQRT(2)^2", "2"),
+            ("ln(e) + log10(1000)", "4"),
+            ("sin(0) + cos(0) + tan(0)", "1"),
+            ("round(pi * 1000)", "3142"),
+            ("1 / 3", "0.333333333333"),
+            ("2 ^ 100", "1.26765060023e30"),
+            ("  7  ", "7"),
+        ] {
+            assert_eq!(calc(expression).as_deref(), Ok(expected), "{expression}");
+        }
+        let out = calculate("6 * 7");
+        assert_eq!(out.summary, "6 * 7 = 42");
+    }
+
+    #[test]
+    fn calculate_refuses_bad_input() {
+        for expression in [
+            "",
+            "2 +",
+            "* 2",
+            "(1 + 2",
+            "1 + 2)",
+            "2 3",
+            "abc",
+            "foo(1)",
+            "sqrt()",
+            "sqrt(1, 2)",
+            "min()",
+            "1..2",
+            "1 $ 2",
+            "²",
+            "sqrt(-1)",
+            "ln(0)",
+            "log10(-5)",
+        ] {
+            let out = calc(expression);
+            assert!(
+                out.as_ref().is_err_and(|e| e.starts_with("Error: ")),
+                "{expression}: {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn calculate_is_bounded() {
+        // Division by zero, however it is spelled.
+        assert!(calc("1 / 0").unwrap_err().contains("Division by zero"));
+        assert!(calc("1 % 0").unwrap_err().contains("Division by zero"));
+        assert!(
+            calc("1 / (2 - 2)")
+                .unwrap_err()
+                .contains("Division by zero")
+        );
+        // Results too big for a number.
+        assert!(calc("9 ^ 9 ^ 9 ^ 9").unwrap_err().contains("too large"));
+        assert!(calc("10 ^ 400").unwrap_err().contains("too large"));
+        assert!(calc("1e999").unwrap_err().contains("too large"));
+        assert!(calc("1e300 * 1e300").unwrap_err().contains("too large"));
+        assert!(calc("0 ^ -1").unwrap_err().contains("too large"));
+        assert!(
+            calc("(-8) ^ 0.5")
+                .unwrap_err()
+                .contains("not a real number")
+        );
+        // Nesting: brackets, signs, powers and calls stop at a depth.
+        let deep = format!("{}1{}", "(".repeat(400), ")".repeat(400));
+        assert!(calc(&deep).unwrap_err().contains("nested too deeply"));
+        let signs = format!("{}1", "-".repeat(900));
+        assert!(calc(&signs).unwrap_err().contains("nested too deeply"));
+        let powers = vec!["1"; 400].join("^");
+        assert!(calc(&powers).unwrap_err().contains("nested too deeply"));
+        let calls = format!("{}1{}", "abs(".repeat(150), ")".repeat(150));
+        assert!(calc(&calls).unwrap_err().contains("nested too deeply"));
+        let fine = format!("{}1{}", "(".repeat(30), ")".repeat(30));
+        assert_eq!(calc(&fine).as_deref(), Ok("1"));
+        // Length: 1,000 characters are read, 1,001 are not.
+        let long = format!("1{}", "+1".repeat(499));
+        assert_eq!(long.len(), 999);
+        assert_eq!(calc(&long).as_deref(), Ok("500"));
+        let too_long = "1".repeat(1001);
+        assert!(calc(&too_long).unwrap_err().contains("too long"));
+        let wide = "é".repeat(1001);
+        assert!(calc(&wide).unwrap_err().contains("too long"));
+    }
+
+    #[test]
+    fn calculate_through_run() {
+        let (dir, ws) = workspace("calc");
+        let ok = go(&ws, "calculate", json!({"expression": "2^8"}));
+        assert!(ok.ok);
+        assert_eq!(ok.output, "256");
+        assert!(!go(&ws, "calculate", json!({})).ok);
+        assert!(!go(&ws, "calculate", json!({"expression": "  "})).ok);
+        assert!(!go(&ws, "calculate", json!({"expression": 5})).ok);
+        assert_eq!(
+            label("calculate", r#"{"expression":"1+1"}"#),
+            "Calculate 1+1"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_time_in_words() {
+        assert_eq!(
+            when([4, 2026, 10, 8, 14, 3, 5], -4 * 3600, "EDT"),
+            "Thursday, 2026-10-08 14:03:05 UTC-04:00 (EDT)"
+        );
+        assert_eq!(
+            when([0, 2026, 1, 2, 0, 0, 0], 5 * 3600 + 30 * 60, ""),
+            "Sunday, 2026-01-02 00:00:00 UTC+05:30"
+        );
+        assert!(when([0, 2026, 1, 1, 0, 0, 0], 0, "UTC").contains("UTC+00:00 (UTC)"));
+    }
+
+    #[test]
+    fn now_gives_the_local_time() {
+        let (dir, ws) = workspace("now");
+        let out = go(&ws, "now", json!({}));
+        assert!(out.ok, "{out:?}");
+        // "Thursday, 2026-10-08 14:03:05 UTC+00:00 (UTC)".
+        let (day, rest) = out.output.split_once(", ").unwrap();
+        assert!(
+            [
+                "Sunday",
+                "Monday",
+                "Tuesday",
+                "Wednesday",
+                "Thursday",
+                "Friday",
+                "Saturday"
+            ]
+            .contains(&day),
+            "{}",
+            out.output
+        );
+        let b = rest.as_bytes();
+        assert!(b[..4].iter().all(u8::is_ascii_digit) && b[4] == b'-' && b[10] == b' ');
+        assert!(rest[11..].contains(" UTC"), "{}", out.output);
+        assert!(out.summary.contains(&out.output));
+        assert_eq!(label("now", "{}"), "Check the date and time");
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

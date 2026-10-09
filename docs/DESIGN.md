@@ -52,7 +52,11 @@ beside it.
   (`$XDG_DATA_HOME/telamon-gates/models`) with its quantisation and size label
   from the file's GGUF header (`gguf.rs`, bounded reads), its size, a badge
   against the card's VRAM (Fits: under 83 % of it, Tight: under all of it,
-  Too Big: more) and Delete, after a confirmation. Vision projectors
+  Too Big: more) and Delete, after a confirmation. A chat model also shows
+  its trained context ("32K context", from the header) in the subtitle and,
+  beside the fit badge, an Images badge (a matching `mmproj` file is in the
+  folder) and a Tools badge (its chat template takes tools). A decision model
+  shows none of these. Vision projectors
   (`mmproj-…`) and the later parts of a split model are not listed. *Get
   Models* searches Hugging Face for GGUF repositories (`hub.rs`), opens one to
   its single-file models, and downloads one at a time with a progress bar and

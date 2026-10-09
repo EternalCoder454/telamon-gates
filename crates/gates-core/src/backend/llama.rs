@@ -117,6 +117,101 @@ pub fn local_models(dir: &Path) -> Vec<LocalModel> {
     models
 }
 
+/// The vision projectors in `dir`: its `mmproj-….gguf` files, which
+/// `local_models` leaves out. Reads the folder, not the files.
+pub fn local_projectors(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.metadata().is_ok_and(|m| m.is_file()))
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(is_projector)
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// Whether a file name is a vision projector: `mmproj…` and `.gguf`.
+fn is_projector(file: &str) -> bool {
+    let file = file.to_ascii_lowercase();
+    file.starts_with("mmproj") && file.ends_with(".gguf")
+}
+
+/// The projector that lets `model` read images, among `projectors` (from
+/// `local_projectors`), or None. `all` is every model in the folder.
+/// - **By name:** `mmproj-gemma-3-4b-it-F16.gguf` belongs to
+///   `gemma-3-4b-it-Q4_K_M.gguf`: the names are the same before the
+///   quantisation.
+/// - **By being alone:** a projector with no model name in it
+///   (`mmproj-model-f16.gguf`, `mmproj-F16.gguf`) belongs to the only model in
+///   the folder.
+///
+/// With several precisions of one projector, F16 wins, then BF16.
+pub fn projector_for(
+    model: &LocalModel,
+    all: &[LocalModel],
+    projectors: &[PathBuf],
+) -> Option<PathBuf> {
+    let wanted = strip_quant(&model.name.to_ascii_lowercase()).to_string();
+    projectors
+        .iter()
+        .filter_map(|path| {
+            let file = path.file_name()?.to_str()?;
+            let stem = file.strip_suffix(".gguf").unwrap_or(file).to_lowercase();
+            let rest = stem.strip_prefix("mmproj")?;
+            let rest = rest.trim_start_matches(['-', '_', '.']);
+            let base = strip_quant(rest);
+            let fits = if base.is_empty() || base == "model" {
+                all.len() == 1
+            } else {
+                base == wanted
+            };
+            // F16 first, then BF16, then the rest by name.
+            let rank = match stem.rsplit(['-', '.']).next() {
+                Some("f16") => 0,
+                Some("bf16") => 1,
+                _ => 2,
+            };
+            fits.then(|| (rank, file.to_string(), path.clone()))
+        })
+        .min()
+        .map(|(_, _, path)| path)
+}
+
+/// Whether a name part is a precision: `Q4_K_M`, `IQ3_XS`, `F16`, `BF16`.
+fn is_quant(part: &str) -> bool {
+    let p = part.to_ascii_lowercase();
+    ["f16", "bf16", "f32"].contains(&p.as_str())
+        || ["q", "iq", "tq"].iter().any(|prefix| {
+            p.strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+        })
+}
+
+/// `name` without the precision it ends in ("gemma-3-4b-it-q4_k_m" is
+/// "gemma-3-4b-it"), and without Unsloth's "-ud" before it.
+fn strip_quant(name: &str) -> &str {
+    let mut name = name;
+    let mut stripped = false;
+    while let Some(cut) = name.rfind(['-', '.']) {
+        let tail = &name[cut + 1..];
+        if is_quant(tail) || (stripped && tail.eq_ignore_ascii_case("ud")) {
+            stripped = true;
+            name = &name[..cut];
+        } else {
+            return name;
+        }
+    }
+    // A bare precision ("f16") is all there was.
+    if is_quant(name) { "" } else { name }
+}
+
 /// Whether a `.gguf` (by its name without `.gguf`) is a model to chat with:
 /// not a vision projector (`mmproj-…`), and of a model split in parts only
 /// the first (`…-00001-of-00003`), which llama.cpp loads the rest from.
@@ -925,6 +1020,121 @@ mod tests {
         assert!(!is_model("mmproj-gemma-4-F16"));
         assert!(!is_model("MMPROJ-model"));
         assert!(is_model("one-of-a-kind"));
+    }
+
+    fn model(name: &str) -> LocalModel {
+        LocalModel {
+            name: name.to_string(),
+            path: PathBuf::from(format!("/m/{name}.gguf")),
+            size: 1,
+            info: Default::default(),
+        }
+    }
+
+    fn projectors(names: &[&str]) -> Vec<PathBuf> {
+        names
+            .iter()
+            .map(|n| PathBuf::from(format!("/m/{n}")))
+            .collect()
+    }
+
+    #[test]
+    fn a_projector_belongs_to_the_model_with_its_name() {
+        let gemma = model("gemma-3-4b-it-Q4_K_M");
+        let qwen = model("Qwen3.5-9B-Q4_K_M");
+        let all = [gemma.clone(), qwen.clone()];
+        let found = projectors(&[
+            "mmproj-gemma-3-4b-it-F16.gguf",
+            "mmproj-Qwen3.5-9B-BF16.gguf",
+        ]);
+        assert_eq!(
+            projector_for(&gemma, &all, &found),
+            Some(PathBuf::from("/m/mmproj-gemma-3-4b-it-F16.gguf"))
+        );
+        assert_eq!(
+            projector_for(&qwen, &all, &found),
+            Some(PathBuf::from("/m/mmproj-Qwen3.5-9B-BF16.gguf"))
+        );
+        // Another quantisation of the same model uses it too; another model
+        // does not (4b is not 12b).
+        assert!(projector_for(&model("gemma-3-4b-it-Q8_0"), &all, &found).is_some());
+        assert_eq!(
+            projector_for(&model("gemma-3-12b-it-Q4_K_M"), &all, &found),
+            None
+        );
+        assert_eq!(projector_for(&gemma, &all, &[]), None);
+    }
+
+    #[test]
+    fn a_nameless_projector_belongs_to_a_lone_model() {
+        let found = projectors(&["mmproj-model-f16.gguf"]);
+        let lone = model("anything-Q4_K_M");
+        assert_eq!(
+            projector_for(&lone, std::slice::from_ref(&lone), &found),
+            Some(PathBuf::from("/m/mmproj-model-f16.gguf"))
+        );
+        // With two models there is no telling whose it is.
+        let two = [lone.clone(), model("other-Q4_K_M")];
+        assert_eq!(projector_for(&lone, &two, &found), None);
+        let bare = projectors(&["mmproj-F16.gguf"]);
+        assert!(projector_for(&lone, std::slice::from_ref(&lone), &bare).is_some());
+        // A projector named for another model is not taken by a lone one.
+        let named = projectors(&["mmproj-gemma-3-4b-it-F16.gguf"]);
+        assert_eq!(
+            projector_for(&lone, std::slice::from_ref(&lone), &named),
+            None
+        );
+    }
+
+    #[test]
+    fn the_best_precision_of_a_projector_wins() {
+        let m = model("gemma-3-4b-it-Q4_K_M");
+        let found = projectors(&[
+            "mmproj-gemma-3-4b-it-Q8_0.gguf",
+            "mmproj-gemma-3-4b-it-BF16.gguf",
+            "mmproj-gemma-3-4b-it-F16.gguf",
+        ]);
+        let all = std::slice::from_ref(&m);
+        assert_eq!(
+            projector_for(&m, all, &found),
+            Some(PathBuf::from("/m/mmproj-gemma-3-4b-it-F16.gguf"))
+        );
+        assert_eq!(
+            projector_for(&m, all, &found[..2]),
+            Some(PathBuf::from("/m/mmproj-gemma-3-4b-it-BF16.gguf"))
+        );
+    }
+
+    #[test]
+    fn names_lose_their_precision() {
+        assert_eq!(strip_quant("gemma-3-4b-it-q4_k_m"), "gemma-3-4b-it");
+        assert_eq!(strip_quant("model.q8_0"), "model");
+        assert_eq!(strip_quant("qwen3-vl-ud-q4_k_xl"), "qwen3-vl");
+        assert_eq!(strip_quant("llama-3.1-8b"), "llama-3.1-8b");
+        assert_eq!(strip_quant("f16"), "");
+        assert_eq!(strip_quant("qwen"), "qwen");
+    }
+
+    #[test]
+    fn projectors_are_found_in_the_folder() {
+        let dir = std::env::temp_dir().join(format!("gates-mmproj-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "mmproj-a-F16.gguf",
+            "MMPROJ-b.gguf",
+            "a-Q4_K_M.gguf",
+            "mmproj-c.txt",
+            ".mmproj-d.gguf",
+        ] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        let names: Vec<String> = local_projectors(&dir)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["MMPROJ-b.gguf", "mmproj-a-F16.gguf"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -152,6 +152,28 @@ Every reply is untrusted text. The window already treats it so (see
 `markdown.rs`: escaped, no raw HTML, no images, web links only): a backend
 passes the text through as it comes and does nothing to it.
 
+### Model facts
+
+What the Models page shows for each chat model, none of it loaded into the
+server:
+
+| Fact | From |
+|---|---|
+| Context | `<arch>.context_length` in the GGUF header (`gguf.rs`), in tokens; "32K", "128K", "1M" |
+| Tools | `tokenizer.chat_template` mentions tools (`gguf.rs`); the same test Agent mode warns with |
+| Images | a projector file beside the model: `projector_for` in `llama.rs` |
+
+`projector_for(model, all, projectors)` is pure; `local_projectors(dir)`
+lists the `mmproj-….gguf` files that `local_models` leaves out. A projector
+belongs to a model when their names match before the quantisation
+(`mmproj-gemma-3-4b-it-F16.gguf` and `gemma-3-4b-it-Q4_K_M.gguf`), or, with
+no model name in it (`mmproj-model-f16.gguf`, `mmproj-F16.gguf`), when the
+model is the only one in the folder. Of several precisions, F16 wins, then
+BF16. Images are shown but not yet sent: attachments are not built.
+
+`ModelLibrary` has them as lists beside `names`: `contexts` (tokens, 0 when
+the header doesn't say), `toolCapable` and `vision` (1 or 0).
+
 ## Modes and SystemOne
 
 `modes.rs` has three modes. Each is a system prompt plus sampling (temperature,
@@ -231,11 +253,22 @@ interpreter, no server.
 | `read_file` | text with line numbers, 400 lines a part (2,000 at most) | at once |
 | `search` | a string in text files (smart case), `file:line: text` | at once |
 | `find_files` | paths containing a string, or `*`/`?` patterns | at once |
+| `now` | the local date, time, weekday and time zone | at once |
+| `calculate` | arithmetic: `+ - * / % ^` (and `**`), brackets, unary signs, decimals, `sqrt abs round floor ceil min max ln log10 sin cos tan`, `pi` and `e` | at once |
 | `write_file` | creates or replaces a file (atomic, keeps permissions) | after the user allows it |
 | `edit_file` | replaces text that is in the file once | after the user allows it |
 | `run_command` | `/bin/sh -c` in the folder, 60 s (300 s at most) | after the user allows it, every time |
 
 The limits:
+- **`now`** asks libc for the local time (`localtime_r`, so `TZ` and
+  `/etc/localtime` apply): "Thursday, 2026-10-08 14:32:05 UTC-04:00 (EDT)".
+- **`calculate`** is a small recursive-descent parser, with no `eval` and no
+  dependency. It reads 1,000 characters at most and nests 64 levels at most
+  (brackets, signs, powers and calls). `-2^2` is -4 and `2^3^2` is 2^9.
+  Division or remainder by zero, a result too large for a number (`9^9^9^9`),
+  a result that is not real (`sqrt(-1)`, `ln(0)`) and anything it can't read
+  come back as errors for the model to fix. Results show 12 significant
+  digits ("0.3" for 0.1 + 0.2). Angles are in radians.
 - **The folder:** `/`, a top folder (`/etc`) and the home folder or one
   above it are refused as workspaces, since reading tools don't ask.
 - **Paths:** every path is resolved against the real folders, links
