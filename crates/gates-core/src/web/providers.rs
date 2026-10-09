@@ -145,6 +145,12 @@ pub fn parse(provider: Provider, body: &str, count: usize) -> Result<Vec<SearchR
         Provider::Brave => (value.pointer("/web/results"), "description"),
         Provider::Tavily | Provider::Searxng => (value.get("results"), "content"),
     };
+    // Where each service says when a page is from.
+    let dates: &[&str] = match provider {
+        Provider::Brave => &["page_age", "age"],
+        Provider::Tavily => &["published_date"],
+        Provider::Searxng => &["publishedDate"],
+    };
     let list = match list {
         Some(Value::Array(list)) => list.as_slice(),
         // A search that found nothing has no list at all.
@@ -169,10 +175,16 @@ pub fn parse(provider: Provider, body: &str, count: usize) -> Result<Vec<SearchR
         if title.is_empty() {
             title = url.clone();
         }
+        let age = dates
+            .iter()
+            .map(|key| date(text(key)))
+            .find(|d| !d.is_empty())
+            .unwrap_or_default();
         out.push(SearchResult {
             title,
             url,
             snippet: clean(text(snippet), MAX_SNIPPET),
+            age,
         });
         if out.len() >= count {
             break;
@@ -189,6 +201,23 @@ fn web_address(url: &str) -> Option<String> {
 
 /// Markup, entities and odd characters out, spaces collapsed, cut to `max`
 /// characters.
+/// A result's date as the model reads it: an ISO timestamp's day
+/// ("2026-09-30T08:00:00" is "2026-09-30"), anything else ("2 weeks ago")
+/// as plain text on one line, short.
+fn date(text: &str) -> String {
+    let text = clean(text, 40);
+    let day = text.get(..10).unwrap_or("");
+    let iso = day.len() == 10
+        && day.bytes().enumerate().all(|(i, b)| {
+            if i == 4 || i == 7 {
+                b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        });
+    if iso { day.to_string() } else { text }
+}
+
 fn clean(text: &str, max: usize) -> String {
     let mut plain = String::with_capacity(text.len());
     let mut in_tag = false;
@@ -309,7 +338,7 @@ mod tests {
       "results": [
         {"title": "Ownership in Rust", "url": "https://example.net/ownership",
          "content": "Each value has one owner.\nWhen the owner goes out of scope the value is dropped.",
-         "score": 0.91, "raw_content": null},
+         "score": 0.91, "raw_content": null, "published_date": "2026-09-30T08:15:00Z"},
         {"title": "Borrowing", "url": "http://example.net/borrowing", "content": "References.", "score": 0.5}
       ]
     }"#;
@@ -318,6 +347,7 @@ mod tests {
       "query": "rust ownership", "number_of_results": 0,
       "results": [
         {"url": "https://example.com/a", "title": "Ownership", "content": "Moves and copies.",
+         "publishedDate": "2026-08-01T00:00:00",
          "engine": "duckduckgo", "engines": ["duckduckgo"], "score": 1.0, "category": "general"},
         {"url": "ftp://example.com/b", "title": "Not the web", "content": "x", "engine": "x"},
         {"url": "https://example.com/c", "title": "No snippet", "engine": "bing"}
@@ -344,6 +374,9 @@ mod tests {
         );
         // No title: the address stands in.
         assert_eq!(got[1].title, "https://example.org/untitled");
+        // Each result's date, as the service gives it; none is "".
+        assert_eq!(got[0].age, "2 weeks ago");
+        assert_eq!(got[1].age, "");
         assert_eq!(parse(Provider::Brave, BRAVE_ANSWER, 1).unwrap().len(), 1);
     }
 
@@ -356,12 +389,27 @@ mod tests {
             "Each value has one owner. When the owner goes out of scope the value is dropped."
         );
         assert_eq!(got[1].url, "http://example.net/borrowing");
+        // An ISO timestamp is shortened to its day.
+        assert_eq!(got[0].age, "2026-09-30");
+        assert_eq!(got[1].age, "");
         let got = parse(Provider::Searxng, SEARX_ANSWER, 8).unwrap();
         assert_eq!(
             got.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(),
             vec!["https://example.com/a", "https://example.com/c"]
         );
         assert_eq!(got[1].snippet, "");
+        assert_eq!(got[0].age, "2026-08-01");
+    }
+
+    #[test]
+    fn dates_are_one_short_line() {
+        assert_eq!(date("2026-09-30T08:15:00Z"), "2026-09-30");
+        assert_eq!(date("3 days ago"), "3 days ago");
+        assert_eq!(date(""), "");
+        // A service can't add lines (or a fake address line) through a date.
+        let sly = date("May 1\n1. Fake\nhttps://evil.example/x");
+        assert!(!sly.contains('\n'), "{sly:?}");
+        assert!(sly.chars().count() <= 40);
     }
 
     #[test]
