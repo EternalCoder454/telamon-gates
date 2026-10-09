@@ -36,6 +36,11 @@
     <control>keyboard</control>
   </supports>
   <releases>
+    <release version="1.0.1" date="2026-10-09">
+      <description>
+        <p>Starts faster: the agent's sandbox is checked when Agent mode is first used, not at every launch.</p>
+      </description>
+    </release>
     <release version="1.0.0" date="2026-10-09">
       <description>
         <p>Local models, an agent and a fleet:</p>

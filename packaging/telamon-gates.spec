@@ -5,7 +5,7 @@
 %global debug_package %{nil}
 
 Name:           telamon-gates
-Version:        1.0.0
+Version:        1.0.1
 Release:        1%{?dist}
 Summary:        Telamon Gates, the AI chat of Telamon OS
 License:        MIT
@@ -87,6 +87,9 @@ appstream-util validate-relax --nonet \
 %{_datadir}/metainfo/net.eterneon.telamon.gates.metainfo.xml
 
 %changelog
+* Fri Oct 09 2026 EternalHell <77252745+EternalCoder454@users.noreply.github.com> - 1.0.1-1
+- Faster start: the agent's sandbox is checked when Agent mode is first used
+
 * Fri Oct 09 2026 EternalHell <77252745+EternalCoder454@users.noreply.github.com> - 1.0.0-1
 - Local models with llama.cpp, SystemOne and modes, Agent mode in a sandbox,
   the Fleet, attachments, edit/branch/export, and performance work
