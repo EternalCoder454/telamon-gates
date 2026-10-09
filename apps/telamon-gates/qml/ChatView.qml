@@ -190,6 +190,20 @@ Item {
             }
         }
 
+        // What the model server changed to load the model (a smaller context
+        // when the graphics card's memory was short). Plain text.
+        InfoBanner {
+            Layout.fillWidth: true
+            Layout.maximumWidth: view.columnWidth
+            Layout.alignment: Qt.AlignHCenter
+            Layout.topMargin: Kirigami.Units.smallSpacing
+            type: "warning"
+            shown: view.chat.notice.length > 0
+            closable: true
+            text: view.chat.notice
+            onClosed: view.chat.dismissNotice()
+        }
+
         InfoBanner {
             Layout.fillWidth: true
             Layout.maximumWidth: view.columnWidth

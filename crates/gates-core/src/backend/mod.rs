@@ -73,6 +73,10 @@ pub enum Event<'a> {
     /// The reply ends by asking for these tools to run (Agent mode), sent
     /// once, whole, after its text.
     ToolCalls(&'a [crate::conversation::ToolCall]),
+    /// Something the user should know that is not part of the reply, and
+    /// not a failure: the model had to load with a smaller context. Plain
+    /// text, a sentence; sent before the reply's text.
+    Notice(&'a str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
