@@ -54,6 +54,13 @@ beside it.
   session: the check runs again at the next start); an info banner with Open
   Folder while the models folder is empty; an error banner with Try Again when
   a reply fails. The first two come from the first-run check (see Startup).
+  A warning banner with Open Folder and a dismiss cross, above those, when
+  reading the conversations put something right (see Data): "1 conversation
+  couldn't be read and was set aside in …/damaged.", a restore from a backup,
+  a save finished after a crash, or files from a newer Gates left alone. It
+  is said once, when the list is read (or when opening a conversation finds a
+  damaged file), and Open Folder shows the `damaged` folder (else the
+  conversations).
 - **Models**: *On This Computer* lists each model in the models folder
   (`$XDG_DATA_HOME/telamon-gates/models`) with its quantisation and size label
   from the file's GGUF header (`gguf.rs`, bounded reads), its size, a badge
@@ -167,7 +174,8 @@ beside it.
   typing in those modes, use it; "Same as Model", or a model that is gone,
   means the chat model), the system prompt (saved as you
   type), the shared transparency switch, and the folder the conversations are
-  in, with Open Folder.
+  in, with Open Folder. Under Troubleshooting, Logs: the folder of the log
+  (`telamon-gates.log`, see Startup) with Open Log Folder.
 
 ## Code
 
@@ -193,7 +201,8 @@ beside it.
     it with sample agents for `scripts/screens.sh`, and `workspace:<folder>`
     chooses the folder, to drive a real run headless; nothing else uses it.
   - `Library` (the sidebar's list as lists `ids`, `titles`, `sections`,
-    `updates`): `reload`, `setDayStart`, `remove`; `loaded`, `folder`.
+    `updates`): `reload`, `setDayStart`, `remove`, `dismissNotice`; `loaded`,
+    `folder`, `logFolder`, and `notice` / `noticeFolder` (the banner above).
   - `Vram`: `available`, `used`, `total` (bytes), `refresh`.
   - `io.rs`: the one file thread; `settings.rs`: the settings file.
 - `cpp/main.cpp` only starts Qt (framework startup, single instance) and
@@ -224,7 +233,10 @@ beside it.
   (version, then what the check found). It makes the folder (0700) and the
   file (0600) itself, moves a file over 256 KiB to `.log.1`, and passes each
   line to `log` too (the framework sends those to the journal). The model
-  server's own output is `llama-server.log` beside it. Not every `log`
+  server's own output is `llama-server.log` beside it. The store's events
+  (a file set aside, restored from its backup, finished after a crash, left
+  alone as too new, a leftover removed) go to it too: ids and what was done,
+  never message text or keys. Not every `log`
   record reaches the file: the framework installs its journal logger first.
 
 ## Threading
@@ -243,13 +255,32 @@ and reported.
 ## Data
 
 `$XDG_DATA_HOME/telamon-gates/conversations/<id>.json`, one file per
-conversation (`id`, `title`, `created`, `updated` in ms since the epoch,
+conversation (`version` (the file format, 1 now; a file without one is
+version 1), `id`, `title`, `created`, `updated` in ms since the epoch,
 `messages` of `role` (`user`, `assistant`, `tool`), `text`, `failed`,
 `speed`, `mode`, `picked`, and in Agent mode `tool_calls` (id, name,
 arguments), `tool_call_id` and `summary`; the conversation's `mode` when it
 isn't Auto, and its `workspace`), written atomically (temporary file,
 then rename). Ids are hex and dashes only, so no id can name a path outside
-the folder. Settings are `~/.config/telamon-gatesrc`, group `[Chat]`
+the folder. `gates-core/src/store.rs` keeps the rest safe:
+
+- **Versions:** a save always writes the current `version`. A file with a
+  higher one (from a newer Gates) is not listed, opened or overwritten (a
+  save over it fails), and the banner says so.
+- **Backups:** a save first keeps the file it replaces as `<id>.json.bak`
+  (0600, one generation, only if that file was good). Deleting a conversation
+  deletes its `.bak` too.
+- **Damaged files:** a file that doesn't parse (or whose `id` isn't its name)
+  is moved, never skipped or written over, to `conversations/damaged/<id>.
+  <YYYYMMDD-HHMMSS UTC>.json` (folder 0700, file 0600). If its `.bak` parses,
+  that is put in its place and the banner says it was restored. Opening a
+  file that went bad during the session does the same, and a save over one
+  sets it aside first, keeping the good `.bak`. The log names the place in
+  the file the parser stopped at, never its text.
+- **Interrupted saves:** at each list, a leftover `.<id>.json.tmp` is moved
+  into place when `<id>.json` is gone and it parses (a crash between the sync
+  and the rename), else removed: the file on disk is the last saved state. A
+  `.bak.tmp` is removed. Settings are `~/.config/telamon-gatesrc`, group `[Chat]`
 (`Model`, `CodeModel`, `SystemPrompt`), plus the window's size from `TelamonWindow`.
 
 ## The model server
@@ -276,7 +307,7 @@ is the model's replies, which are untrusted: `markdown.rs` escapes every
 piece of text, shows raw HTML as text, shows images as their description
 (nothing is fetched), keeps link targets only for http, https and mailto,
 and code blocks reach QML as plain text. Conversation files are parsed with
-serde; one that doesn't parse is skipped and logged.
+serde; one that doesn't parse is set aside in `damaged/` and logged.
 
 ## Failure modes
 
@@ -286,8 +317,9 @@ serde; one that doesn't parse is skipped and logged.
   empty replies are not sent back to the model.
 - A reply ends with no text and no error: shown as "The model sent an empty
   reply.", with Try Again.
-- A conversation file can't be read: it is left out of the list (logged);
-  opening one that vanished shows an error and a new chat.
+- A conversation file can't be read: it is set aside in `damaged/` (or
+  replaced by its `.bak`), logged, and the warning banner says so; opening one
+  that vanished shows an error and a new chat.
 - A save fails: logged; the conversation stays in the window.
 
 ## Performance budget (Performant phase; not measured against yet)

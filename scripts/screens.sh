@@ -131,7 +131,22 @@ run_theme() {
     kill "$app"
     wait "$app" || true
 
+    # Conversation files that can't be read: one cut short, and one damaged
+    # whose backup is good. The first is set aside at this start and the
+    # second restored from its .bak, and the banner says both. The restored
+    # one is removed after, so the later screens are as they were.
     mkdir -p "$dir"
+    printf '{"id":"0000000000a0-0000","title":"Cut short","created":' >"$dir/0000000000a0-0000.json"
+    printf '{"id":"0000000000a1-0000","title":"Restored","created":1,"updated":1,"messages":[]}' >"$dir/0000000000a1-0000.json.bak"
+    printf 'not json' >"$dir/0000000000a1-0000.json"
+    "$bin" >"$out/app-damaged.log" 2>&1 &
+    app=$!
+    sleep 4
+    shot 01d-damaged-banner
+    kill "$app"
+    wait "$app" || true
+    rm -f "$dir"/0000000000a1-0000.json*
+
     seed_all "$dir"
     # One mode of the user's own, beside the built-in ones.
     printf '{"edits":[],"custom":[{"id":"my-1","name":"Pirate","prompt":"Answer like a friendly pirate.","temperature":0.9}]}' >"$XDG_DATA_HOME/telamon-gates/modes.json"
@@ -235,6 +250,10 @@ run_theme() {
     xdotool key Tab Tab
     sleep 0.4
     shot 17-settings-focus
+    # The end of the page: the Logs row.
+    xdotool mousemove 900 600 click --repeat 20 --delay 20 5
+    sleep 0.6
+    shot 17b-settings-logs
     xdotool mousemove 115 1039 click 1
     sleep 1.2
     shot 18-about

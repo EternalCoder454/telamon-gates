@@ -18,6 +18,19 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+/// Tells Gates' log file (`applog`, and so the journal) something happened to
+/// a file: its id and what was done, never what the conversation says. Unit
+/// tests only log to `log`: they must not write to the user's real log.
+macro_rules! event {
+    ($($arg:tt)*) => {{
+        let message = format!($($arg)*);
+        #[cfg(not(test))]
+        crate::applog::warn(&message);
+        #[cfg(test)]
+        log::warn!("{message}");
+    }};
+}
+
 /// The folder (inside the conversations folder) that files which can't be
 /// read are set aside in.
 pub const DAMAGED_DIR: &str = "damaged";
@@ -231,7 +244,7 @@ impl Store {
             Ok(e) => e,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Listing::default(),
             Err(e) => {
-                log::warn!("cannot list {}: {e}", self.dir.display());
+                event!("cannot list {}: {e}", self.dir.display());
                 return Listing::default();
             }
         };
@@ -250,9 +263,9 @@ impl Store {
                 Ok(c) => conversations.push(c.summary()),
                 Err(e) if is_newer_format(&e) => {
                     report.newer += 1;
-                    log::warn!("conversation {id} is from a newer version; left as it is");
+                    event!("conversation {id} is from a newer version; left as it is");
                 }
-                Err(e) => log::warn!("cannot read conversation {id}: {e}"),
+                Err(e) => event!("cannot read conversation {id}: {e}"),
             }
         }
         conversations.sort_by(|a, b| b.updated.cmp(&a.updated).then_with(|| b.id.cmp(&a.id)));
@@ -286,22 +299,22 @@ impl Store {
             Parsed::Newer(v) => return Err(newer_error(v)),
             Parsed::Damaged(why) => why,
         };
-        log::warn!("conversation {id} can't be read ({why})");
+        event!("conversation {id} can't be read ({why})");
         // Failing to move it leaves it where it is, and says so.
         let moved = self.set_aside(id)?;
         report.set_aside += 1;
-        log::warn!("conversation {id} set aside as {}", moved.display());
+        event!("conversation {id} set aside as {}", moved.display());
         let Some((c, backup)) = self.backup_of(id) else {
             return Err(damaged_error());
         };
         match write_private(&path, &backup) {
             Ok(()) => {
                 report.restored += 1;
-                log::warn!("conversation {id} restored from its backup");
+                event!("conversation {id} restored from its backup");
                 Ok(c)
             }
             Err(e) => {
-                log::warn!("cannot restore conversation {id} from its backup: {e}");
+                event!("cannot restore conversation {id} from its backup: {e}");
                 Err(damaged_error())
             }
         }
@@ -313,14 +326,14 @@ impl Store {
             Ok(b) => b,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
             Err(e) => {
-                log::warn!("cannot read the backup of conversation {id}: {e}");
+                event!("cannot read the backup of conversation {id}: {e}");
                 return None;
             }
         };
         match parse(&bytes, id) {
             Parsed::Ok(c) => Some((c, bytes)),
             Parsed::Newer(_) | Parsed::Damaged(_) => {
-                log::warn!("the backup of conversation {id} can't be used either");
+                event!("the backup of conversation {id} can't be used either");
                 None
             }
         }
@@ -378,7 +391,7 @@ impl Store {
                     && fs::rename(&path, &main).is_ok()
                 {
                     report.finished += 1;
-                    log::warn!("conversation {id} finished from an interrupted save");
+                    event!("conversation {id} finished from an interrupted save");
                     continue;
                 }
             } else if !inner.strip_suffix(".json.bak").is_some_and(valid_id) {
@@ -386,8 +399,8 @@ impl Store {
                 continue;
             }
             match fs::remove_file(&path) {
-                Ok(()) => log::warn!("removed the leftover of an interrupted save: {name}"),
-                Err(e) => log::warn!("cannot remove {name}: {e}"),
+                Ok(()) => event!("removed the leftover of an interrupted save: {name}"),
+                Err(e) => event!("cannot remove {name}: {e}"),
             }
         }
     }
@@ -415,12 +428,12 @@ impl Store {
                 // not replace a good backup.
                 Parsed::Ok(_) => {
                     if let Err(e) = write_private(&self.backup_path(&c.id), &old) {
-                        log::warn!("cannot back up conversation {}: {e}", c.id);
+                        event!("cannot back up conversation {}: {e}", c.id);
                     }
                 }
                 Parsed::Newer(v) => return Err(newer_error(v)),
                 Parsed::Damaged(why) => {
-                    log::warn!(
+                    event!(
                         "conversation {} can't be read ({why}); setting it aside",
                         c.id
                     );
@@ -443,7 +456,7 @@ impl Store {
         ] {
             match fs::remove_file(&extra) {
                 Err(e) if e.kind() != io::ErrorKind::NotFound => {
-                    log::warn!("cannot remove {}: {e}", extra.display());
+                    event!("cannot remove {}: {e}", extra.display());
                 }
                 _ => {}
             }
