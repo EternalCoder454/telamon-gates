@@ -139,6 +139,8 @@ jobs:
     container: registry.fedoraproject.org/fedora:44
     outputs:
       ref: ${{ steps.ref.outputs.ref }}
+      # The tag's commit, for the jobs that need the framework's tools.
+      commit: ${{ steps.ref.outputs.commit }}
     steps:
       - name: Tools for checkout and cache
         run: dnf -y install git-core tar zstd
@@ -167,6 +169,7 @@ jobs:
             echo "::error::the Telamon app checks job in ci.yml must use $refs: app-checks.yml@$commit # $refs and framework-ref: $refs"; exit 1
           fi
           echo "ref=$refs" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
       # telamon-ui needs the Qt minor it was built with: a Fedora Qt update
       # (today's metadata, loaded by the dnf install above) builds them again.
       - name: Fedora's Qt
@@ -344,4 +347,139 @@ jobs:
           name: telamon-gates-rpm
           path: out/*.rpm
           if-no-files-found: error
+          retention-days: 14
+
+  # The model server package (llama.yml): the RPM from the cache, or built.
+  llama:
+    name: telamon-llama
+    uses: ./.github/workflows/llama.yml
+
+  # The real llama backend against a real model, on the processor: the
+  # telamon-llama RPM (the Vulkan build, which finds no graphics card on a
+  # runner and uses its built-in CPU backend: lavapipe is ignored, so no
+  # flags are needed) and a tiny GGUF, pinned by commit and sha256 in
+  # scripts/real-model.sh and cached. Streaming, Stop, trimming and the
+  # agent's tool round trip, by assertions that hold whatever the model says
+  # (crates/gates-core/examples/real-model-check.rs).
+  real-model:
+    name: real model · CPU
+    needs: [llama, devimage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: ${{ needs.devimage.outputs.image }}
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - name: Tools for checkout, cache and the Rust build
+        run: rpm -q git-core tar zstd cargo gcc pkgconf-pkg-config openssl-devel curl >/dev/null || dnf -y install git-core tar zstd cargo gcc pkgconf-pkg-config openssl-devel curl
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: telamon-llama-rpm
+          path: /tmp/llama-rpm
+      - name: Install telamon-llama
+        run: dnf -y install /tmp/llama-rpm/telamon-llama-*.rpm
+      # The script checks the sha256 again, cached or not.
+      - name: Which model
+        id: model
+        run: echo "sha=$(sed -n 's/^MODEL_SHA256=//p' scripts/real-model.sh)" >> "$GITHUB_OUTPUT"
+      - name: Cached model
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out/real-model/models
+          key: real-model-${{ steps.model.outputs.sha }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: real-model-f44
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
+      - name: Fetch the model
+        run: scripts/real-model.sh fetch
+      # Saved from main only, once the script has checked it.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: (github.event_name == 'push' || github.event_name == 'schedule') && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: out/real-model/models
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Real model run
+        run: timeout 1200 scripts/real-model.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: real-model-logs
+          path: out/real-model/logs/*
+          if-no-files-found: warn
+          retention-days: 14
+
+  # The release bundle, built by the framework's own tools (the same ones
+  # bundle.yml runs for a v* tag, at the commit of the pinned framework
+  # release), installed as Telamon Store installs it into a throwaway HOME,
+  # and started from its .desktop file under Xvfb: the window, Gates' log and
+  # a clean end on SIGTERM (scripts/bundle-install.sh).
+  bundle:
+    name: bundle · install · launch
+    needs: [framework, devimage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container: ${{ needs.devimage.outputs.image }}
+    env:
+      FRAMEWORK_COMMIT: ${{ needs.framework.outputs.commit }}
+    steps:
+      - name: Tools for checkout and cache
+        run: rpm -q git-core tar zstd >/dev/null || dnf -y install git-core tar zstd
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: framework-rpms
+          path: /tmp/framework-rpms
+      - name: Build dependencies, the bundle tools and the launch test's tools
+        run: |
+          ATLAS_LOCAL_RPMS=/tmp/framework-rpms packaging/install-builddeps.sh \
+            gawk diffutils python3 zstd desktop-file-utils \
+            xorg-x11-server-Xvfb dbus-daemon qt6-qtbase-gui kf6-qqc2-desktop-style breeze-icon-theme \
+            ImageMagick xdotool ibm-plex-sans-fonts jetbrains-mono-fonts
+      # That commit, outside the workspace: the same fetch as bundle.yml.
+      - name: Fetch the framework's tools
+        run: |
+          if ! [[ $FRAMEWORK_COMMIT =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::the framework job gave no commit"; exit 1
+          fi
+          dir="$RUNNER_TEMP/telamon-framework"
+          git init -q "$dir"
+          git -C "$dir" fetch -q --depth 1 -- https://github.com/EternalCoder454/atlas-framework "$FRAMEWORK_COMMIT"
+          git -C "$dir" checkout -q FETCH_HEAD
+          if [ "$(git -C "$dir" rev-parse HEAD)" != "$FRAMEWORK_COMMIT" ] || [ ! -x "$dir/tools/make-bundle.sh" ]; then
+            echo "::error::could not fetch the framework's tools at $FRAMEWORK_COMMIT"; exit 1
+          fi
+          echo "FRAMEWORK_DIR=$dir" >> "$GITHUB_ENV"
+      - name: Toolchain
+        id: toolchain
+        run: |
+          versions=$(rpm -q gcc-c++ cmake corrosion qt6-qtbase-devel qt6-qtdeclarative-devel kf6-kirigami-devel telamon-ui)
+          echo "hash=$(sha256sum <<<"$versions" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: bundle-f44-${{ steps.toolchain.outputs.hash }}
+          workspaces: ". -> build/bundle/cargo/build"
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
+      - name: Build and pack the bundle
+        run: |
+          "$FRAMEWORK_DIR/tools/make-bundle.sh" --app-dir apps/telamon-gates --spec packaging/telamon-gates.spec \
+            --out bundle-out --build-dir build/bundle
+      - name: Install it as the Store does, and start it
+        run: timeout 300 scripts/bundle-install.sh bundle-out
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: bundle-install
+          path: |
+            bundle-out/*
+            out/bundle-install/*.png
+            out/bundle-install/app*.log
+            out/bundle-install/state/telamon-gates/*.log
+          if-no-files-found: warn
           retention-days: 14

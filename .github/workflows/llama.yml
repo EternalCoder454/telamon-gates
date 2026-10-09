@@ -1,21 +1,22 @@
 name: telamon-llama
 
 # The model server package (packaging/telamon-llama): llama.cpp's
-# llama-server with Vulkan. Built only when its packaging changes, or by
-# hand; its compiled objects are cached per llama.cpp version.
+# llama-server with Vulkan. CI (ci.yml) calls this for the real-model check,
+# on every run: the RPM comes from the cache when the packaging is as it was,
+# else it is built, with its compiled objects cached per llama.cpp version.
+# Its own triggers are by hand only; a change to the packaging runs CI, which
+# builds it.
 on:
-  push:
-    branches: [main]
-    paths: ['packaging/telamon-llama/**', '.github/workflows/llama.yml']
-  pull_request:
-    paths: ['packaging/telamon-llama/**', '.github/workflows/llama.yml']
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# Called, github.workflow is the caller's name, so a CI run and a run by hand
+# don't cancel each other.
 concurrency:
-  group: llama-${{ github.ref }}
+  group: llama-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
@@ -35,24 +36,42 @@ jobs:
       - name: Version
         id: version
         run: echo "version=$(awk '/^Version:/ {print $2; exit}' packaging/telamon-llama/telamon-llama.spec)" >> "$GITHUB_OUTPUT"
+      # The finished RPM, by the packaging's content: nothing to build when it
+      # is as it was.
+      - name: Cached RPM
+        id: rpm
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out
+          key: telamon-llama-rpm-f44-${{ hashFiles('packaging/telamon-llama/**') }}
       - name: Cached objects
         id: cache
+        if: steps.rpm.outputs.cache-hit != 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /github/home/ccache
           key: llama-ccache-f44-${{ steps.version.outputs.version }}-${{ hashFiles('packaging/telamon-llama/telamon-llama.spec') }}
           restore-keys: llama-ccache-f44-${{ steps.version.outputs.version }}-
       - name: Build the RPM
+        if: steps.rpm.outputs.cache-hit != 'true'
         run: packaging/telamon-llama/build-rpm.sh "$GITHUB_WORKSPACE/out"
       - name: Install it and run it
+        if: steps.rpm.outputs.cache-hit != 'true'
         run: |
           dnf -y install out/telamon-llama-*.rpm
           /usr/libexec/telamon-llama/llama-server --version
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+        if: steps.rpm.outputs.cache-hit != 'true' && github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
         with:
           path: /github/home/ccache
           key: ${{ steps.cache.outputs.cache-primary-key }}
+      # Saved from main only, like the other caches, so pull requests can't
+      # evict them.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.rpm.outputs.cache-hit != 'true' && github.event_name == 'push'
+        with:
+          path: out
+          key: ${{ steps.rpm.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: telamon-llama-rpm
