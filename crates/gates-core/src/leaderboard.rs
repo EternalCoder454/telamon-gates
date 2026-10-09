@@ -101,8 +101,8 @@ impl Entry {
         self.total * 0.6e9
     }
 
-    pub fn fit(&self, vram: f64) -> Option<Fit> {
-        (vram > 0.0).then(|| fit(self.estimated_bytes(), vram, self.experts()))
+    pub fn fit(&self, vram: f64, ram: f64) -> Option<Fit> {
+        (vram > 0.0).then(|| fit(self.estimated_bytes(), vram, ram, self.experts()))
     }
 
     /// What to search Hugging Face for to find a GGUF of this model: its
@@ -127,8 +127,10 @@ impl Entry {
 
 /// How a model sits in the graphics card's memory: room to spare, tight
 /// (some layers may run on the processor) or too big (most will). The same
-/// rule as `ModelsPage.qml`'s `fit`, with mixtures of experts, which still
-/// run when part of them is in system memory, never too big.
+/// rule as `ModelsPage.qml`'s `fit`, except for a mixture of experts, which
+/// still runs, slower, with the experts it isn't using in system memory: it
+/// is tight when it fits in the card plus `RAM_SHARE` of the system memory
+/// `ram` (bytes; 0 when not known, then the card alone), else too big.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fit {
     Fits,
@@ -136,7 +138,11 @@ pub enum Fit {
     Big,
 }
 
-pub fn fit(bytes: f64, vram: f64, experts: bool) -> Fit {
+/// How much of the system memory a mixture of experts may count on, the rest
+/// being for the system, the conversation's cache and everything else.
+pub const RAM_SHARE: f64 = 0.7;
+
+pub fn fit(bytes: f64, vram: f64, ram: f64, experts: bool) -> Fit {
     let plain = if bytes * 1.2 <= vram {
         Fit::Fits
     } else if bytes <= vram {
@@ -144,11 +150,25 @@ pub fn fit(bytes: f64, vram: f64, experts: bool) -> Fit {
     } else {
         Fit::Big
     };
-    if experts && plain == Fit::Big {
+    let ceiling = vram + RAM_SHARE * ram.max(0.0);
+    if experts && plain == Fit::Big && bytes <= ceiling {
         Fit::Tight
     } else {
         plain
     }
+}
+
+/// `MemTotal` of `/proc/meminfo`'s text, in bytes.
+pub fn parse_meminfo(text: &str) -> Option<u64> {
+    let line = text.lines().find(|l| l.starts_with("MemTotal:"))?;
+    let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    kib.checked_mul(1024)
+}
+
+/// The system memory in bytes; `None` when it can't be read. Reads a file:
+/// call it from a worker.
+pub fn system_memory() -> Option<u64> {
+    parse_meminfo(&fs::read_to_string("/proc/meminfo").ok()?)
 }
 
 impl Fit {
@@ -397,6 +417,8 @@ pub struct Filter {
     /// The graphics card's memory in bytes: models too big for it are left
     /// out. `None` (or 0) when not asked for or not known.
     pub fits_vram: Option<f64>,
+    /// The system memory in bytes (0 when not known), for mixtures of experts.
+    pub ram: f64,
     pub sort: Sort,
 }
 
@@ -408,6 +430,7 @@ impl Default for Filter {
             hide_thinking: false,
             min_willingness: 0.0,
             fits_vram: None,
+            ram: 0.0,
             sort: Sort::Ugi,
         }
     }
@@ -422,7 +445,7 @@ impl Filter {
             return false;
         }
         if let Some(vram) = self.fits_vram.filter(|v| *v > 0.0)
-            && fit(e.estimated_bytes(), vram, e.experts()) == Fit::Big
+            && fit(e.estimated_bytes(), vram, self.ram, e.experts()) == Fit::Big
         {
             return false;
         }
@@ -496,6 +519,8 @@ struct Spec {
     fits_vram: f64,
     /// The card's bytes for each row's fit badge; 0 when unknown.
     vram: f64,
+    /// The system memory's bytes, for mixtures of experts; 0 when unknown.
+    ram: f64,
     /// "ugi", "writing", "knowledge", "willingness" or "newest".
     sort: String,
     limit: usize,
@@ -515,6 +540,11 @@ pub fn query(entries: &[Entry], spec: &str) -> String {
             0.0
         },
         fits_vram: (spec.fits_vram.is_finite() && spec.fits_vram > 0.0).then_some(spec.fits_vram),
+        ram: if spec.ram.is_finite() {
+            spec.ram.max(0.0)
+        } else {
+            0.0
+        },
         sort: Sort::from_word(&spec.sort),
     };
     let found = select(entries, &filter);
@@ -524,13 +554,13 @@ pub fn query(entries: &[Entry], spec: &str) -> String {
     } else {
         0.0
     };
-    rows_json(found.len(), shown, vram)
+    rows_json(found.len(), shown, vram, filter.ram)
 }
 
 /// The rows for the page, as JSON for QML (`JSON.parse`): `{"total": n,
 /// "rows": [...]}`, `total` being how many passed the filters. The strings
 /// are the file's, so QML shows them as plain text.
-pub fn rows_json(total: usize, rows: &[&Entry], vram: f64) -> String {
+pub fn rows_json(total: usize, rows: &[&Entry], vram: f64, ram: f64) -> String {
     let score = |s: Option<f64>| s.map_or(Value::Null, |s| json!(s));
     let rows: Vec<Value> = rows
         .iter()
@@ -549,7 +579,7 @@ pub fn rows_json(total: usize, rows: &[&Entry], vram: f64) -> String {
                 "thinking": e.thinking,
                 "released": release_label(e.released),
                 "bytes": e.estimated_bytes(),
-                "fit": e.fit(vram).map_or("", Fit::word),
+                "fit": e.fit(vram, ram).map_or("", Fit::word),
             })
         })
         .collect();
@@ -950,11 +980,13 @@ mod tests {
     fn fits_my_graphics_card_hides_too_big_but_keeps_experts() {
         let t = sample();
         let gib = 1024.0 * 1024.0 * 1024.0;
-        // 16 GiB: the 8B (4.8 GB) fits, the 30B A3B (18 GB) is a mixture of
-        // experts, so tight; the 13B merge (7.8 GB) fits; the 70B (42 GB) is
-        // too big.
+        // 16 GiB and 31 GiB of memory: the 8B (4.8 GB) fits, the 30B A3B
+        // (18 GB) is a mixture of experts that fits in the card and most of
+        // the memory, so tight; the 13B merge (7.8 GB) fits; the 70B (42 GB)
+        // is dense, so too big.
         let f = Filter {
             fits_vram: Some(16.0 * gib),
+            ram: 31.0 * gib,
             ..Default::default()
         };
         let names: Vec<_> = select(&t.entries, &f)
@@ -964,6 +996,12 @@ mod tests {
         assert!(names.contains(&"acme/Beta-30B-A3B".to_string()));
         assert!(!names.contains(&"acme/Gamma-70B".to_string()));
         assert_eq!(names.len(), 3);
+        // Without the memory figure the 30B A3B has the card alone: too big.
+        let f = Filter {
+            fits_vram: Some(16.0 * gib),
+            ..Default::default()
+        };
+        assert_eq!(select(&t.entries, &f).len(), 2);
         // Not known: nothing is hidden.
         let f = Filter {
             fits_vram: Some(0.0),
@@ -975,11 +1013,53 @@ mod tests {
     #[test]
     fn fit_is_the_models_pages_rule() {
         let gib = 1024.0 * 1024.0 * 1024.0;
-        assert_eq!(fit(8.0 * gib, 16.0 * gib, false), Fit::Fits);
-        assert_eq!(fit(14.0 * gib, 16.0 * gib, false), Fit::Tight);
-        assert_eq!(fit(20.0 * gib, 16.0 * gib, false), Fit::Big);
-        assert_eq!(fit(20.0 * gib, 16.0 * gib, true), Fit::Tight);
-        assert_eq!(fit(8.0 * gib, 16.0 * gib, true), Fit::Fits);
+        let ram = 31.0 * gib;
+        // Dense models: the card alone, whatever the memory.
+        assert_eq!(fit(8.0 * gib, 16.0 * gib, ram, false), Fit::Fits);
+        assert_eq!(fit(14.0 * gib, 16.0 * gib, ram, false), Fit::Tight);
+        assert_eq!(fit(20.0 * gib, 16.0 * gib, ram, false), Fit::Big);
+        assert_eq!(fit(40.0 * gib, 24.0 * gib, ram, false), Fit::Big);
+        // A mixture of experts that fits is as a dense one.
+        assert_eq!(fit(8.0 * gib, 16.0 * gib, ram, true), Fit::Fits);
+        assert_eq!(fit(14.0 * gib, 16.0 * gib, ram, true), Fit::Tight);
+        // Over the card, tight while it fits in the card plus 70% of the memory.
+        assert_eq!(fit(20.0 * gib, 16.0 * gib, ram, true), Fit::Tight);
+        assert_eq!(fit(37.0 * gib, 16.0 * gib, ram, true), Fit::Tight);
+        assert_eq!(fit(38.0 * gib, 16.0 * gib, ram, true), Fit::Big);
+        // The memory not known: the card alone.
+        assert_eq!(fit(20.0 * gib, 16.0 * gib, 0.0, true), Fit::Big);
+    }
+
+    #[test]
+    fn a_30b_a3b_is_tight_and_a_120b_a12b_too_big_on_24_gib_and_31_gib() {
+        let gib = 1024.0 * 1024.0 * 1024.0;
+        let moe = |total: f64, active: f64| Entry {
+            name: "x/y".into(),
+            link: None,
+            released: 0,
+            total,
+            active: Some(active),
+            kind: Kind::Base,
+            thinking: false,
+            ugi: None,
+            willingness: None,
+            knowledge: None,
+            writing: None,
+        };
+        // 18 GB on a 16 GiB card: part of it in memory.
+        assert_eq!(moe(30.0, 3.0).fit(16.0 * gib, 31.0 * gib), Some(Fit::Tight));
+        // 72 GB: more than 24 GiB plus 70% of 31 GiB (about 49 GB).
+        assert_eq!(moe(120.0, 12.0).fit(24.0 * gib, 31.0 * gib), Some(Fit::Big));
+        // 18 GB has room on 24 GiB.
+        assert_eq!(moe(30.0, 3.0).fit(24.0 * gib, 31.0 * gib), Some(Fit::Fits));
+    }
+
+    #[test]
+    fn the_memory_is_read_from_meminfo() {
+        let text = "MemTotal:       32500000 kB\nMemFree:  1 kB\n";
+        assert_eq!(parse_meminfo(text), Some(32_500_000 * 1024));
+        assert_eq!(parse_meminfo("MemFree: 1 kB\n"), None);
+        assert_eq!(parse_meminfo("MemTotal: lots kB\n"), None);
     }
 
     #[test]
@@ -1012,7 +1092,8 @@ mod tests {
         let t = sample();
         let gib = 1024.0 * 1024.0 * 1024.0;
         let rows = select(&t.entries, &Filter::default());
-        let json: Value = serde_json::from_str(&rows_json(4, &rows[..2], 16.0 * gib)).unwrap();
+        let json: Value =
+            serde_json::from_str(&rows_json(4, &rows[..2], 16.0 * gib, 31.0 * gib)).unwrap();
         assert_eq!(json["total"], 4);
         let beta = &json["rows"][0];
         assert_eq!(beta["name"], "acme/Beta-30B-A3B");
@@ -1022,7 +1103,7 @@ mod tests {
         assert_eq!(beta["released"], "Oct 2, 2025");
         assert_eq!(beta["kind"], "Finetune");
         // No card: no fit.
-        let json: Value = serde_json::from_str(&rows_json(4, &rows[..1], 0.0)).unwrap();
+        let json: Value = serde_json::from_str(&rows_json(4, &rows[..1], 0.0, 0.0)).unwrap();
         assert_eq!(json["rows"][0]["fit"], "");
         assert_eq!(billions(0.5), "0.5B");
         assert_eq!(billions(8.0), "8B");
@@ -1038,12 +1119,12 @@ mod tests {
         assert_eq!(all["rows"].as_array().unwrap().len(), 2);
         assert_eq!(all["rows"][0]["name"], "acme/Beta-30B-A3B");
         let some = ask(
-            r#"{"search":"acme","kind":"Base","hideThinking":true,"minWillingness":7,"sort":"newest","limit":50,"vram":17179869184}"#,
+            r#"{"search":"acme","kind":"Base","hideThinking":true,"minWillingness":7,"sort":"newest","limit":50,"vram":17179869184,"ram":33285996544}"#,
         );
         assert_eq!(some["total"], 1);
         assert_eq!(some["rows"][0]["name"], "acme/Gamma-70B");
         assert_eq!(some["rows"][0]["fit"], "big");
-        let fits = ask(r#"{"fitsVram": 17179869184, "limit": 50}"#);
+        let fits = ask(r#"{"fitsVram": 17179869184, "ram": 33285996544, "limit": 50}"#);
         assert_eq!(fits["total"], 3);
         // Nonsense asks for nothing, and does no harm.
         assert_eq!(ask("not json")["rows"].as_array().unwrap().len(), 0);

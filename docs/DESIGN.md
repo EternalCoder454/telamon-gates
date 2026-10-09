@@ -108,8 +108,9 @@ beside it.
   worker thread. *Recommended* (hidden when a
   model server URL is set) offers three tested models, one per use, from
   `docs/BACKEND.md` → Recommended models: For Coding, For Chat and Stories,
-  and Small and Fast. Each shows a fit badge (never Too Big for a mixture of
-  experts, which runs with part of it in system memory) and Download
+  and Small and Fast. Each shows a fit badge (a mixture of experts, which
+  runs with part of it in system memory, is Too Big only past the card plus
+  70% of the system memory) and Download
   (`downloadFrom`, the same checked download). While it downloads, the row
   shows the percentage and Cancel. Once it's on the computer, Use makes the
   coding pick the Model for Code and the others the Model, and In Use marks
@@ -129,8 +130,9 @@ beside it.
     thread: about 1,200 rows, a small job): a search by name
     (every word must match); *Fits My Graphics Card* (shown when the card is
     known), which hides Too Big, with the Q4 size taken as 0.6 GB for each
-    billion parameters and a mixture of experts (active under total) Tight at
-    worst, as in Recommended; *Hide Thinking Models*; *Type*: Any, Base,
+    billion parameters; a mixture of experts (active under total) is Tight
+    when it fits in the card plus 70% of the system memory, else Too Big, as
+    in Recommended; *Hide Thinking Models*; *Type*: Any, Base,
     Finetune or Merge; *Minimum Willingness*: Any, or 5 to 9 on W/10 (a model
     with no score is hidden once a minimum is set). Models without
     downloadable weights (no parameter count) are never listed.

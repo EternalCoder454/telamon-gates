@@ -50,6 +50,16 @@ TelamonPage {
         return bytes <= page.vram.total ? "tight" : "big";
     }
 
+    // `fit` for a mixture of experts, which still runs, slower, with the
+    // experts it isn't using in system memory: Tight while it fits in the
+    // graphics card plus 70% of the system memory (the card alone when the
+    // memory isn't known), else Too Big. leaderboard.rs's `fit` is this rule.
+    function fitExperts(bytes) {
+        const plain = page.fit(bytes);
+        const ram = Math.max(0, page.models.ramTotal);
+        return plain === "big" && bytes <= page.vram.total + 0.7 * ram ? "tight" : plain;
+    }
+
     // A context length in tokens, as models name it: 32768 is "32K", 131072
     // and 128000 "128K", 1048576 "1M".
     function tokens(count) {
@@ -288,7 +298,8 @@ TelamonPage {
     // models): one click gets one, and Use puts it to work. `code` is for
     // Code and Agent mode (Model for Code); the others become the Model.
     // `experts`: a mixture of experts, which still runs, slower, when part
-    // of it is in system memory, so it is never Too Big.
+    // of it is in system memory: Too Big only past the card and most of the
+    // memory (fitExperts).
     readonly property var recommended: [
         {
             use: qsTr("For Coding"),
@@ -353,8 +364,7 @@ TelamonPage {
                 ]
 
                 FitBadge {
-                    readonly property string plain: page.fit(pick.modelData.bytes)
-                    fit: pick.modelData.experts && plain === "big" ? "tight" : plain
+                    fit: pick.modelData.experts ? page.fitExperts(pick.modelData.bytes) : page.fit(pick.modelData.bytes)
                 }
                 SecondaryButton {
                     visible: !pick.have && !pick.downloading
@@ -407,6 +417,7 @@ TelamonPage {
         "minWillingness": page.boardMinWillingness,
         "fitsVram": page.boardFits && page.vram.available ? page.vram.total : 0,
         "vram": page.vram.available ? page.vram.total : 0,
+        "ram": page.models.ramTotal,
         "sort": page.boardSort,
         "limit": page.boardLimit
     }), page.models.ugiVersion)) : {
@@ -543,7 +554,7 @@ TelamonPage {
         SectionRow {
             visible: page.models.ugiCount > 0 && page.vram.available
             title: qsTr("Fits My Graphics Card")
-            subtitle: qsTr("Hides models too big for its %1 GiB. Mixtures of experts stay, as Tight.").arg(Number(page.vram.total / (1024 * 1024 * 1024)).toLocaleString(Qt.locale(), "f", 0))
+            subtitle: qsTr("Hides models too big for its %1 GiB. Mixtures of experts may use memory too.").arg(Number(page.vram.total / (1024 * 1024 * 1024)).toLocaleString(Qt.locale(), "f", 0))
             leading: [
                 Symbol {
                     icon: Symbols.Memory

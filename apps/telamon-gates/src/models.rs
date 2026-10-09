@@ -38,6 +38,9 @@ pub mod qobject {
         /// The free space on the models folder's disk in bytes; -1 when not
         /// known (yet).
         #[qproperty(f64, free)]
+        /// The system memory in bytes (a mixture of experts may use part of
+        /// it, so the fit badges ask); -1 when not known (yet).
+        #[qproperty(f64, ram_total, cxx_name = "ramTotal")]
         /// Partial downloads left in the folder: the file each would become,
         /// bytes so far, the whole size (0 when not known), and the
         /// repository it comes from ("" when not known: no Resume).
@@ -191,6 +194,7 @@ pub struct ModelLibraryRust {
     unsupported: QStringList,
     folder: QString,
     free: f64,
+    ram_total: f64,
     partials: QStringList,
     partial_sizes: QList<f64>,
     partial_totals: QList<f64>,
@@ -530,6 +534,7 @@ impl qobject::ModelLibrary {
             }
             let parts = hub::partials(&dir);
             let free = hub::free_space(&dir).map_or(-1.0, |bytes| bytes as f64);
+            let ram = leaderboard::system_memory().map_or(-1.0, |bytes| bytes as f64);
             let _ = qt.queue(move |mut lib| {
                 lib.as_mut()
                     .set_partials(strings(parts.iter().map(|p| p.name.as_str())));
@@ -541,6 +546,7 @@ impl qobject::ModelLibrary {
                     parts.iter().map(|p| p.repo.as_deref().unwrap_or("")),
                 ));
                 lib.as_mut().rust_mut().partial_list = parts;
+                lib.as_mut().set_ram_total(ram);
                 lib.set_free(free);
             });
         });

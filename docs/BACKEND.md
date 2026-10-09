@@ -719,8 +719,14 @@ page is described in `docs/DESIGN.md`).
 - **Fit.** The Q4 size is 0.6 GB (decimal) for each billion parameters, and the
   fit is `ModelsPage.qml`'s rule (Fits at 1.2 times the card's memory or
   less, Tight up to the memory, else Too Big), repeated in
-  `leaderboard::fit` for the filter; an active count under the total makes a
-  mixture of experts, never Too Big.
+  `leaderboard::fit` for the filter. An active count under the total makes a
+  mixture of experts, which runs with the experts it isn't using in system
+  memory: it is Tight when its size fits in the card plus 70% of the system
+  memory (`MemTotal` of `/proc/meminfo`, read on a worker when the page
+  opens; the card alone when unknown), else Too Big. A 30B-A3B (18 GB) is
+  Tight on a 16 GiB card and Fits on 24 GiB; a 120B-A12B (72 GB) is Too Big on
+  24 GiB with 31 GiB of memory (about 49 GB of room). The Recommended list
+  uses the same rule (`fitExperts`).
 - **Find GGUF.** The query is the model's repository name from its link (else
   the leaderboard's name without the author and a bracketed setting such as
   "(reasoning=low)") and "GGUF", sent to `hub::search`
