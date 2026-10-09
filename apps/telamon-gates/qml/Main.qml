@@ -16,8 +16,9 @@ TelamonWindow {
     required property var library
     required property var vram
     required property var models
+    required property var fleet
 
-    // "chat", "models", "settings" or "about".
+    // "chat", "fleet", "models", "settings" or "about".
     property string page: "chat"
 
     title: root.chat.title.length > 0 ? qsTr("%1 — Telamon Gates").arg(root.chat.title) : qsTr("Telamon Gates")
@@ -308,6 +309,13 @@ TelamonWindow {
                 VramMeter {},
                 SidebarItem {
                     Layout.fillWidth: true
+                    text: qsTr("Fleet")
+                    symbol: Symbols.Hub
+                    selected: root.page === "fleet"
+                    onClicked: root.page = "fleet"
+                },
+                SidebarItem {
+                    Layout.fillWidth: true
                     text: qsTr("Models")
                     symbol: Symbols.Psychology
                     selected: root.page === "models"
@@ -355,6 +363,16 @@ TelamonWindow {
                     chat: root.chat
                     library: root.library
                     models: root.models
+                }
+            }
+
+            Loader {
+                anchors.fill: parent
+                active: root.page === "fleet"
+                visible: active
+                sourceComponent: FleetPage {
+                    fleet: root.fleet
+                    chat: root.chat
                 }
             }
 

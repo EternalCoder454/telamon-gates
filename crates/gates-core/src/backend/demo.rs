@@ -116,6 +116,7 @@ mod tests {
             messages: vec![Message::user("What is Rust?")],
             sampling: None,
             tools: Vec::new(),
+            response_format: None,
         }
     }
 

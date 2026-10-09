@@ -567,6 +567,9 @@ pub fn request_body(request: &Request) -> Value {
     if !request.tools.is_empty() {
         body["tools"] = json!(request.tools);
     }
+    if let Some(format) = &request.response_format {
+        body["response_format"] = format.clone();
+    }
     body
 }
 
@@ -623,6 +626,7 @@ mod tests {
             ],
             sampling: None,
             tools: Vec::new(),
+            response_format: None,
         }
     }
 
@@ -637,6 +641,14 @@ mod tests {
         assert_eq!(m[3], json!({"role": "user", "content": "Again"}));
         assert!(body.get("temperature").is_none());
         assert!(body.get("tools").is_none());
+        assert!(body.get("response_format").is_none());
+        // A constrained reply (the Fleet's plan): the format goes as given.
+        let mut plan = request();
+        plan.response_format = Some(json!({"type": "json_object", "schema": {"type": "object"}}));
+        assert_eq!(
+            request_body(&plan)["response_format"],
+            json!({"type": "json_object", "schema": {"type": "object"}})
+        );
         // Agent mode: the tools, a call and its result.
         let mut agent = request();
         agent.tools = crate::tools::schema();

@@ -94,6 +94,7 @@ fn main() {
         messages: vec![Message::user(task)],
         sampling: mode.sampling,
         tools: Vec::new(),
+        response_format: None,
     };
     let mut host = Print {
         allow_run,

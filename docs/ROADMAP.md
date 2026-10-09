@@ -66,6 +66,22 @@ its place, and the ones left out are listed with the reason.
      SystemOne, tokens/s and context used;
    - a timeline of what each agent did, with Stop, Pause and Talk To on each.
    It runs on the same llama-server with `--parallel N` slots.
+   - **Built**, simply:
+     - **The plan:** a goal and a folder. The chat model, asked once for a
+       JSON plan, splits the goal into 1 to 6 tasks, and each runs as an
+       agent in that folder, one after another on the one server slot.
+     - **The page:** a card for each agent with its status (idle, working,
+       waiting for you, done, failed, stopped), last line, steps and tokens
+       per second; Stop for one agent or all; every change an agent asks for
+       waits on the page for your answer.
+     - **SystemOne:** when an agent ends, a decision model is asked "Did
+       this agent complete its task?" and the card shows how sure it is.
+       With no decision model, nothing is asked.
+     - **Tested:** with Qwen3-4B and Laya, a two-task goal ran in 6 to 7 s
+       and SystemOne said 85% and 75% sure (`docs/BACKEND.md`).
+     - **Not yet:** `--parallel N` (agents at the same time), Pause, Talk To,
+       a timeline, each agent's model and context used, saved runs, and
+       routing a task to an agent by SystemOne.
 7. **Attachments.** Text and code files go into the message. Retrieval with
    embeddings over many documents comes later, if attachments prove too
    small.

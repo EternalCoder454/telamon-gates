@@ -45,6 +45,10 @@ pub struct Request {
     pub sampling: Option<crate::modes::Sampling>,
     /// Tools the model may call (OpenAI `tools`); empty for none.
     pub tools: Vec<serde_json::Value>,
+    /// Constrains the reply's shape (OpenAI `response_format`, which
+    /// llama-server turns into a grammar, e.g. `{"type": "json_object",
+    /// "schema": {…}}`); None for free text.
+    pub response_format: Option<serde_json::Value>,
 }
 
 /// What a backend streams while it answers.

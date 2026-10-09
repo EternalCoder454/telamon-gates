@@ -11,7 +11,7 @@
 //! Every method blocks: call them from a worker thread.
 
 use crate::backend::llama::{LocalModel, authorized};
-use crate::backend::server::{Launch, Server};
+use crate::backend::server::{Endpoint, Launch, Server};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -56,6 +56,34 @@ pub fn mode_question() -> Value {
     })
 }
 
+/// The question that judges an agent of the Fleet (a `noul` question: how
+/// likely is "yes"). Its state is `done_state`.
+pub fn done_question() -> Value {
+    json!({
+        "type": "noul",
+        "instructions": "Did this agent complete its task?",
+        "criteria": {
+            "true": "The reply says the task is done and what was done",
+            "false": "The agent gave up, failed, asked a question instead, or did only part of the task"
+        }
+    })
+}
+
+/// The most of the task and of the agent's last reply `done_question`
+/// reads, in characters (Laya keeps 512 tokens of it anyway).
+const MAX_TASK: usize = 600;
+const MAX_REPLY: usize = 1400;
+
+/// What `done_question` is asked about: the task, and the end of the
+/// agent's last reply (where it says what it did).
+pub fn done_state(task: &str, reply: &str) -> String {
+    format!(
+        "Task: {}\n\nThe agent's last reply: {}",
+        clip(task.trim(), MAX_TASK),
+        tail(reply.trim(), MAX_REPLY)
+    )
+}
+
 /// A `/v1/systemone` request about `state`.
 pub fn request_body(state: &str, questions: Value) -> Value {
     json!({ "state": clip(state, MAX_STATE), "questions": questions })
@@ -68,6 +96,25 @@ pub fn parse_choice(response: &Value, id: &str) -> Option<Choice> {
         choice: answer.get("choice")?.as_str()?.to_string(),
         confidence: answer.get("confidence")?.as_f64()?.clamp(0.0, 1.0),
     })
+}
+
+/// The probability that the `noul` question `id` is answered yes, in a
+/// `/v1/systemone` response.
+pub fn parse_noul(response: &Value, id: &str) -> Option<f64> {
+    let p = response.get("answers")?.get(id)?.get("noul")?.as_f64()?;
+    p.is_finite().then(|| p.clamp(0.0, 1.0))
+}
+
+/// The last `max` characters of `text`.
+fn tail(text: &str, max: usize) -> &str {
+    let count = text.chars().count();
+    if count <= max {
+        return text;
+    }
+    match text.char_indices().nth(count - max) {
+        Some((i, _)) => &text[i..],
+        None => text,
+    }
 }
 
 /// The first `max` characters of `text`.
@@ -133,6 +180,14 @@ impl SystemOne {
         parse_choice(&response, "mode").ok_or_else(|| "SystemOne gave no answer.".to_string())
     }
 
+    /// How likely it is that an agent given `task` finished it, going by
+    /// its last `reply` (0 to 1), or why there's no answer.
+    pub fn judge_done(&self, task: &str, reply: &str) -> Result<f64, String> {
+        let body = request_body(&done_state(task, reply), json!({ "done": done_question() }));
+        let response = self.ask(&body)?;
+        parse_noul(&response, "done").ok_or_else(|| "SystemOne gave no answer.".to_string())
+    }
+
     fn ask(&self, body: &Value) -> Result<Value, String> {
         {
             let resting = self.resting.lock().unwrap_or_else(|e| e.into_inner());
@@ -145,32 +200,34 @@ impl SystemOne {
                 Some(Instant::now() + BACKOFF);
             e.to_string()
         })?;
-        let result = (|| {
-            let agent = agent_with_timeout();
-            let response = authorized(
-                agent.post(format!("{}/v1/systemone", endpoint.base)),
-                &endpoint,
-            )
-            .header("Content-Type", "application/json")
-            .send(body.to_string())
-            .map_err(|e| format!("SystemOne didn't answer: {e}."))?;
-            let status = response.status().as_u16();
-            let text = response
-                .into_body()
-                .read_to_string()
-                .map_err(|e| format!("SystemOne's answer was cut off: {e}."))?;
-            if status != 200 {
-                return Err(format!(
-                    "SystemOne refused the question ({status}): {}",
-                    crate::backend::sse::error_message(&text)
-                ));
-            }
-            serde_json::from_str::<Value>(&text)
-                .map_err(|_| "SystemOne's answer wasn't JSON.".to_string())
-        })();
+        let result = post(&endpoint, body);
         self.server.release();
         result
     }
+}
+
+/// One `/v1/systemone` request to the server at `endpoint`.
+fn post(endpoint: &Endpoint, body: &Value) -> Result<Value, String> {
+    let agent = agent_with_timeout();
+    let response = authorized(
+        agent.post(format!("{}/v1/systemone", endpoint.base)),
+        endpoint,
+    )
+    .header("Content-Type", "application/json")
+    .send(body.to_string())
+    .map_err(|e| format!("SystemOne didn't answer: {e}."))?;
+    let status = response.status().as_u16();
+    let text = response
+        .into_body()
+        .read_to_string()
+        .map_err(|e| format!("SystemOne's answer was cut off: {e}."))?;
+    if status != 200 {
+        return Err(format!(
+            "SystemOne refused the question ({status}): {}",
+            crate::backend::sse::error_message(&text)
+        ));
+    }
+    serde_json::from_str::<Value>(&text).map_err(|_| "SystemOne's answer wasn't JSON.".to_string())
 }
 
 /// As the chat client's (no proxy: the key stays here), but bounded: a
@@ -232,5 +289,99 @@ mod tests {
         );
         assert_eq!(parse_choice(&response, "other"), None);
         assert_eq!(parse_choice(&json!({"error": "x"}), "mode"), None);
+    }
+
+    #[test]
+    fn the_done_question() {
+        let q = done_question();
+        assert_eq!(q["type"], "noul");
+        assert_eq!(q["instructions"], "Did this agent complete its task?");
+        // A long reply is cut from the front: its end says what was done.
+        let reply = format!("{}THE END", "x".repeat(5000));
+        let state = done_state("Fix the bug", &reply);
+        assert!(state.starts_with("Task: Fix the bug"));
+        assert!(state.ends_with("THE END"));
+        assert!(state.chars().count() < MAX_STATE);
+        let long_task = "é".repeat(MAX_TASK + 50);
+        assert!(done_state(&long_task, "ok").chars().count() < MAX_TASK + 100);
+        let response = json!({"answers": {"done": {"type": "noul", "noul": 0.8123}}});
+        assert_eq!(parse_noul(&response, "done"), Some(0.8123));
+        let over = json!({"answers": {"done": {"noul": 1.7}}});
+        assert_eq!(parse_noul(&over, "done"), Some(1.0));
+        assert_eq!(parse_noul(&response, "other"), None);
+        let choice = json!({"answers": {"done": {"choice": "a"}}});
+        assert_eq!(parse_noul(&choice, "done"), None);
+    }
+
+    /// A one-shot server: answers the first request with `status` and
+    /// `body`, and hands back the request it got.
+    fn serve(status: &str, body: &str) -> (Endpoint, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = Endpoint {
+            base: format!("http://{}", listener.local_addr().unwrap()),
+            api_key: "k3y".into(),
+        };
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let handle = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut got = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = socket.read(&mut buf).unwrap();
+                got.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&got).to_string();
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let length = text
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    if got.len() >= end + 4 + length || n == 0 {
+                        socket.write_all(response.as_bytes()).unwrap();
+                        return text;
+                    }
+                }
+            }
+        });
+        (endpoint, handle)
+    }
+
+    #[test]
+    fn asking_a_server() {
+        let (endpoint, seen) = serve(
+            "200 OK",
+            r#"{"model":"laya","answers":{"done":{"type":"noul","noul":0.91}}}"#,
+        );
+        let body = request_body(
+            &done_state("Add a README", "Added README.md."),
+            json!({ "done": done_question() }),
+        );
+        let response = post(&endpoint, &body).unwrap();
+        assert_eq!(parse_noul(&response, "done"), Some(0.91));
+        let request = seen.join().unwrap();
+        assert!(request.starts_with("POST /v1/systemone"), "{request}");
+        assert!(request.contains("Bearer k3y"), "the key is sent");
+        assert!(request.contains("Did this agent complete its task?"));
+        assert!(request.contains("Added README.md."));
+
+        // A refusal says why, and a reply that isn't JSON is no answer.
+        let (endpoint, _) = serve(
+            "501 Not Implemented",
+            r#"{"error":{"message":"not a decision model"}}"#,
+        );
+        let err = post(&endpoint, &body).unwrap_err();
+        assert!(
+            err.contains("501") && err.contains("not a decision model"),
+            "{err}"
+        );
+        let (endpoint, _) = serve("200 OK", "not json");
+        assert!(post(&endpoint, &body).unwrap_err().contains("wasn't JSON"));
     }
 }

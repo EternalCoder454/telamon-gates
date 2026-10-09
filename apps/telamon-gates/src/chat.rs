@@ -1072,6 +1072,15 @@ impl qobject::Chat {
         self.set_system_one_ready(ready);
     }
 
+    /// What a fleet takes from the chat: the model picked, and SystemOne
+    /// while it can judge.
+    pub fn fleet_setup(&self) -> (String, Option<Arc<SystemOne>>) {
+        (
+            self.model().to_string(),
+            self.rust().system_one_model.clone(),
+        )
+    }
+
     /// The reply under way is written in `mode`, which SystemOne `picked`.
     fn set_reply_mode(mut self: Pin<&mut Self>, generation: u64, mode: &str, picked: bool) {
         if self.rust().generation != generation {
@@ -1334,6 +1343,7 @@ impl qobject::Chat {
             messages,
             sampling: None,
             tools: Vec::new(),
+            response_format: None,
         };
         // Saved with the user's message, before the reply's row (empty
         // until its text comes) is there.

@@ -48,6 +48,7 @@ fn main() {
         messages,
         sampling: None,
         tools: Vec::new(),
+        response_format: None,
     };
     let started = std::time::Instant::now();
     let result = llama.complete(&request, &AtomicBool::new(false), &mut |e| match e {

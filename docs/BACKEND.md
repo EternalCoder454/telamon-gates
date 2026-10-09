@@ -283,6 +283,60 @@ The limits:
 (`gguf.rs` reads `tokenizer.chat_template`). For others the window says the
 agent can only talk.
 
+## The Fleet
+
+A fleet (`fleet.rs`) is several agents on one goal, in one workspace folder.
+`fleet::run` blocks, so the app calls it from a worker, and it tells the
+window through the `FleetHost` trait, event by event with the agent's number
+(`planned`, `status`, `step`, `speed`, `line`, `approve`, `judged`).
+
+- **The plan:** the coordinator is the chat model, asked once, with
+  `response_format: {"type": "json_object", "schema": …}` (the schema asks
+  for `{"tasks": [{"title", "instructions"}]}`, 1 to 6 of them), which
+  llama-server turns into a grammar. `Request.response_format` carries it
+  to `/v1/chat/completions`. `parse_plan` still doesn't trust the answer: it
+  takes the JSON out of a fence or a sentence, keeps the first 6 tasks,
+  makes a title one line of 60 characters and instructions 1,500 characters,
+  skips an entry with neither, and fails with a sentence when no task is
+  left. The goal is cut to 4,000 characters.
+- **The agents:** each task is `agent::run` in the same workspace, one after
+  another: the one server has `--parallel 1`, and agents that change the same
+  files shouldn't race. An agent's system prompt is the agent mode's, the
+  workspace, the goal, its own task, and one line from each agent before it
+  (what it reported), so later agents know what is done. A task that fails,
+  or is stopped, doesn't end the others; a server that can't be reached does.
+- **Asking:** each agent's questions come through `FleetHost::approve` with
+  the agent's number. The agents run one at a time, so the page has one
+  question at most. While it waits the agent is "waiting for you".
+- **Stopping:** `Control` stops the whole fleet (the coordinator, the agent
+  under way, those to come) or agent *i* (under way, or skipped if its turn
+  hasn't come); a waiting question is answered no.
+- **Judging:** when an agent ends as done, `Judge::finished` asks SystemOne a
+  `noul` question, "Did this agent complete its task?", about the task and the
+  end of the agent's last reply (`systemone::done_question`, `done_state`).
+  The answer is the probability of yes (`parse_noul`), shown as the card's
+  confidence. With no decision model, or when SystemOne is resting or
+  fails, nothing is shown. A model that ends a turn with "I will now
+  update…" and no tool call counts as done, which is what the question is
+  for.
+- **Its server:** Gates doesn't change `--parallel`: with one slot, a
+  request of the chat or of another fleet waits behind the agent's.
+
+**`examples/fleet-check`** runs a real fleet on the small Python project:
+`cargo run --release -p gates-core --example fleet-check -- <llama-server>
+<models dir>` (a chat model that takes tools, and optionally a decision
+model). Measured 2026-10-09 with Qwen3-4B-Instruct-2507 Q4_K_M and
+Laya-Q8_0 on the RX 7900, for a goal that asks for two tasks:
+
+| Run | Plan | Agents | Total | SystemOne (agent 1, 2) | Done |
+|---|---|---|---|---|---|
+| 1 | 2.3 s | 3 steps each | 7.3 s | 85%, 75% | both edits |
+| 2 | 2.3 s | 3 and 2 steps | 6.2 s | 89%, 49% | code only |
+
+In run 2 the second agent said what it would do and ended its turn without
+the tool call; SystemOne was right to doubt it. The same fleet ran in the
+app, headless, with a click on each Allow: 2 of 2 agents done, 81% and 87%.
+
 **`examples/agent-check`** runs a real model on a small Python project (change
 a greeting, add a run line to the README). Measured 2026-10-09 with
 Qwen3-4B-Instruct-2507 Q4_K_M on the RX 7900, about 170 tokens/s:

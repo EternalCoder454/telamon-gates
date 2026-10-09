@@ -82,6 +82,35 @@ beside it.
   "Read src/greet.py (lines 1–5 of 5)"), which opens to the output. A turn
   that only asked for tools shows nothing of its own, and Copy and
   Regenerate come only under the final answer.
+- **Fleet** (above Models in the sidebar): several agents on one goal, and a
+  page to watch and steer them. Top to bottom:
+  - **Goal:** the title row has Start Fleet (Stop All while a run is under
+    way). The goal card holds a text box and the folder the agents work in,
+    with Choose Folder… (the portal's dialog; the folder is checked like an
+    agent's workspace). While a run is under way the goal is only read,
+    two or three lines.
+  - **Question:** when an agent wants to change something, a card with the
+    agent's name, the text or command as plain text, and Deny, Allow All
+    Edits by This Agent (for edits), and Allow (Run for a command). The
+    agents run one at a time, so there is one question at most.
+  - **Figures:** agents, done of all, tool steps, and tokens per second
+    now, over a progress bar of the agents that have ended.
+  - **Cards:** a grid of one to three columns, one card per agent, in the
+    plan's order. A card has its title, its place ("Agent 2 of 5"), a dot
+    and a badge for its status (Idle, Working, Waiting for You, Done,
+    Failed, Stopped), what it did or said last (two lines at most, a failure
+    in the error colour), a progress bar (sliding while it works), its steps
+    and tokens per second, a Stop button while it can still run, and, once
+    SystemOne has judged it, "SystemOne is 93% sure it finished." A working
+    agent's dot glows and its edge pulses in the accent colour; one that
+    waits for you has the warning colour, a failed one the error colour.
+    Motion stops under reduced motion.
+  - **Empty and planning:** "No Agents Yet" with a line on what to do; a
+    spinner and "Planning" while the coordinator splits the goal.
+  - Every word an agent or the coordinator wrote is shown as plain text, or
+    in a `TelamonCodeView`. Titles come from the model: they are cut to 60
+    characters, one line.
+  - A run isn't saved: closing the window ends it, and the page starts empty.
 - **SystemOne** (in Settings): a switch, on by default; the decision model in
   use (a picker when there are several); one-click Get Laya / Get Kev when
   there's none, with the download's progress. On the Models page, a decision
@@ -104,16 +133,28 @@ beside it.
     `backendName`, `models`, `model`, `systemPrompt`, `count`, `retryable`
     (the last reply failed or never came: Try Again and Regenerate ask for
     one; a good reply is never discarded from the banner).
+  - `Fleet` (`fleet.rs`): properties `goal`, `workspace`, `running`,
+    `planning`, `error`, `demo`, the per-agent lists `titles`, `statuses`,
+    `lines`, `steps`, `speeds` (0 when not known), `confidences` (-1 when not
+    asked), and the question `approving`, `approvalAgent`, `approvalTitle`,
+    `approvalDetail`, `approvalKind`; `start(goal)`, `stop()`, `stopAgent(i)`,
+    `answerApproval(choice)`, `chooseWorkspace(path)`, `dismissError`.
+    `TELAMON_GATES_SEED` (`fleet`, `fleet-working`, `fleet-planning`) fills
+    it with sample agents for `scripts/screens.sh`, and `workspace:<folder>`
+    chooses the folder, to drive a real run headless; nothing else uses it.
   - `Library` (the sidebar's list as lists `ids`, `titles`, `sections`,
     `updates`): `reload`, `setDayStart`, `remove`; `loaded`, `folder`.
   - `Vram`: `available`, `used`, `total` (bytes), `refresh`.
   - `io.rs`: the one file thread; `settings.rs`: the settings file.
 - `cpp/main.cpp` only starts Qt (framework startup, single instance) and
-  hands the two objects to `qml/Main.qml`.
+  hands the objects to `qml/Main.qml`.
 
 ## Threading
 
-The GUI thread never blocks. Every file read and write runs in order on one
+A fleet runs on one worker (`gates_core::fleet::run`); its events come back
+one by one through `qt_thread().queue`, and a question waits there for the
+user's answer (Stop answers it no). It reads the chat's model and SystemOne
+once, at the start, from the Qt thread. The GUI thread never blocks. Every file read and write runs in order on one
 file thread (`Io`), so a conversation is never read before its last save
 lands. Each reply streams on its own worker thread; its text comes back in
 batches every 33 ms through `qt_thread().queue`. Every reply has a
