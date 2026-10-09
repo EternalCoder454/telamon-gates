@@ -260,7 +260,7 @@ TelamonWindow {
                 if (conversation && conversation.conversationId.length > 0) {
                     conversationMenu.conversationId = conversation.conversationId;
                     conversationMenu.conversationTitle = conversation.text;
-                    conversationMenu.popup(sidebar, pos.x, pos.y);
+                    conversationMenu.show(sidebar, pos.x, pos.y);
                 }
             }
 
@@ -356,45 +356,59 @@ TelamonWindow {
                 library: root.library
             }
 
+            // The other pages, one at a time, made when shown and dropped
+            // when left. Loaded by file name, not by type: a type named here
+            // would be loaded with the window, along with everything it
+            // imports (about 15 ms of the start for these four).
             Loader {
+                id: pageLoader
                 anchors.fill: parent
-                active: root.page === "settings"
+                active: false
                 visible: active
-                sourceComponent: SettingsPage {
-                    chat: root.chat
-                    library: root.library
+            }
+        }
+    }
+
+    // The pages' files and what each is given: only the one shown exists.
+    readonly property var lazyPages: ({
+            "settings": {
+                url: "SettingsPage.qml",
+                props: {
+                    chat: root.chat,
+                    library: root.library,
                     models: root.models
                 }
-            }
-
-            Loader {
-                anchors.fill: parent
-                active: root.page === "fleet"
-                visible: active
-                sourceComponent: FleetPage {
-                    fleet: root.fleet
+            },
+            "fleet": {
+                url: "FleetPage.qml",
+                props: {
+                    fleet: root.fleet,
                     chat: root.chat
                 }
-            }
-
-            Loader {
-                anchors.fill: parent
-                active: root.page === "models"
-                visible: active
-                sourceComponent: ModelsPage {
-                    models: root.models
-                    vram: root.vram
-                    chat: root.chat
+            },
+            "models": {
+                url: "ModelsPage.qml",
+                props: {
+                    models: root.models,
+                    vram: root.vram,
+                    chat: root.chat,
                     confirm: root.confirm
                 }
+            },
+            "about": {
+                url: "AboutPage.qml",
+                props: {}
             }
+        })
 
-            Loader {
-                anchors.fill: parent
-                active: root.page === "about"
-                visible: active
-                sourceComponent: AboutPage {}
-            }
+    onPageChanged: {
+        // Off first: a Loader forgets the properties it made its last page
+        // with, so they are given again each time.
+        pageLoader.active = false;
+        const lazy = root.lazyPages[root.page];
+        if (lazy) {
+            pageLoader.setSource(lazy.url, lazy.props);
+            pageLoader.active = true;
         }
     }
 
@@ -406,16 +420,26 @@ TelamonWindow {
         }
     }
 
-    ContextMenu {
+    // The conversations' menu, made the first time it is asked for.
+    Loader {
         id: conversationMenu
         property string conversationId
         property string conversationTitle
 
-        ContextMenuItem {
-            text: qsTr("Delete…")
-            symbol: Symbols.Delete
-            destructive: true
-            onTriggered: root.confirmDelete(conversationMenu.conversationId, conversationMenu.conversationTitle)
+        active: false
+
+        function show(parentItem, x, y) {
+            conversationMenu.active = true;
+            conversationMenu.item.popup(parentItem, x, y);
+        }
+
+        sourceComponent: ContextMenu {
+            ContextMenuItem {
+                text: qsTr("Delete…")
+                symbol: Symbols.Delete
+                destructive: true
+                onTriggered: root.confirmDelete(conversationMenu.conversationId, conversationMenu.conversationTitle)
+            }
         }
     }
 

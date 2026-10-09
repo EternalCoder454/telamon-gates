@@ -2,7 +2,6 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls as QQC2
-import QtQuick.Dialogs
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import Telamon.Ui
@@ -74,6 +73,21 @@ Item {
         composer.focusInput();
     }
 
+    // The save dialog is made the first time it is needed (ExportDialog.qml).
+    Loader {
+        id: saverLoader
+    }
+
+    function exportAs(format) {
+        if (!saverLoader.item) {
+            saverLoader.setSource("ExportDialog.qml", {
+                chat: view.chat
+            });
+        }
+        saverLoader.item.format = format;
+        saverLoader.item.open();
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -108,42 +122,35 @@ Item {
                 symbol: Symbols.Download
                 text: qsTr("Export…")
                 focusable: true
-                onClicked: exportMenu.popup()
+                onClicked: exportMenu.show()
 
-                ContextMenu {
+                // Made the first time it is opened.
+                Loader {
                     id: exportMenu
-                    ContextMenuItem {
-                        text: qsTr("Markdown…")
-                        onTriggered: {
-                            saver.format = "markdown";
-                            saver.open();
-                        }
+                    active: false
+
+                    function show() {
+                        exportMenu.active = true;
+                        exportMenu.item.popup();
                     }
-                    ContextMenuItem {
-                        text: qsTr("JSON…")
-                        onTriggered: {
-                            saver.format = "json";
-                            saver.open();
+
+                    sourceComponent: ContextMenu {
+                        ContextMenuItem {
+                            text: qsTr("Markdown…")
+                            onTriggered: view.exportAs("markdown")
+                        }
+                        ContextMenuItem {
+                            text: qsTr("JSON…")
+                            onTriggered: view.exportAs("json")
                         }
                     }
                 }
             }
         }
 
-        FileDialog {
-            id: saver
-            property string format: "markdown"
-            fileMode: FileDialog.SaveFile
-            title: qsTr("Export Conversation")
-            nameFilters: saver.format === "json" ? [qsTr("JSON (*.json)")] : [qsTr("Markdown (*.md)")]
-            defaultSuffix: saver.format === "json" ? "json" : "md"
-            selectedFile: "file:///" + encodeURIComponent((view.chat.title.length > 0 ? view.chat.title : qsTr("Conversation")).replace(/[\/:*?"<>|]/g, "-")) + (saver.format === "json" ? ".json" : ".md")
-            onAccepted: view.chat.exportTo(decodeURIComponent(selectedFile.toString().replace(/^file:\/\//, "")), saver.format)
-        }
-
         // Conversation files that couldn't be read, or came from a newer
         // Gates: what was done with them, said once.
-        InfoBanner {
+        LazyBanner {
             Layout.fillWidth: true
             Layout.maximumWidth: view.columnWidth
             Layout.alignment: Qt.AlignHCenter
@@ -163,7 +170,7 @@ Item {
 
         // The first-run check (off the window's thread) found no model
         // server: say so, and what to do. The demo keeps answering.
-        InfoBanner {
+        LazyBanner {
             Layout.fillWidth: true
             Layout.maximumWidth: view.columnWidth
             Layout.alignment: Qt.AlignHCenter
@@ -175,7 +182,7 @@ Item {
 
         // The server is there, but there is no graphics device for it: it
         // would run on the processor.
-        InfoBanner {
+        LazyBanner {
             Layout.fillWidth: true
             Layout.maximumWidth: view.columnWidth
             Layout.alignment: Qt.AlignHCenter
@@ -186,7 +193,7 @@ Item {
         }
 
         // The model server is there, but no model yet.
-        InfoBanner {
+        LazyBanner {
             Layout.fillWidth: true
             Layout.maximumWidth: view.columnWidth
             Layout.alignment: Qt.AlignHCenter
@@ -213,7 +220,7 @@ Item {
 
         // What the model server changed to load the model (a smaller context
         // when the graphics card's memory was short). Plain text.
-        InfoBanner {
+        LazyBanner {
             Layout.fillWidth: true
             Layout.maximumWidth: view.columnWidth
             Layout.alignment: Qt.AlignHCenter
@@ -225,7 +232,7 @@ Item {
             onClosed: view.chat.dismissNotice()
         }
 
-        InfoBanner {
+        LazyBanner {
             Layout.fillWidth: true
             Layout.maximumWidth: view.columnWidth
             Layout.alignment: Qt.AlignHCenter
@@ -429,12 +436,37 @@ Item {
             }
         }
 
-        AgentPanel {
-            visible: view.chat.mode === "agent"
+        // Agent mode's panel, made the first time that mode is picked (a
+        // session that never does would pay about 8 ms of start-up for it)
+        // and kept after that.
+        Loader {
+            id: agentPanel
+            visible: view.chat.mode === "agent" && agentPanel.item !== null
             Layout.fillWidth: true
             Layout.maximumWidth: view.columnWidth
             Layout.alignment: Qt.AlignHCenter
-            chat: view.chat
+
+            function make() {
+                if (!agentPanel.item) {
+                    agentPanel.setSource("AgentPanel.qml", {
+                        chat: view.chat
+                    });
+                }
+            }
+            Component.onCompleted: {
+                if (view.chat.mode === "agent") {
+                    agentPanel.make();
+                }
+            }
+
+            Connections {
+                target: view.chat
+                function onModeChanged() {
+                    if (view.chat.mode === "agent") {
+                        agentPanel.make();
+                    }
+                }
+            }
         }
 
         Composer {

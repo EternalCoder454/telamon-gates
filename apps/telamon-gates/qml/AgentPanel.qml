@@ -1,7 +1,6 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Dialogs
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import Telamon.Ui
@@ -115,7 +114,7 @@ ColumnLayout {
             visible: !panel.chat.sandboxed
             text: qsTr("Change…")
             enabled: !panel.chat.generating
-            onClicked: picker.open()
+            onClicked: panel.pickFolder()
         }
         SecondaryButton {
             visible: !panel.chat.sandboxed
@@ -140,12 +139,22 @@ ColumnLayout {
         title: qsTr("Let the Agent Into a Folder?")
         text: qsTr("The agent can read everything in the folder you choose, and changes files there or runs commands only after you allow it. Commands still run in a sandbox.")
         acceptText: qsTr("Choose Folder…")
-        onAccepted: picker.open()
+        onAccepted: panel.pickFolder()
     }
 
-    FolderDialog {
-        id: picker
-        title: qsTr("Folder for the Agent")
-        onAccepted: panel.chat.chooseWorkspace(decodeURIComponent(selectedFolder.toString().replace(/^file:\/\//, "")))
+    // The folder dialog is made the first time it is needed
+    // (AgentFolderDialog.qml).
+    Loader {
+        id: pickerLoader
+        visible: false
+    }
+
+    function pickFolder() {
+        if (!pickerLoader.item) {
+            pickerLoader.setSource("AgentFolderDialog.qml", {
+                chat: panel.chat
+            });
+        }
+        pickerLoader.item.open();
     }
 }
