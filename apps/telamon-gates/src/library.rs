@@ -28,6 +28,14 @@ pub mod qobject {
         #[qproperty(bool, loaded)]
         /// Where the conversations are kept, for Settings.
         #[qproperty(QString, folder)]
+        /// Where the app's log is kept, for Settings.
+        #[qproperty(QString, log_folder, cxx_name = "logFolder")]
+        /// What reading the conversations put right (a file set aside, a
+        /// backup used, one left alone), in words for a banner; empty when
+        /// there is nothing to say or it was closed.
+        #[qproperty(QString, notice)]
+        /// The folder the notice's Open Folder opens.
+        #[qproperty(QString, notice_folder, cxx_name = "noticeFolder")]
         #[namespace = "telamon_gates"]
         type Library = super::LibraryRust;
     }
@@ -47,6 +55,11 @@ pub mod qobject {
         /// leaves it if it is open.
         #[qinvokable]
         fn remove(self: Pin<&mut Library>, id: &QString);
+
+        /// Closes the notice.
+        #[qinvokable]
+        #[cxx_name = "dismissNotice"]
+        fn dismiss_notice(self: Pin<&mut Library>);
     }
 
     impl cxx_qt::Threading for Library {}
@@ -65,7 +78,7 @@ use crate::io::Io;
 use core::pin::Pin;
 use cxx_qt::{CxxQtThread, CxxQtType, Threading};
 use cxx_qt_lib::{QList, QString, QStringList};
-use gates_core::Summary;
+use gates_core::{Report, Summary, store::DAMAGED_DIR};
 
 const DAY_MS: i64 = 86_400_000;
 
@@ -77,7 +90,12 @@ pub struct LibraryRust {
     updates: QList<f64>,
     loaded: bool,
     folder: QString,
+    log_folder: QString,
+    notice: QString,
+    notice_folder: QString,
 
+    /// Everything found wrong so far this run (the notice's source).
+    report: Report,
     rows: Vec<Summary>,
     day_start: i64,
     pub io: Option<Io>,
@@ -116,13 +134,41 @@ impl qobject::Library {
         };
         let qt = self.qt_thread();
         io.run(move |store| {
-            let list = store.list();
+            let listing = store.scan();
             let _ = qt.queue(move |mut lib| {
-                lib.as_mut().rust_mut().rows = list;
+                lib.as_mut().rust_mut().rows = listing.conversations;
                 lib.as_mut().publish();
+                lib.as_mut().note(&listing.report);
                 lib.set_loaded(true);
             });
         });
+    }
+
+    /// Something was found wrong on disk and put right (or left alone): the
+    /// banner says what, once. Counts add up across reads.
+    pub fn note(mut self: Pin<&mut Self>, found: &Report) {
+        if found.is_empty() {
+            return;
+        }
+        self.as_mut().rust_mut().report.merge(found);
+        let folder = std::path::PathBuf::from(self.folder().to_string());
+        let damaged = folder.join(DAMAGED_DIR);
+        let report = self.rust().report.clone();
+        let text = report.describe(&damaged);
+        // Open Folder shows the files set aside, else the conversations.
+        let open = if report.set_aside > 0 {
+            damaged
+        } else {
+            folder
+        };
+        self.as_mut().set_notice(QString::from(text.as_str()));
+        self.set_notice_folder(QString::from(open.to_string_lossy().as_ref()));
+    }
+
+    pub fn dismiss_notice(mut self: Pin<&mut Self>) {
+        // What was said is said: only something new brings it back.
+        self.as_mut().rust_mut().report = Report::default();
+        self.set_notice(QString::default());
     }
 
     pub fn set_day_start(mut self: Pin<&mut Self>, ms: f64) {

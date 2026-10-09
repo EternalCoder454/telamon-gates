@@ -353,6 +353,7 @@ TelamonWindow {
                 anchors.fill: parent
                 visible: root.page === "chat"
                 chat: root.chat
+                library: root.library
             }
 
             Loader {

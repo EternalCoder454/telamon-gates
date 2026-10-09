@@ -119,8 +119,21 @@ impl Message {
     }
 }
 
+/// The conversation file format this build reads and writes. A file without
+/// a `version` is version 1 (the format before the field was added). A file
+/// with a higher version was written by a newer Gates: it is never
+/// overwritten (see `store.rs`).
+pub const VERSION: u32 = 1;
+
+fn first_version() -> u32 {
+    1
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Conversation {
+    /// The file format; always `VERSION` when written.
+    #[serde(default = "first_version")]
+    pub version: u32,
     pub id: String,
     pub title: String,
     /// Milliseconds since the Unix epoch.
@@ -159,6 +172,7 @@ impl Conversation {
     pub fn new(first_message: &str) -> Conversation {
         let now = now_ms();
         Conversation {
+            version: VERSION,
             id: new_id(now),
             title: title_from(first_message),
             created: now,
@@ -188,6 +202,7 @@ impl Conversation {
         let now = now_ms();
         let end = (upto + 1).min(self.messages.len());
         Conversation {
+            version: VERSION,
             id: new_id(now),
             title: format!("{} (branch)", self.title.trim_end_matches(" (branch)")),
             created: now,
@@ -225,6 +240,42 @@ pub fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0)
+}
+
+/// A moment in UTC, broken down (for file names and the log).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Utc {
+    pub year: i64,
+    pub month: u32,
+    pub day: u32,
+    pub hour: u32,
+    pub minute: u32,
+    pub second: u32,
+}
+
+/// `ms` (milliseconds since the Unix epoch) as a date and time in UTC.
+pub fn utc(ms: i64) -> Utc {
+    let secs = ms.div_euclid(1000);
+    let days = secs.div_euclid(86_400);
+    let rest = secs.rem_euclid(86_400);
+    // Days since 0000-03-01, then the civil date (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    Utc {
+        year,
+        month,
+        day,
+        hour: (rest / 3600) as u32,
+        minute: (rest % 3600 / 60) as u32,
+        second: (rest % 60) as u32,
+    }
 }
 
 /// Unique in this process and sortable by time: the time in milliseconds,
@@ -302,6 +353,34 @@ mod tests {
         });
         let back: Conversation = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    fn utc_dates() {
+        let at = |ms| {
+            let t = utc(ms);
+            (t.year, t.month, t.day, t.hour, t.minute, t.second)
+        };
+        assert_eq!(at(0), (1970, 1, 1, 0, 0, 0));
+        assert_eq!(at(951_782_400_000), (2000, 2, 29, 0, 0, 0));
+        assert_eq!(at(1_791_559_872_000), (2026, 10, 9, 15, 31, 12));
+        assert_eq!(at(-1000), (1969, 12, 31, 23, 59, 59));
+    }
+
+    #[test]
+    fn files_without_a_version_are_version_1() {
+        let old = r#"{"id":"1-0","title":"t","created":1,"updated":1,"messages":[]}"#;
+        let c: Conversation = serde_json::from_str(old).unwrap();
+        assert_eq!(c.version, 1);
+        // New conversations carry the current one, and it is in the file.
+        let new = Conversation::new("x");
+        assert_eq!(new.version, VERSION);
+        assert!(
+            serde_json::to_string(&new)
+                .unwrap()
+                .starts_with(r#"{"version":1,"#)
+        );
+        assert_eq!(new.branch(0).version, VERSION);
     }
 
     #[test]

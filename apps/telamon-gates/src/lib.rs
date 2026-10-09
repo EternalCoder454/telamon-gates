@@ -95,6 +95,9 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
     library
         .pin_mut()
         .set_folder(cxx_qt_lib::QString::from(folder.as_str()));
+    library.pin_mut().set_log_folder(cxx_qt_lib::QString::from(
+        gates_core::store::state_dir().to_string_lossy().as_ref(),
+    ));
     {
         let mut rust = chat.pin_mut().rust_mut();
         rust.io = Some(io);

@@ -496,6 +496,27 @@ TelamonPage {
         }
     }
 
+    Section {
+        title: qsTr("Troubleshooting")
+
+        SectionRow {
+            title: qsTr("Logs")
+            subtitle: page.library.logFolder
+            leading: [
+                Symbol {
+                    icon: Symbols.Description
+                    color: TelamonStyle.accent
+                }
+            ]
+
+            SecondaryButton {
+                text: qsTr("Open Log Folder")
+                symbol: Symbols.FolderOpen
+                onClicked: Qt.openUrlExternally(page.folderUrl(page.library.logFolder))
+            }
+        }
+    }
+
     Component.onDestruction: {
         if (saveLater.running) {
             page.chat.saveSystemPrompt(prompt.text);

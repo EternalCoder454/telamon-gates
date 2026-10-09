@@ -23,4 +23,4 @@ pub mod vram;
 
 pub use backend::{Backend, BackendError, Event, Options, Request};
 pub use conversation::{Conversation, Message, Role, Summary};
-pub use store::Store;
+pub use store::{Report, Store};

@@ -745,8 +745,15 @@ impl qobject::Chat {
         let id = id.to_string();
         let qt = self.qt_thread();
         io.run(move |store| {
-            let result = store.load(&id);
+            let (result, report) = store.load_reporting(&id);
             let _ = qt.queue(move |mut chat| {
+                // A file set aside or restored on the way is said once, in
+                // the banner, even if the user has moved on.
+                if !report.is_empty()
+                    && let Some(library) = &chat.rust().library
+                {
+                    let _ = library.queue(move |lib| lib.note(&report));
+                }
                 if chat.rust().opening != opening {
                     return;
                 }
