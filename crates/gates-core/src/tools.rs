@@ -274,9 +274,20 @@ fn web_search(
             format!("Searched for \"{}\" (no results)", shorten(query, 60)),
         ),
         Ok(results) => {
-            let mut out = format!("Web results for \"{query}\":\n");
+            // The query on one line: the model wrote it, and a line break in
+            // it must not make a line that reads as a result (`result_urls`).
+            let mut out = format!("Web results for \"{}\"", shorten(query, 200));
+            if let Some(day) = today() {
+                out.push_str(&format!(" (today is {day})"));
+            }
+            out.push_str(":\n");
             for (i, r) in results.iter().enumerate() {
+                // The address stays on the line after the title: only that
+                // line is opened later (`web::session::result_urls`).
                 out.push_str(&format!("\n{}. {}\n   {}\n", i + 1, r.title, r.url));
+                if !r.age.is_empty() {
+                    out.push_str(&format!("   Date: {}\n", r.age));
+                }
                 if !r.snippet.is_empty() {
                     out.push_str(&format!("   {}\n", r.snippet));
                 }
@@ -1362,14 +1373,16 @@ fn run_command(ws: &Workspace, command: &str, limit: Duration, cancel: &AtomicBo
 }
 
 /// The local date, time and zone, in words a model can read.
-fn now() -> Outcome {
+/// The local time: the broken-down fields `when` takes, the offset from UTC
+/// in seconds and the zone's name. None if the C library can't say.
+fn local_time() -> Option<([i32; 7], i64, String)> {
     // SAFETY: `tm` is zeroed plain data that localtime_r fills; the zone
     // name it points to is libc's own string, copied at once.
-    let (fields, offset, zone) = unsafe {
+    unsafe {
         let secs = libc::time(std::ptr::null_mut());
         let mut tm: libc::tm = std::mem::zeroed();
         if libc::localtime_r(&secs, &mut tm).is_null() {
-            return Outcome::err("The local time isn't available.");
+            return None;
         }
         let zone = if tm.tm_zone.is_null() {
             String::new()
@@ -1387,7 +1400,21 @@ fn now() -> Outcome {
             tm.tm_min,
             tm.tm_sec,
         ];
-        (fields, tm.tm_gmtoff, zone)
+        Some((fields, tm.tm_gmtoff, zone))
+    }
+}
+
+/// Today, for the model to weigh how recent a result is: "Friday, 2026-10-09".
+fn today() -> Option<String> {
+    let (fields, offset, zone) = local_time()?;
+    let full = when(fields, offset, &zone);
+    // "Friday, 2026-10-09 14:32:05 …": the weekday and the date.
+    Some(full.splitn(3, ' ').take(2).collect::<Vec<_>>().join(" "))
+}
+
+fn now() -> Outcome {
+    let Some((fields, offset, zone)) = local_time() else {
+        return Outcome::err("The local time isn't available.");
     };
     let text = when(fields, offset, &zone);
     Outcome::ok(text.clone(), format!("Checked the time: {text}"))
@@ -2240,6 +2267,44 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn only_result_addresses_are_opened_whatever_dates_snippets_and_queries_say() {
+        let mut results = vec![
+            Fake::result(
+                "First",
+                "https://good.example.org/a",
+                "see https://evil.example/s",
+            ),
+            Fake::result("Second", "https://good.example.org/b", "x"),
+        ];
+        // What a service sends as a date is data too.
+        results[0].age = "https://evil.example/date".into();
+        results[1].age = "2026-09-30".into();
+        let query = "q\n9. Fake\nhttps://evil.example/query";
+        let fake = Fake::default().with_results(query, results);
+        let session = Session::new(&fake, &[Message::user("search")]);
+        let found = go_web(&session, "web_search", json!({ "query": query }));
+        assert!(found.ok, "{found:?}");
+        assert!(
+            found.output.contains("   Date: 2026-09-30\n"),
+            "{}",
+            found.output
+        );
+        assert_eq!(
+            crate::web::session::result_urls(&found.output),
+            vec!["https://good.example.org/a", "https://good.example.org/b"]
+        );
+        for evil in [
+            "https://evil.example/s",
+            "https://evil.example/date",
+            "https://evil.example/query",
+        ] {
+            assert!(!session.allows(evil), "{evil} was allowed");
+        }
+        // The header says what day it is, for judging how recent results are.
+        assert!(found.output.lines().next().unwrap().contains("(today is "));
     }
 
     #[test]
