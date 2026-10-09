@@ -58,6 +58,10 @@ pub mod qobject {
         #[qproperty(i32, active_context, cxx_name = "activeContext")]
         /// The open conversation's mode choice: "auto" or a mode's id.
         #[qproperty(QString, mode)]
+        /// Files to go with the next message: their names, and for a
+        /// picture where Gates keeps it ("" for text).
+        #[qproperty(QStringList, pending_names, cxx_name = "pendingNames")]
+        #[qproperty(QStringList, pending_images, cxx_name = "pendingImages")]
         /// Every mode, in order: the built-ins, then the user's own. Their
         /// ids, names, prompts and temperatures (-1: the model's own).
         #[qproperty(QStringList, mode_ids, cxx_name = "modeIds")]
@@ -177,6 +181,15 @@ pub mod qobject {
         #[cxx_name = "deleteMode"]
         fn delete_mode(self: Pin<&mut Chat>, id: &QString);
 
+        /// Reads files to send with the next message (on a worker).
+        #[qinvokable]
+        #[cxx_name = "attachFiles"]
+        fn attach_files(self: Pin<&mut Chat>, paths: &QStringList);
+
+        #[qinvokable]
+        #[cxx_name = "removeAttachment"]
+        fn remove_attachment(self: Pin<&mut Chat>, index: i32);
+
         #[qinvokable]
         #[cxx_name = "enableSystemOne"]
         fn enable_system_one(self: Pin<&mut Chat>, on: bool);
@@ -274,7 +287,7 @@ use std::time::{Duration, Instant};
 const BATCH: Duration = Duration::from_millis(33);
 
 const FIRST_ROLE: i32 = 0x0100; // Qt::UserRole
-const ROLES: [&str; 12] = [
+const ROLES: [&str; 14] = [
     "role",      // "user" or "assistant"
     "text",      // the message as written (Markdown for a reply)
     "kinds",     // each block's kind: "prose" or "code"
@@ -287,6 +300,8 @@ const ROLES: [&str; 12] = [
     "picked",    // SystemOne picked that mode
     "summary",   // a tool result in one line ("Read src/main.rs")
     "hasCalls",  // a reply that asked for tools (Agent mode)
+    "files",     // the names of files sent with your message
+    "images",    // where Gates keeps its pictures ("" for a text file)
 ];
 
 /// A message as the view shows it, made once per change.
@@ -342,6 +357,10 @@ pub struct ChatRust {
     models_folder: QString,
     active_context: i32,
     mode: QString,
+    pending_names: QStringList,
+    pending_images: QStringList,
+    /// The files read for the next message.
+    pending: Vec<gates_core::conversation::Attachment>,
     mode_ids: QStringList,
     mode_names: QStringList,
     mode_prompts: QStringList,
@@ -644,11 +663,22 @@ impl qobject::Chat {
     pub fn send(mut self: Pin<&mut Self>, text: &QString) -> bool {
         let text = text.to_string();
         let text = text.trim();
-        if text.is_empty() || *self.generating() || *self.loading() {
+        let files = !self.rust().pending.is_empty();
+        if (text.is_empty() && !files) || *self.generating() || *self.loading() {
             return false;
         }
+        let title = if text.is_empty() {
+            self.rust()
+                .pending
+                .first()
+                .map(|a| a.name.clone())
+                .unwrap_or_default()
+        } else {
+            text.to_string()
+        };
+        let text = text.to_string();
         if self.rust().conversation.is_none() {
-            let mut c = Conversation::new(text);
+            let mut c = Conversation::new(&title);
             // The mode and folder chosen before the first message.
             c.mode = self.mode().to_string();
             let workspace = self.workspace().to_string();
@@ -662,9 +692,69 @@ impl qobject::Chat {
         if let Some(c) = self.as_mut().rust_mut().conversation.as_mut() {
             c.touch();
         }
-        self.as_mut().push(Message::user(text));
+        let attachments = std::mem::take(&mut self.as_mut().rust_mut().pending);
+        self.as_mut().show_pending();
+        self.as_mut().push(Message {
+            attachments,
+            ..Message::user(text)
+        });
         self.ask();
         true
+    }
+
+    pub fn attach_files(self: Pin<&mut Self>, paths: &QStringList) {
+        let room = gates_core::attach::MAX_FILES.saturating_sub(self.rust().pending.len());
+        let paths: Vec<PathBuf> = paths
+            .iter()
+            .take(room)
+            .map(|p| PathBuf::from(p.to_string()))
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let store = gates_core::store::attachments_dir();
+            let read: Vec<_> = paths
+                .iter()
+                .map(|p| gates_core::attach::read(p, &store))
+                .collect();
+            let _ = qt.queue(move |mut chat| {
+                let mut errors = Vec::new();
+                for r in read {
+                    match r {
+                        Ok(a) if chat.rust().pending.len() < gates_core::attach::MAX_FILES => {
+                            chat.as_mut().rust_mut().pending.push(a);
+                        }
+                        Ok(_) => {}
+                        Err(e) => errors.push(e),
+                    }
+                }
+                chat.as_mut().show_pending();
+                if !errors.is_empty() {
+                    chat.set_error(QString::from(errors.join(" ").as_str()));
+                }
+            });
+        });
+    }
+
+    pub fn remove_attachment(mut self: Pin<&mut Self>, index: i32) {
+        if let Ok(i) = usize::try_from(index)
+            && i < self.rust().pending.len()
+        {
+            self.as_mut().rust_mut().pending.remove(i);
+            self.show_pending();
+        }
+    }
+
+    fn show_pending(mut self: Pin<&mut Self>) {
+        let (mut names, mut images) = (QStringList::default(), QStringList::default());
+        for a in &self.rust().pending {
+            names.append(QString::from(a.name.as_str()));
+            images.append(QString::from(a.image.as_deref().unwrap_or("")));
+        }
+        self.as_mut().set_pending_names(names);
+        self.set_pending_images(images);
     }
 
     pub fn stop(mut self: Pin<&mut Self>) {
@@ -747,6 +837,14 @@ impl qobject::Chat {
         if !mine {
             return;
         }
+        // The files sent with it stay with it.
+        let attachments = self
+            .rust()
+            .conversation
+            .as_ref()
+            .and_then(|c| c.messages.get(row))
+            .map(|m| m.attachments.clone())
+            .unwrap_or_default();
         while self.rust().rows.len() > row {
             self.as_mut().pop();
         }
@@ -754,7 +852,10 @@ impl qobject::Chat {
         if let Some(c) = self.as_mut().rust_mut().conversation.as_mut() {
             c.touch();
         }
-        self.as_mut().push(Message::user(text));
+        self.as_mut().push(Message {
+            attachments,
+            ..Message::user(text)
+        });
         self.ask();
     }
 
@@ -1242,6 +1343,20 @@ impl qobject::Chat {
             9 => QVariant::from(&message.picked),
             10 => QVariant::from(&QString::from(message.summary.as_deref().unwrap_or(""))),
             11 => QVariant::from(&!message.tool_calls.is_empty()),
+            12 => {
+                let mut names = QStringList::default();
+                for a in &message.attachments {
+                    names.append(QString::from(a.name.as_str()));
+                }
+                QVariant::from(&names)
+            }
+            13 => {
+                let mut images = QStringList::default();
+                for a in &message.attachments {
+                    images.append(QString::from(a.image.as_deref().unwrap_or("")));
+                }
+                QVariant::from(&images)
+            }
             _ => QVariant::default(),
         }
     }

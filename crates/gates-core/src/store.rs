@@ -104,6 +104,11 @@ impl Store {
     }
 }
 
+/// Where pictures sent with messages are kept.
+pub fn attachments_dir() -> PathBuf {
+    data_dir().join("attachments")
+}
+
 /// `$XDG_DATA_HOME/telamon-gates` (`~/.local/share/telamon-gates`): the
 /// conversations and the models.
 pub fn data_dir() -> PathBuf {

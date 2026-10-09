@@ -24,6 +24,19 @@ impl Role {
     }
 }
 
+/// A file sent with a message: a text file's text, or a picture kept in
+/// Gates' own folder (`attach.rs`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    /// The file's name, as the user had it.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Where Gates keeps the picture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+}
+
 /// A tool the model asked to run (Agent mode).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -60,6 +73,9 @@ pub struct Message {
     /// lines)"); `text` is what the model got. `failed` when it didn't work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Files sent with your message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
 }
 
 impl Message {
@@ -74,6 +90,7 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: None,
             summary: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -88,6 +105,7 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: None,
             summary: None,
+            attachments: Vec::new(),
         }
     }
 

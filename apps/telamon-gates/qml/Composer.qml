@@ -1,5 +1,8 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Controls as QQC2
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import Telamon.Ui
@@ -29,6 +32,27 @@ ColumnLayout {
     }
 
     spacing: Kirigami.Units.smallSpacing
+
+    // Files to go with the next message, each removable.
+    Flow {
+        Layout.fillWidth: true
+        visible: composer.chat.pendingNames.length > 0
+        spacing: TelamonStyle.spacingSmall
+
+        Repeater {
+            model: composer.chat.pendingNames
+
+            TelamonChip {
+                required property int index
+                required property string modelData
+                text: modelData
+                symbol: (composer.chat.pendingImages[index] ?? "").length > 0 ? Symbols.Image : Symbols.Description
+                maximumWidth: Kirigami.Units.gridUnit * 14
+                closable: true
+                onCloseRequested: composer.chat.removeAttachment(index)
+            }
+        }
+    }
 
     Rectangle {
         id: field
@@ -107,7 +131,7 @@ ColumnLayout {
             id: action
 
             readonly property bool stopping: composer.chat.generating
-            readonly property bool ready: input.text.trim().length > 0 && !composer.chat.loading
+            readonly property bool ready: (input.text.trim().length > 0 || composer.chat.pendingNames.length > 0) && !composer.chat.loading
 
             anchors.right: parent.right
             anchors.bottom: parent.bottom
@@ -214,6 +238,14 @@ ColumnLayout {
             Accessible.name: qsTr("Mode")
         }
 
+        // Files and pictures to send with the message.
+        ToolbarButton {
+            symbol: Symbols.AttachFile
+            text: qsTr("Attach Files…")
+            focusable: true
+            onClicked: picker.open()
+        }
+
         // The user's own modes (Settings), after the built-in four.
         TelamonComboBox {
             id: mine
@@ -268,5 +300,13 @@ ColumnLayout {
                 }
             }
         }
+    }
+
+    FileDialog {
+        id: picker
+        title: qsTr("Attach Files")
+        fileMode: FileDialog.OpenFiles
+        nameFilters: [qsTr("Text and pictures (*.txt *.md *.rs *.py *.js *.ts *.qml *.c *.cpp *.h *.json *.toml *.yaml *.yml *.csv *.log *.sh *.html *.css *.png *.jpg *.jpeg *.gif *.webp *.bmp)"), qsTr("All files (*)")]
+        onAccepted: composer.chat.attachFiles(selectedFiles.map(u => decodeURIComponent(u.toString().replace(/^file:\/\//, ""))))
     }
 }

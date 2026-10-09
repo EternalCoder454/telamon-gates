@@ -4,6 +4,7 @@
 //! (`apps/telamon-gates`) only moves these to and from QML.
 
 pub mod agent;
+pub mod attach;
 pub mod backend;
 pub mod conversation;
 pub mod export;

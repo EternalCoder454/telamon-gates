@@ -536,8 +536,25 @@ pub fn request_body(request: &Request) -> Value {
     if !request.system_prompt.trim().is_empty() {
         messages.push(json!({"role": "system", "content": request.system_prompt}));
     }
+    let store = crate::store::attachments_dir();
     for m in &request.messages {
         let mut message = json!({"role": m.role.as_str(), "content": m.text});
+        if !m.attachments.is_empty() {
+            // Your text with each text file; pictures as parts beside it.
+            let text = crate::attach::text_for_model(&m.text, &m.attachments);
+            let images = crate::attach::image_urls(&m.attachments, &store);
+            message["content"] = if images.is_empty() {
+                json!(text)
+            } else {
+                let mut parts = vec![json!({"type": "text", "text": text})];
+                parts.extend(
+                    images
+                        .into_iter()
+                        .map(|url| json!({"type": "image_url", "image_url": {"url": url}})),
+                );
+                json!(parts)
+            };
+        }
         if !m.tool_calls.is_empty() {
             message["tool_calls"] = m
                 .tool_calls

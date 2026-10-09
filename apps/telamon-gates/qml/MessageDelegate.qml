@@ -30,6 +30,9 @@ Item {
     // that asked for tools.
     required property string summary
     required property bool hasCalls
+    // Files sent with your message, and where its pictures are kept.
+    required property list<string> files
+    required property list<string> images
 
     required property var chat
     required property real columnWidth
@@ -217,6 +220,49 @@ Item {
                     font: Kirigami.Theme.defaultFont
                     Accessible.role: Accessible.StaticText
                     Accessible.name: qsTr("You: %1").arg(message.text)
+                }
+            }
+        }
+
+        // The files sent with your message: pictures small, text by name.
+        Flow {
+            visible: message.mine && message.files.length > 0 && !message.editing
+            Layout.alignment: Qt.AlignRight
+            Layout.maximumWidth: column.width * 0.75
+            spacing: TelamonStyle.spacingSmall
+            layoutDirection: Qt.RightToLeft
+
+            Repeater {
+                model: message.mine ? message.files : []
+
+                Item {
+                    id: file
+                    required property int index
+                    required property string modelData
+                    readonly property string picture: message.images[index] ?? ""
+                    implicitWidth: file.picture.length > 0 ? thumb.width : chip.implicitWidth
+                    implicitHeight: file.picture.length > 0 ? thumb.height : chip.implicitHeight
+
+                    Image {
+                        id: thumb
+                        visible: file.picture.length > 0
+                        width: Kirigami.Units.gridUnit * 6
+                        height: Kirigami.Units.gridUnit * 6
+                        fillMode: Image.PreserveAspectCrop
+                        asynchronous: true
+                        sourceSize.width: width * 2
+                        sourceSize.height: height * 2
+                        // Gates' own copy, from its own folder.
+                        source: file.picture.length > 0 ? "file://" + file.picture : ""
+                        Accessible.name: file.modelData
+                    }
+                    TelamonChip {
+                        id: chip
+                        visible: file.picture.length === 0
+                        text: file.modelData
+                        symbol: Symbols.Description
+                        maximumWidth: Kirigami.Units.gridUnit * 14
+                    }
                 }
             }
         }

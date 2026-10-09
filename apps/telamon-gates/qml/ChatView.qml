@@ -373,4 +373,14 @@ Item {
             }
         }
     }
+
+    // Files dropped on the chat go with the next message.
+    DropArea {
+        anchors.fill: parent
+        keys: ["text/uri-list"]
+        onDropped: drop => {
+            view.chat.attachFiles(drop.urls.map(u => decodeURIComponent(u.toString().replace(/^file:\/\//, ""))));
+            drop.accept();
+        }
+    }
 }

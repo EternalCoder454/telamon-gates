@@ -44,6 +44,13 @@ seed_all() {
     seed "$dir" 000000000001-0000 "Show me what a reply can look like" 1 <<'EOF'
 [{"role":"user","text":"Show me what a reply can look like"},{"role":"assistant","speed":38.6,"text":"## Getting started\n\nHere is a short tour with **bold**, *italic*, `inline code` and a [link](https://example.com).\n\n1. Install the toolchain:\n\n   ```sh\n   dnf install cargo\n   ```\n\n2. Create a project\n3. Run it\n\n> Tip: run `cargo clippy` before every commit.\n\n| Command | What it does |\n|---|---|\n| `cargo build` | Compiles |\n| `cargo test` | Runs the tests |\n\n```rust\nfn main() {\n    let names = [\"Ada\", \"Grace\"];\n    for name in names {\n        println!(\"Hello, {name}!\");\n    }\n}\n```\n\nThat is all there is to it."}]
 EOF
+    # A message with a picture (kept in Gates' attachments folder) and a file.
+    local pics=$XDG_DATA_HOME/telamon-gates/attachments
+    mkdir -p "$pics"
+    magick -size 480x320 gradient:'#8a7af4'-'#f4a7c4' "$pics/0000000000000000000000aa.png"
+    seed "$dir" 000000000008-0000 "What is in this picture" 2 <<EOF
+[{"role":"user","text":"What is in this picture, and does the notes file match it?","attachments":[{"name":"sunset.png","image":"$pics/0000000000000000000000aa.png"},{"name":"notes.md","text":"# Notes"}]},{"role":"assistant","text":"A soft violet-to-pink gradient, like an evening sky."}]
+EOF
     seed "$dir" 000000000002-0000 "Rust lifetimes" 2 <<'EOF'
 [{"role":"user","text":"What is a lifetime?"},{"role":"assistant","speed":41.2,"text":"A *lifetime* names how long a reference is valid."}]
 EOF
@@ -149,6 +156,8 @@ run_theme() {
     shot 08c-editing
     xdotool key Escape
     sleep 0.4
+    open_chat "picture"
+    shot 08d-attachments
     open_chat "migration"
     shot 09-long-end
     xdotool mousemove 900 500 click 4 click 4 click 4 click 4 click 4 click 4
