@@ -125,6 +125,7 @@ pub fn plan_request(model: &str, goal: &str) -> Request {
         }),
         tools: Vec::new(),
         response_format: Some(json!({"type": "json_object", "schema": plan_schema()})),
+        brief: false,
     }
 }
 
@@ -456,6 +457,7 @@ fn agent_request(
         sampling: modes::AGENT.sampling,
         tools: Vec::new(),
         response_format: None,
+        brief: false,
     }
 }
 

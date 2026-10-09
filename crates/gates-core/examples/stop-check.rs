@@ -29,6 +29,7 @@ fn main() {
         sampling: None,
         tools: Vec::new(),
         response_format: None,
+        brief: false,
     };
     // Warm up: the model loads.
     let _ = llama.complete(&ask("Hi".into()), &AtomicBool::new(false), &mut |_| {});

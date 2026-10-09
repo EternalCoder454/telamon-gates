@@ -95,6 +95,7 @@ fn main() {
         sampling: mode.sampling,
         tools: Vec::new(),
         response_format: None,
+        brief: false,
     };
     let mut host = Print {
         allow_run,

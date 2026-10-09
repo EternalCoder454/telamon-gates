@@ -269,6 +269,7 @@ mod tests {
             sampling: None,
             tools: Vec::new(),
             response_format: None,
+            brief: false,
         }
     }
 

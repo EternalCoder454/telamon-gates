@@ -25,6 +25,11 @@ pub struct Mode {
     pub prompt: &'static str,
     /// None keeps the model's own (its recommended settings).
     pub sampling: Option<Sampling>,
+    /// Short reasoning (`Request::brief`): Chat and Story, where reasoning
+    /// costs time and adds little. Code and Agent reason as the model does:
+    /// it gets more code right, at a cost (gpt-oss: 2.7 times the tokens;
+    /// Qwen3-8B: 29 times the time; BACKEND.md → Recommended models).
+    pub brief: bool,
 }
 
 /// The conversation's choice when SystemOne picks per message.
@@ -34,6 +39,7 @@ pub const CHAT: Mode = Mode {
     id: "chat",
     prompt: "",
     sampling: None,
+    brief: true,
 };
 
 pub const STORY: Mode = Mode {
@@ -46,6 +52,7 @@ pub const STORY: Mode = Mode {
         temperature: 1.0,
         top_p: 0.95,
     }),
+    brief: true,
 };
 
 pub const CODE: Mode = Mode {
@@ -57,6 +64,7 @@ pub const CODE: Mode = Mode {
         temperature: 0.2,
         top_p: 0.9,
     }),
+    brief: false,
 };
 
 /// Works in a folder with tools (`agent.rs`, `tools.rs`). Only when the
@@ -74,6 +82,7 @@ pub const AGENT: Mode = Mode {
         temperature: 0.3,
         top_p: 0.9,
     }),
+    brief: false,
 };
 
 /// Every mode, in the order the window offers them.
@@ -119,6 +128,7 @@ pub struct Active {
     pub id: String,
     pub prompt: String,
     pub sampling: Option<Sampling>,
+    pub brief: bool,
 }
 
 impl From<Mode> for Active {
@@ -127,6 +137,7 @@ impl From<Mode> for Active {
             id: m.id.to_string(),
             prompt: m.prompt.to_string(),
             sampling: m.sampling,
+            brief: m.brief,
         }
     }
 }
@@ -251,6 +262,8 @@ impl Library {
             sampling: preset
                 .temperature
                 .map(|temperature| Sampling { temperature, top_p }),
+            // A user's own mode leaves reasoning to the model.
+            brief: builtin.is_some_and(|m| m.brief),
         }
     }
 
@@ -315,6 +328,8 @@ mod tests {
         assert_eq!(CHAT.sampling, None);
         let (story, code) = (STORY.sampling.unwrap(), CODE.sampling.unwrap());
         assert!(story.temperature > 0.8 && code.temperature < 0.5);
+        // Reasoning is kept short where it adds little.
+        const { assert!(CHAT.brief && STORY.brief && !CODE.brief && !AGENT.brief) };
     }
 
     #[test]
@@ -344,6 +359,8 @@ mod tests {
         let story = lib.resolve("story");
         assert_eq!(story.prompt, "Write noir.");
         assert_eq!(story.sampling.unwrap().temperature, 1.2);
+        // An edited built-in keeps its reasoning.
+        assert!(story.brief && !lib.resolve("code").brief);
         assert_eq!(lib.list()[1].name, "Story");
         // One of the user's own.
         let id = lib.put(
@@ -359,6 +376,7 @@ mod tests {
         assert!(lib.has("my-1") && !lib.has("my-2"));
         let pirate = lib.resolve("my-1");
         assert_eq!(pirate.sampling.unwrap().temperature, 2.0);
+        assert!(!pirate.brief);
         assert_eq!(lib.list().last().unwrap().name, "Pirate");
         // Gone: Chat; a built-in back as it was.
         lib.remove("my-1");

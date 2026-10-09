@@ -53,6 +53,10 @@ pub struct Request {
     /// llama-server turns into a grammar, e.g. `{"type": "json_object",
     /// "schema": {…}}`); None for free text.
     pub response_format: Option<serde_json::Value>,
+    /// Asks the model to keep its reasoning short (gpt-oss's
+    /// `reasoning_effort: low`, Qwen3's thinking off). False leaves it to
+    /// the model.
+    pub brief: bool,
 }
 
 /// What a backend streams while it answers.
