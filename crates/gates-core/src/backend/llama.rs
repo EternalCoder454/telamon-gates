@@ -20,11 +20,16 @@ pub const PACKAGED_SERVER: &str = "/usr/libexec/telamon-llama/llama-server";
 
 /// The server binary: telamon-llama's, else a `llama-server` on `$PATH`.
 pub fn find_server() -> Option<PathBuf> {
-    let packaged = PathBuf::from(PACKAGED_SERVER);
+    find_server_in(Path::new(PACKAGED_SERVER), std::env::var_os("PATH"))
+}
+
+/// As `find_server`, with the packaged path and `$PATH` given (the first-run
+/// check, and tests).
+pub fn find_server_in(packaged: &Path, path: Option<std::ffi::OsString>) -> Option<PathBuf> {
     if packaged.is_file() {
-        return Some(packaged);
+        return Some(packaged.to_path_buf());
     }
-    std::env::var_os("PATH").and_then(|paths| {
+    path.and_then(|paths| {
         std::env::split_paths(&paths)
             .map(|dir| dir.join("llama-server"))
             .find(|p| p.is_file())
