@@ -447,8 +447,8 @@ pub struct ChatRust {
     listing: u64,
     /// Whether commands' sandbox was tried yet (`check_sandbox`).
     sandbox_checked: bool,
-    /// When the model was last warmed up (`prepare`).
-    warmed: Option<Instant>,
+    /// Which model was last warmed up (`prepare`), and when.
+    warmed: Option<(String, Instant)>,
     /// SystemOne's pick for the text being written: the text, the mode,
     /// and whether SystemOne picked it.
     prepick: Option<(String, Active, bool)>,
@@ -1037,16 +1037,17 @@ impl qobject::Chat {
         if text.is_empty() || *self.generating() {
             return;
         }
-        // The model, loading while the user writes (once a minute at most:
-        // after that it is loaded, or idle-stopped minutes later).
+        // The mode's model (the code model in Code and Agent), loading while
+        // the user writes: once a minute at most per model, since after that
+        // it is loaded, or idle-stopped minutes later.
+        let model = self.model_for(&self.mode().to_string());
         let due = self
             .rust()
             .warmed
-            .is_none_or(|t| t.elapsed() > Duration::from_secs(60));
+            .as_ref()
+            .is_none_or(|(warm, t)| *warm != model || t.elapsed() > Duration::from_secs(60));
         if due && let Some(backend) = self.rust().backend.clone() {
-            self.as_mut().rust_mut().warmed = Some(Instant::now());
-            // The mode's model (the code model in Code and Agent).
-            let model = self.model_for(&self.mode().to_string());
+            self.as_mut().rust_mut().warmed = Some((model.clone(), Instant::now()));
             std::thread::spawn(move || backend.warm(&model));
         }
         // SystemOne's pick, made now (Auto only).
