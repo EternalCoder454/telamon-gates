@@ -36,6 +36,9 @@ pub trait Host {
     fn result(&mut self, message: Message);
     /// The model starts its next turn, after the results.
     fn next_turn(&mut self);
+    /// The backend has something to tell the user that isn't the reply
+    /// (`Event::Notice`). Plain text. Ignored unless the host shows it.
+    fn notice(&mut self, _text: &str) {}
 }
 
 /// `messages` made safe to send: every tool call answered by a result
@@ -98,6 +101,7 @@ pub fn run(
             }
             Event::Speed(s) => host.speed(s),
             Event::ToolCalls(c) => calls = c.to_vec(),
+            Event::Notice(n) => host.notice(n),
         })?;
         if cancel.load(Ordering::Relaxed) || calls.is_empty() {
             return Ok(());

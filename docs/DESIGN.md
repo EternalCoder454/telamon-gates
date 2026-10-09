@@ -49,7 +49,11 @@ beside it.
   stops a reply; Ctrl+N starts a new chat.
 - **Banners**: an info banner while the demo backend is in use (no
   telamon-llama), one with Open Folder while the models folder is empty; an error
-  banner with Try Again when a reply fails.
+  banner with Try Again when a reply fails; a warning banner, with a close
+  button, when the model server had to load the model with less than was
+  set because the graphics card's memory was short ("… so it loaded with a
+  context of 16384 tokens instead of 32768."). It goes when the next reply
+  starts. All banner text is plain text.
 - **Models**: *On This Computer* lists each model in the models folder
   (`$XDG_DATA_HOME/telamon-gates/models`) with its quantisation and size label
   from the file's GGUF header (`gguf.rs`, bounded reads), its size, a badge
@@ -58,7 +62,12 @@ beside it.
   its trained context ("32K context", from the header) in the subtitle and,
   beside the fit badge, an Images badge (a matching `mmproj` file is in the
   folder) and a Tools badge (its chat template takes tools). A decision model
-  shows none of these. Vision projectors
+  shows none of these. A model whose architecture the model server
+  doesn't know (the GGUF's `general.architecture` against the packaged
+  llama.cpp's list, see `docs/BACKEND.md` → Server failures) shows an error
+  badge, Unsupported, instead of those, and "Architecture “x” isn't
+  supported" in its subtitle; choosing it in the chat gives an error that
+  says so, and the server is not started. Vision projectors
   (`mmproj-…`) and the later parts of a split model are not listed. *Get
   Models* searches Hugging Face for GGUF repositories (`hub.rs`), opens one to
   its single-file models, and downloads one at a time with a progress bar and
@@ -175,7 +184,8 @@ beside it.
     `role`, `text`, `kinds`, `contents`, `langs`, `streaming`, `failed`):
     `newChat`, `open`, `send`, `stop`, `regenerate`, `pickModel`, `pickCodeModel`,
     `saveSystemPrompt`, `refreshModels`, `dismissError`; properties
-    `conversationId`, `title`, `generating`, `loading`, `error`, `demo`,
+    `conversationId`, `title`, `generating`, `loading`, `error`, `notice`
+    (plain text from the backend that isn't an error; `dismissNotice`), `demo`,
     `backendName`, `models`, `model`, `codeModel`, `systemPrompt`, `count`, `retryable`
     (the last reply failed or never came: Try Again and Regenerate ask for
     one; a good reply is never discarded from the banner).
@@ -254,6 +264,15 @@ serde; one that doesn't parse is skipped and logged.
   empty replies are not sent back to the model.
 - A reply ends with no text and no error: shown as "The model sent an empty
   reply.", with Try Again.
+- The model server runs out of graphics memory loading: it is started again
+  with half the context (not below 4096), then half the layers on the card,
+  and the chat says what changed; if that fails, the error says so and what
+  was tried.
+- The model server keeps stopping (3 times in 5 minutes for one model): it
+  isn't started again; the error names the model and the last line of its
+  log. A changed setting, or another model, tries again.
+- A server address set in Settings that answers 400 to the brief-reasoning
+  fields is asked again without them.
 - A conversation file can't be read: it is left out of the list (logged);
   opening one that vanished shows an error and a new chat.
 - A save fails: logged; the conversation stays in the window.

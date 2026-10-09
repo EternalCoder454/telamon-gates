@@ -31,6 +31,9 @@ pub mod qobject {
         #[qproperty(QList_f64, contexts)]
         #[qproperty(QList_f64, tool_capable, cxx_name = "toolCapable")]
         #[qproperty(QList_f64, vision)]
+        /// The architecture of a model the model server can't load (the
+        /// Models page marks it Unsupported); "" for one it can.
+        #[qproperty(QStringList, unsupported)]
         #[qproperty(QString, folder)]
         /// Hugging Face repositories found, and their downloads.
         #[qproperty(QStringList, results)]
@@ -124,6 +127,7 @@ pub struct ModelLibraryRust {
     contexts: QList<f64>,
     tool_capable: QList<f64>,
     vision: QList<f64>,
+    unsupported: QStringList,
     folder: QString,
     results: QStringList,
     downloads: QList<f64>,
@@ -198,6 +202,12 @@ impl qobject::ModelLibrary {
                         f64::from(m.info.context_length),
                         flag(m.info.tools),
                         flag(projector_for(m, &found, &projectors).is_some()),
+                        // The architecture llama-server can't load, else "".
+                        if m.info.supported() {
+                            String::new()
+                        } else {
+                            m.info.architecture.clone()
+                        },
                     )
                 })
                 .collect();
@@ -215,6 +225,8 @@ impl qobject::ModelLibrary {
                 lib.as_mut()
                     .set_tool_capable(numbers(models.iter().map(|m| m.6)));
                 lib.as_mut().set_vision(numbers(models.iter().map(|m| m.7)));
+                lib.as_mut()
+                    .set_unsupported(strings(models.iter().map(|m| m.8.as_str())));
                 lib.set_sizes(numbers(models.iter().map(|m| m.3)));
             });
         });

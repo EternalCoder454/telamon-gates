@@ -117,9 +117,12 @@ TelamonPage {
                 readonly property real context: page.models.contexts[index] ?? 0
                 readonly property bool tools: (page.models.toolCapable[index] ?? 0) > 0
                 readonly property bool images: (page.models.vision[index] ?? 0) > 0
+                // The architecture the model server can't load ("" when it can).
+                readonly property string unsupportedArch: page.models.unsupported[index] ?? ""
+                readonly property bool unsupported: unsupportedArch.length > 0
 
                 title: modelData
-                subtitle: [row.kind === "draft" ? qsTr("Draft that speeds up its model") : row.kind.length > 0 ? qsTr("Decision model") : "", page.models.quants[index], page.models.labels[index], row.kind.length === 0 && row.context > 0 ? qsTr("%1 context").arg(page.tokens(row.context)) : "", page.size(bytes)].filter(s => s && s.length > 0).join(" · ")
+                subtitle: [row.unsupported ? qsTr("Architecture “%1” isn't supported").arg(row.unsupportedArch) : "", row.kind === "draft" ? qsTr("Draft that speeds up its model") : row.kind.length > 0 ? qsTr("Decision model") : "", page.models.quants[index], page.models.labels[index], row.kind.length === 0 && row.context > 0 ? qsTr("%1 context").arg(page.tokens(row.context)) : "", page.size(bytes)].filter(s => s && s.length > 0).join(" · ")
                 leading: [
                     Symbol {
                         icon: Symbols.Psychology
@@ -127,20 +130,28 @@ TelamonPage {
                     }
                 ]
 
+                // The model server can't load it: Gates won't try.
                 TelamonBadge {
                     y: parent ? Math.round((parent.height - height) / 2) : 0
-                    visible: row.kind.length === 0 && row.images
+                    visible: row.unsupported
+                    type: "error"
+                    symbol: Symbols.Error
+                    text: qsTr("Unsupported")
+                }
+                TelamonBadge {
+                    y: parent ? Math.round((parent.height - height) / 2) : 0
+                    visible: row.kind.length === 0 && row.images && !row.unsupported
                     symbol: Symbols.Image
                     text: qsTr("Images")
                 }
                 TelamonBadge {
                     y: parent ? Math.round((parent.height - height) / 2) : 0
-                    visible: row.kind.length === 0 && row.tools
+                    visible: row.kind.length === 0 && row.tools && !row.unsupported
                     symbol: Symbols.Build
                     text: qsTr("Tools")
                 }
                 FitBadge {
-                    fit: row.kind.length > 0 ? "" : page.fit(row.bytes)
+                    fit: row.kind.length > 0 || row.unsupported ? "" : page.fit(row.bytes)
                 }
                 TelamonBadge {
                     y: parent ? Math.round((parent.height - height) / 2) : 0

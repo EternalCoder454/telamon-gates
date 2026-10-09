@@ -10,6 +10,7 @@ use super::sse::{self, Line};
 use super::{Backend, BackendError, Event, Options, Request};
 use crate::conversation::{Role, ToolCall};
 use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -268,6 +269,9 @@ pub struct Llama {
     options: Mutex<Options>,
     /// The context of the server last asked: its address, and its size.
     context: Mutex<Option<(String, u32)>>,
+    /// The server addresses that answered 400 to the brief-reasoning
+    /// fields: they are left out of requests to them, for the session.
+    strict: Mutex<HashSet<String>>,
 }
 
 /// Room kept for the reply when the conversation is trimmed to the context:
@@ -347,6 +351,7 @@ impl Llama {
             server: Server::new(log),
             options: Mutex::new(options),
             context: Mutex::new(None),
+            strict: Mutex::new(HashSet::new()),
         }
     }
 
@@ -445,7 +450,15 @@ impl Llama {
 
     /// Where to send the request, and whether it holds the managed server
     /// (to release after).
-    fn endpoint(&self, model: &str, cancel: &AtomicBool) -> Result<(Endpoint, bool), BackendError> {
+    ///
+    /// `notes` hears what the managed server changed to get started (a
+    /// smaller context when the graphics card's memory was short).
+    fn endpoint(
+        &self,
+        model: &str,
+        cancel: &AtomicBool,
+        notes: Option<&mut dyn FnMut(&str)>,
+    ) -> Result<(Endpoint, bool), BackendError> {
         let options = self.options();
         if !options.server_url.is_empty() {
             return Ok((
@@ -473,6 +486,13 @@ impl Llama {
                 self.models_dir.display()
             )));
         };
+        // Refused here, in words: llama-server would only fail to load it.
+        if !chosen.info.supported() {
+            return Err(BackendError::Other(unsupported_message(
+                &chosen.name,
+                &chosen.info.architecture,
+            )));
+        }
         let all_models = local_models(&self.models_dir);
         // Its image projector, when one sits beside it: it reads pictures.
         let projector = projector_for(chosen, &models, &local_projectors(&self.models_dir));
@@ -487,18 +507,38 @@ impl Llama {
             threads: None,
             speculative: true,
             draft: draft_for(chosen, &all_models),
+            layers: chosen.info.block_count,
         };
-        Ok((self.server.acquire_until(&launch, cancel)?, true))
+        let endpoint = match notes {
+            Some(notes) => self.server.acquire_noting(&launch, cancel, notes)?,
+            None => self.server.acquire_until(&launch, cancel)?,
+        };
+        Ok((endpoint, true))
+    }
+
+    /// Whether the server at `base` refused the brief-reasoning fields
+    /// earlier in this session.
+    fn is_strict(&self, base: &str) -> bool {
+        self.strict
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(base)
     }
 
     fn stream(
         &self,
         endpoint: &Endpoint,
+        managed: bool,
         request: &Request,
         cancel: &AtomicBool,
         emit: &mut dyn FnMut(Event<'_>),
     ) -> Result<(), BackendError> {
-        let body = request_body(&self.fit(endpoint, request));
+        let mut body = request_body(&self.fit(endpoint, request));
+        // llama-server (the one Gates runs) reads the brief fields; another
+        // server may refuse a request that carries what it doesn't know.
+        if !managed && self.is_strict(&endpoint.base) {
+            strip_brief(&mut body);
+        }
         if cancel.load(Ordering::Relaxed) {
             return Ok(());
         }
@@ -512,12 +552,30 @@ impl Llama {
         if !endpoint.api_key.is_empty() {
             headers.push(("Authorization", bearer.as_str()));
         }
-        let mut response = super::stream::post(
-            &format!("{}/v1/chat/completions", endpoint.base),
-            &headers,
-            &body.to_string(),
-        )
-        .map_err(io_error)?;
+        let url = format!("{}/v1/chat/completions", endpoint.base);
+        let send =
+            |body: &Value| super::stream::post(&url, &headers, &body.to_string()).map_err(io_error);
+        let mut response = send(&body)?;
+        // A strict OpenAI-style server answers 400 to fields it doesn't
+        // know: once, without them. Kept for this server for the session
+        // when that works.
+        if response.status == 400 && !managed && strip_brief(&mut body) {
+            log::info!(
+                "{} refused the brief-reasoning fields: asking again without them",
+                endpoint.base
+            );
+            let _ = response.text();
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            response = send(&body)?;
+            if response.status == 200 {
+                self.strict
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(endpoint.base.clone());
+            }
+        }
         if response.status != 200 {
             let status = response.status;
             let text = response.text();
@@ -673,7 +731,7 @@ impl Backend for Llama {
     fn warm(&self, model: &str) {
         // The same server the reply will ask for, started now; released at
         // once, so the idle stop still counts from here.
-        if let Ok((_, true)) = self.endpoint(model, &AtomicBool::new(false)) {
+        if let Ok((_, true)) = self.endpoint(model, &AtomicBool::new(false), None) {
             self.server.release();
         }
     }
@@ -696,7 +754,11 @@ impl Backend for Llama {
         cancel: &AtomicBool,
         emit: &mut dyn FnMut(Event<'_>),
     ) -> Result<(), BackendError> {
-        let (endpoint, managed) = self.endpoint(&request.model, cancel)?;
+        let (endpoint, managed) = self.endpoint(
+            &request.model,
+            cancel,
+            Some(&mut |n: &str| emit(Event::Notice(n))),
+        )?;
         // Released however the reply ends, a panic included: else the idle
         // stop never comes and the model stays in the graphics card.
         struct Release<'a>(Option<&'a Server>);
@@ -708,7 +770,7 @@ impl Backend for Llama {
             }
         }
         let _release = Release(managed.then_some(&*self.server));
-        self.stream(&endpoint, request, cancel, emit)
+        self.stream(&endpoint, managed, request, cancel, emit)
     }
 }
 
@@ -788,6 +850,26 @@ pub fn request_body(request: &Request) -> Value {
         body["chat_template_kwargs"] = json!({"enable_thinking": false});
     }
     body
+}
+
+/// Takes the brief-reasoning fields (`reasoning_effort`,
+/// `chat_template_kwargs`) out of `body`. True when it had either.
+pub fn strip_brief(body: &mut Value) -> bool {
+    let Some(fields) = body.as_object_mut() else {
+        return false;
+    };
+    let effort = fields.remove("reasoning_effort").is_some();
+    let kwargs = fields.remove("chat_template_kwargs").is_some();
+    effort || kwargs
+}
+
+/// Why a model whose architecture the packaged server doesn't know is not
+/// loaded: a sentence for the window.
+pub fn unsupported_message(name: &str, architecture: &str) -> String {
+    format!(
+        "“{name}” can't be loaded: it is a “{architecture}” model, and the model server (llama.cpp {}) doesn't support that architecture. Choose another model.",
+        crate::gguf::LLAMA_CPP_TAG
+    )
 }
 
 /// The ids in a `/v1/models` answer.
@@ -1167,7 +1249,7 @@ mod tests {
             .complete(&request(), &AtomicBool::new(false), &mut |e| match e {
                 Event::Text(t) => text.push_str(t),
                 Event::ToolCalls(c) => calls = c.to_vec(),
-                Event::Speed(_) => {}
+                Event::Speed(_) | Event::Notice(_) => {}
             })
             .unwrap();
         assert_eq!(text, "Let me look.");
@@ -1347,6 +1429,7 @@ mod tests {
                 Event::Text(t) => text.push_str(t),
                 Event::Speed(s) => speed = Some(s),
                 Event::ToolCalls(_) => panic!("no tools asked for"),
+                Event::Notice(_) => panic!("nothing to say"),
             })
             .unwrap();
         assert_eq!(text, "Hello");
@@ -1405,6 +1488,192 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("No model yet"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A small HTTP server that answers the first chat requests with
+    /// `responses`, in order (other paths get a 404, so the context is
+    /// unknown). Hands back the chat requests it got.
+    fn serve_script(responses: Vec<String>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let mut chats = Vec::new();
+            let mut responses = responses.into_iter();
+            // Bounded: a test that asks for more than it scripted ends.
+            for _ in 0..32 {
+                let Ok((mut socket, _)) = listener.accept() else {
+                    break;
+                };
+                let request = read_request(&mut socket);
+                if request.starts_with("POST /v1/chat/completions") {
+                    chats.push(request);
+                    match responses.next() {
+                        Some(response) => socket.write_all(response.as_bytes()).unwrap(),
+                        None => break,
+                    }
+                    if responses.len() == 0 {
+                        break;
+                    }
+                } else {
+                    let _ = socket.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
+            }
+            chats
+        });
+        (base, handle)
+    }
+
+    fn refused(message: &str) -> String {
+        let body = format!(r#"{{"error":{{"message":"{message}"}}}}"#);
+        format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn answer(text: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+             data: {{\"choices\":[{{\"delta\":{{\"content\":\"{text}\"}}}}]}}\n\n\
+             data: [DONE]\n\n"
+        )
+    }
+
+    /// The reply to `llama` asking for brief reasoning, as text.
+    fn brief_reply(llama: &Llama) -> Result<String, BackendError> {
+        let mut asked = request();
+        asked.brief = true;
+        let mut text = String::new();
+        llama.complete(&asked, &AtomicBool::new(false), &mut |e| {
+            if let Event::Text(t) = e {
+                text.push_str(t);
+            }
+        })?;
+        Ok(text)
+    }
+
+    #[test]
+    fn a_strict_server_gets_the_request_again_without_the_brief_fields() {
+        let (base, server) = serve_script(vec![
+            refused("Unrecognized request argument supplied: chat_template_kwargs"),
+            answer("Hi"),
+            answer("Again"),
+        ]);
+        let llama = external(&base);
+        assert_eq!(brief_reply(&llama).unwrap(), "Hi");
+        // The server saw the fields once, and then the request without.
+        // This server then asked again for the next reply: no fields at
+        // all, and no 400 first.
+        assert!(llama.is_strict(&base));
+        assert_eq!(brief_reply(&llama).unwrap(), "Again");
+        let seen = server.join().unwrap();
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert!(seen[0].contains("reasoning_effort"), "{}", seen[0]);
+        assert!(seen[0].contains("chat_template_kwargs"), "{}", seen[0]);
+        assert!(!seen[1].contains("reasoning_effort"), "{}", seen[1]);
+        assert!(!seen[1].contains("chat_template_kwargs"), "{}", seen[1]);
+        assert!(seen[1].contains("\"stream\":true"), "{}", seen[1]);
+        assert!(!seen[2].contains("reasoning_effort"), "{}", seen[2]);
+        assert!(!seen[2].contains("chat_template_kwargs"), "{}", seen[2]);
+        // Another server is not held to it.
+        assert!(!llama.is_strict("http://127.0.0.1:1"));
+    }
+
+    #[test]
+    fn a_400_that_is_not_about_the_fields_is_shown() {
+        // Not asked for brief: nothing to take out, so one request only.
+        let (base, server) = serve_script(vec![refused("the context is too long")]);
+        let err = external(&base)
+            .complete(&request(), &AtomicBool::new(false), &mut |_| {})
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the context is too long"), "{err}");
+        assert_eq!(server.join().unwrap().len(), 1);
+        // Asked for brief, and still refused without the fields: the
+        // second answer is the one shown, and the server is not marked.
+        let (base, server) = serve_script(vec![
+            refused("bad request"),
+            refused("the context is too long"),
+        ]);
+        let llama = external(&base);
+        let err = brief_reply(&llama).unwrap_err().to_string();
+        assert!(err.contains("the context is too long"), "{err}");
+        assert!(!llama.is_strict(&base));
+        assert_eq!(server.join().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn the_brief_fields_come_out_of_a_body() {
+        let mut asked = request();
+        asked.brief = true;
+        let mut body = request_body(&asked);
+        assert!(strip_brief(&mut body));
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("chat_template_kwargs").is_none());
+        // The rest stays.
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["model"], "tiny");
+        assert_eq!(body["messages"].as_array().unwrap().len(), 4);
+        // Nothing to take out the second time.
+        assert!(!strip_brief(&mut body));
+        assert!(!strip_brief(&mut request_body(&request())));
+    }
+
+    /// A GGUF header that says only its architecture.
+    fn gguf_of(architecture: &str) -> Vec<u8> {
+        let mut bytes = b"GGUF".to_vec();
+        bytes.extend(3u32.to_le_bytes());
+        bytes.extend(0u64.to_le_bytes());
+        bytes.extend(1u64.to_le_bytes());
+        let key = "general.architecture";
+        bytes.extend((key.len() as u64).to_le_bytes());
+        bytes.extend(key.as_bytes());
+        bytes.extend(8u32.to_le_bytes());
+        bytes.extend((architecture.len() as u64).to_le_bytes());
+        bytes.extend(architecture.as_bytes());
+        bytes
+    }
+
+    #[test]
+    fn a_model_of_an_unknown_architecture_is_refused_in_words() {
+        let dir = std::env::temp_dir().join(format!("gates-arch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Future-Q4_K_M.gguf"), gguf_of("future-arch")).unwrap();
+        std::fs::write(dir.join("Known-Q4_K_M.gguf"), gguf_of("qwen3")).unwrap();
+        // The page can show both; the picker keeps both.
+        let models = local_models(&dir);
+        assert!(!models[0].info.supported(), "Future");
+        assert!(models[1].info.supported(), "Known");
+        assert_eq!(chat_models(&dir).len(), 2);
+
+        // /bin/false stands in for the server: it never starts.
+        let llama = Llama::new(
+            dir.clone(),
+            Some(PathBuf::from("/bin/false")),
+            dir.join("server.log"),
+            Options::default(),
+        );
+        let mut asked = request();
+        asked.model = "Future-Q4_K_M".into();
+        let err = llama
+            .complete(&asked, &AtomicBool::new(false), &mut |_| {})
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("“Future-Q4_K_M” can't be loaded"), "{err}");
+        assert!(err.contains("“future-arch”"), "{err}");
+        assert!(err.contains("Choose another model"), "{err}");
+        // A supported one gets as far as starting the server.
+        asked.model = "Known-Q4_K_M".into();
+        let err = llama
+            .complete(&asked, &AtomicBool::new(false), &mut |_| {})
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("can't be loaded"), "{err}");
+        assert!(err.contains("didn't start"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

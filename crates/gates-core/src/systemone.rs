@@ -180,6 +180,7 @@ impl SystemOne {
             }),
             speculative: false,
             draft: None,
+            layers: 0,
         }
     }
 

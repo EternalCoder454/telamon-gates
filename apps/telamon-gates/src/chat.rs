@@ -34,6 +34,10 @@ pub mod qobject {
         #[qproperty(bool, loading)]
         /// What went wrong with the last reply, to show; "" when nothing.
         #[qproperty(QString, error)]
+        /// Something the backend wants the user to know about the reply
+        /// under way or just done, short of an error ("loaded with a smaller
+        /// context"); plain text, "" when nothing.
+        #[qproperty(QString, notice)]
         /// The backend is the built-in demo, which answers with samples.
         #[qproperty(bool, demo)]
         #[qproperty(QString, backend_name, cxx_name = "backendName")]
@@ -182,6 +186,10 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "dismissError"]
         fn dismiss_error(self: Pin<&mut Chat>);
+
+        #[qinvokable]
+        #[cxx_name = "dismissNotice"]
+        fn dismiss_notice(self: Pin<&mut Chat>);
 
         /// Pins the open conversation to a mode, or "auto" for SystemOne's
         /// pick per message.
@@ -378,6 +386,7 @@ pub struct ChatRust {
     generating: bool,
     loading: bool,
     error: QString,
+    notice: QString,
     demo: bool,
     backend_name: QString,
     models: QStringList,
@@ -565,6 +574,13 @@ impl agent::Host for Stream {
         self.rate = Rate::default();
         let generation = self.generation;
         let _ = self.qt.queue(move |chat| chat.agent_next(generation));
+    }
+
+    fn notice(&mut self, text: &str) {
+        let (generation, text) = (self.generation, text.to_string());
+        let _ = self
+            .qt
+            .queue(move |chat| chat.show_notice(generation, &text));
     }
 }
 
@@ -1148,6 +1164,18 @@ impl qobject::Chat {
         self.set_error(QString::default());
     }
 
+    pub fn dismiss_notice(self: Pin<&mut Self>) {
+        self.set_notice(QString::default());
+    }
+
+    /// The backend's notice for the reply of `generation` (a late one of an
+    /// older reply is dropped).
+    fn show_notice(self: Pin<&mut Self>, generation: u64, text: &str) {
+        if self.rust().generation == generation {
+            self.set_notice(QString::from(text));
+        }
+    }
+
     pub fn choose_mode(mut self: Pin<&mut Self>, mode: &QString) {
         // Not while a reply runs: an agent keeps the mode and folder it began with.
         if *self.generating() {
@@ -1612,6 +1640,7 @@ impl qobject::Chat {
     /// Stops a reply under way and saves what there is.
     fn leave(mut self: Pin<&mut Self>) {
         self.as_mut().stop();
+        self.as_mut().set_notice(QString::default());
         self.set_error(QString::default());
     }
 
@@ -1837,6 +1866,8 @@ impl qobject::Chat {
             rust.generation
         };
         self.as_mut().set_generating(true);
+        // An old reply's notice is not this one's.
+        self.as_mut().set_notice(QString::default());
         let qt = self.qt_thread();
         std::thread::spawn(move || {
             let (mode, picked) = match prepicked {
@@ -1885,6 +1916,7 @@ impl qobject::Chat {
                         Event::Speed(s) => stream.rate.reported(s),
                         // Tools weren't offered: nothing to run.
                         Event::ToolCalls(_) => {}
+                        Event::Notice(text) => agent::Host::notice(&mut stream, text),
                     }),
                 }
             }));
