@@ -36,6 +36,11 @@ pub mod qobject {
         #[qproperty(QString, error)]
         /// The backend is the built-in demo, which answers with samples.
         #[qproperty(bool, demo)]
+        /// The first-run check found no model server (telamon-llama), or no
+        /// graphics device for it; both false until the check is done, and
+        /// when a server address is set.
+        #[qproperty(bool, server_missing, cxx_name = "serverMissing")]
+        #[qproperty(bool, no_gpu, cxx_name = "noGpu")]
         #[qproperty(QString, backend_name, cxx_name = "backendName")]
         /// The models to pick from, and the one picked.
         #[qproperty(QStringList, models)]
@@ -304,10 +309,12 @@ use cxx_qt_lib::{
     QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex, QString, QStringList, QVariant,
 };
 use gates_core::agent::{self, Approval};
+use gates_core::applog;
 use gates_core::backend::llama::{LocalModel, find_server, local_models};
 use gates_core::conversation::ToolCall;
 use gates_core::markdown::{self, Block};
 use gates_core::modes::{self, Active, Library, Preset};
+use gates_core::preflight;
 use gates_core::systemone::{self, SystemOne};
 use gates_core::tools::Workspace;
 use gates_core::{Backend, Conversation, Event, Message, Request, Role};
@@ -379,6 +386,8 @@ pub struct ChatRust {
     loading: bool,
     error: QString,
     demo: bool,
+    server_missing: bool,
+    no_gpu: bool,
     backend_name: QString,
     models: QStringList,
     model: QString,
@@ -683,7 +692,36 @@ impl qobject::Chat {
                 });
             }
         }
+        self.as_mut().first_run_check();
         self.refresh_models();
+    }
+
+    /// Looks for the model server and a graphics device on a worker, logs
+    /// what it finds (`applog`), and sets `serverMissing` and `noGpu` for the
+    /// banners. With a server address set, neither matters.
+    fn first_run_check(self: Pin<&mut Self>) {
+        let remote = !self.server_url().is_empty();
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            applog::info(&format!(
+                "Telamon Gates {} starting",
+                env!("CARGO_PKG_VERSION")
+            ));
+            if remote {
+                applog::info("a model server address is set: not looking for a local one");
+                return;
+            }
+            let report = preflight::check(&preflight::Where::system());
+            if report.server_missing() || report.no_gpu() {
+                applog::warn(&report.summary());
+            } else {
+                applog::info(&report.summary());
+            }
+            let _ = qt.queue(move |mut chat| {
+                chat.as_mut().set_server_missing(report.server_missing());
+                chat.set_no_gpu(report.no_gpu());
+            });
+        });
     }
 
     pub fn new_chat(mut self: Pin<&mut Self>) {

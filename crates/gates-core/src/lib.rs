@@ -4,6 +4,7 @@
 //! (`apps/telamon-gates`) only moves these to and from QML.
 
 pub mod agent;
+pub mod applog;
 pub mod attach;
 pub mod backend;
 pub mod conversation;
@@ -13,6 +14,7 @@ pub mod gguf;
 pub mod hub;
 pub mod markdown;
 pub mod modes;
+pub mod preflight;
 pub mod sandbox;
 pub mod store;
 pub mod systemone;

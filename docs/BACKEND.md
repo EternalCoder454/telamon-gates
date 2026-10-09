@@ -4,7 +4,8 @@ Telamon Gates talks to a model through one Rust trait,
 [`gates_core::Backend`](../crates/gates-core/src/backend/mod.rs). The window
 knows nothing else: swap the implementation and nothing in the UI changes.
 Until one is connected, the built-in `Demo` backend streams sample replies
-and the chat says so in a banner.
+and the chat says so in a banner (it says what to install; see
+`docs/DESIGN.md` → Startup).
 
 ## The trait
 

@@ -47,9 +47,13 @@ beside it.
   boxes (Enter Send, Shift+Enter New Line) and "Always double-check the
   answer.", each hidden whole when there's no room. Escape
   stops a reply; Ctrl+N starts a new chat.
-- **Banners**: an info banner while the demo backend is in use (no
-  telamon-llama), one with Open Folder while the models folder is empty; an error
-  banner with Try Again when a reply fails.
+- **Banners**: an info banner while the demo backend is in use (the model
+  server isn't installed: "Install telamon-llama from the Store"), a warning
+  banner when the server is there but the computer has no graphics device for
+  it (models would run on the processor), each with a dismiss cross (for the
+  session: the check runs again at the next start); an info banner with Open
+  Folder while the models folder is empty; an error banner with Try Again when
+  a reply fails. The first two come from the first-run check (see Startup).
 - **Models**: *On This Computer* lists each model in the models folder
   (`$XDG_DATA_HOME/telamon-gates/models`) with its quantisation and size label
   from the file's GGUF header (`gguf.rs`, bounded reads), its size, a badge
@@ -175,7 +179,7 @@ beside it.
     `role`, `text`, `kinds`, `contents`, `langs`, `streaming`, `failed`):
     `newChat`, `open`, `send`, `stop`, `regenerate`, `pickModel`, `pickCodeModel`,
     `saveSystemPrompt`, `refreshModels`, `dismissError`; properties
-    `conversationId`, `title`, `generating`, `loading`, `error`, `demo`,
+    `conversationId`, `title`, `generating`, `loading`, `error`, `demo`, `serverMissing`, `noGpu`,
     `backendName`, `models`, `model`, `codeModel`, `systemPrompt`, `count`, `retryable`
     (the last reply failed or never came: Try Again and Regenerate ask for
     one; a good reply is never discarded from the banner).
@@ -194,6 +198,34 @@ beside it.
   - `io.rs`: the one file thread; `settings.rs`: the settings file.
 - `cpp/main.cpp` only starts Qt (framework startup, single instance) and
   hands the objects to `qml/Main.qml`.
+
+## Startup
+
+- **One window.** `main.cpp` takes `KDBusService(Unique)` (the D-Bus name is
+  the app ID) before anything else is made. A second launch hands its
+  activation token to the running one, which shows, raises and focuses its
+  window; the second exits with 0, having read or written no conversation
+  file. `scripts/smoke.sh` launches Gates twice on its private bus and fails
+  unless the second exits and the first stays.
+- **The first-run check** (`gates-core/src/preflight.rs`) runs on a worker
+  thread from `Chat::start`, after the window has what it needs, so the first
+  frame never waits for it:
+  - the model server: telamon-llama's `llama-server`, else one on `$PATH`;
+  - graphics: a `/dev/dri/renderD*` node; if `vulkaninfo` is installed, its
+    `--summary` (given 5 s) must also list something other than a software
+    device (llvmpipe). Nothing heavier is asked, and `vulkaninfo` is never
+    required.
+  Its result is `Chat.serverMissing` and `Chat.noGpu`, which the banners
+  follow; with a server address set in Settings, neither is looked for. The
+  demo backend stays the fallback.
+- **The log.** `gates-core/src/applog.rs` writes
+  `$XDG_STATE_HOME/telamon-gates/telamon-gates.log` (`~/.local/state/…`):
+  one line per entry, UTC time, level and text, from the first-run worker
+  (version, then what the check found). It makes the folder (0700) and the
+  file (0600) itself, moves a file over 256 KiB to `.log.1`, and passes each
+  line to `log` too (the framework sends those to the journal). The model
+  server's own output is `llama-server.log` beside it. Not every `log`
+  record reaches the file: the framework installs its journal logger first.
 
 ## Threading
 
