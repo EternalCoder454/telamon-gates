@@ -70,6 +70,8 @@ pub mod qobject {
         #[qproperty(i32, memory_cap, cxx_name = "memoryCap")]
         /// Where the backend's model files go; "" when it has no folder.
         #[qproperty(QString, models_folder, cxx_name = "modelsFolder")]
+        /// The Settings sections that are open (ids; `settings::SECTIONS`).
+        #[qproperty(QStringList, open_sections, cxx_name = "openSections")]
         /// The context the model ran with last, in tokens; 0 until known.
         #[qproperty(i32, active_context, cxx_name = "activeContext")]
         /// The open conversation's mode choice: "auto" or a mode's id.
@@ -198,6 +200,11 @@ pub mod qobject {
             context_size: i32,
             server_url: &QString,
         );
+
+        /// Opens or folds a Settings section and remembers it.
+        #[qinvokable]
+        #[cxx_name = "foldSection"]
+        fn fold_section(self: Pin<&mut Chat>, id: &QString, fold: bool);
 
         #[qinvokable]
         #[cxx_name = "useSmallCache"]
@@ -469,6 +476,7 @@ pub struct ChatRust {
     context_size: i32,
     server_url: QString,
     small_cache: bool,
+    open_sections: QStringList,
     memory_cap: i32,
     models_folder: QString,
     active_context: i32,
@@ -782,6 +790,11 @@ impl qobject::Chat {
         self.as_mut()
             .set_server_url(QString::from(options.server_url.as_str()));
         self.as_mut().set_mode(QString::from(modes::AUTO));
+        let mut open = QStringList::default();
+        for id in settings::open_sections(&settings::get(settings::SETTINGS_OPEN)) {
+            open.append(QString::from(id));
+        }
+        self.as_mut().set_open_sections(open);
         // Read once at start, like the settings (a small file).
         let library = Library::load(&modes_file());
         self.as_mut().use_modes(library);
@@ -1249,6 +1262,25 @@ impl qobject::Chat {
                 }
             });
         });
+    }
+
+    pub fn fold_section(mut self: Pin<&mut Self>, id: &QString, fold: bool) {
+        let current: Vec<String> = self.open_sections().iter().map(|s| s.to_string()).collect();
+        let Some(next) = settings::with_section(&current, &id.to_string(), !fold) else {
+            return;
+        };
+        let mut list = QStringList::default();
+        for id in &next {
+            list.append(QString::from(*id));
+        }
+        self.as_mut().set_open_sections(list);
+        if let Some(io) = &self.rust().io {
+            settings::set(
+                io,
+                settings::SETTINGS_OPEN,
+                settings::encode_sections(&next),
+            );
+        }
     }
 
     pub fn set_small_cache_option(mut self: Pin<&mut Self>, on: bool) {

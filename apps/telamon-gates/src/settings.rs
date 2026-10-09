@@ -30,6 +30,10 @@ pub const SYSTEM_ONE: &str = "SystemOne";
 /// picks one.
 pub const DECISION_MODEL: &str = "DecisionModel";
 
+/// The Settings sections that are open, as ids joined by commas ("none" for
+/// all folded); unset opens only the model's.
+pub const SETTINGS_OPEN: &str = "SettingsOpen";
+
 /// "true" lets Chat, Code and Agent replies search the web (off by default).
 pub const WEB_SEARCH: &str = "WebSearch";
 /// "brave", "tavily" or "searxng".
@@ -46,6 +50,60 @@ pub fn web_key_flag(provider: gates_core::web::Provider) -> &'static str {
         gates_core::web::Provider::Tavily => "WebKeyTavily",
         gates_core::web::Provider::Searxng => "WebKeySearxng",
     }
+}
+
+/// The foldable Settings sections, in page order. System Prompt is always
+/// open and not among them.
+pub const SECTIONS: [&str; 8] = [
+    "model",
+    "modes",
+    "agent",
+    "web",
+    "systemone",
+    "appearance",
+    "conversations",
+    "troubleshooting",
+];
+
+/// The sections open when nothing is saved.
+const OPEN_BY_DEFAULT: [&str; 1] = ["model"];
+
+/// The open sections a saved value says, in page order; ids this version
+/// doesn't know are dropped.
+pub fn open_sections(saved: &str) -> Vec<&'static str> {
+    let saved = saved.trim();
+    if saved.is_empty() {
+        return OPEN_BY_DEFAULT.to_vec();
+    }
+    SECTIONS
+        .into_iter()
+        .filter(|id| saved.split(',').any(|s| s.trim() == *id))
+        .collect()
+}
+
+/// What to save for the open sections.
+pub fn encode_sections(open: &[&str]) -> String {
+    if open.is_empty() {
+        "none".into()
+    } else {
+        open.join(",")
+    }
+}
+
+/// The sections `open` names, with `id` opened or folded; `None` when `id`
+/// is no section or already is so.
+pub fn with_section(open: &[String], id: &str, opened: bool) -> Option<Vec<&'static str>> {
+    let id = SECTIONS.into_iter().find(|s| *s == id)?;
+    let is_open = |s: &str| open.iter().any(|o| o == s);
+    if is_open(id) == opened {
+        return None;
+    }
+    Some(
+        SECTIONS
+            .into_iter()
+            .filter(|s| if *s == id { opened } else { is_open(s) })
+            .collect(),
+    )
 }
 
 fn file() -> Settings {
@@ -87,4 +145,43 @@ pub fn set(io: &Io, key: &'static str, value: String) {
             log::warn!("cannot save the setting {key}: {e}");
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(open: &[&str]) -> Vec<String> {
+        open.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn unset_opens_the_model_section_only() {
+        assert_eq!(open_sections(""), ["model"]);
+    }
+
+    #[test]
+    fn none_is_all_folded() {
+        assert!(open_sections("none").is_empty());
+        assert_eq!(encode_sections(&[]), "none");
+    }
+
+    #[test]
+    fn saved_ids_come_back_in_page_order_without_strangers() {
+        assert_eq!(
+            open_sections("web, model,gone,agent"),
+            ["model", "agent", "web"]
+        );
+        assert_eq!(open_sections(&encode_sections(&SECTIONS)), SECTIONS);
+    }
+
+    #[test]
+    fn opening_and_folding_one_section() {
+        let open = names(&["model"]);
+        assert_eq!(with_section(&open, "web", true).unwrap(), ["model", "web"]);
+        assert!(with_section(&open, "model", false).unwrap().is_empty());
+        assert_eq!(with_section(&open, "model", true), None);
+        assert_eq!(with_section(&open, "web", false), None);
+        assert_eq!(with_section(&open, "system-prompt", true), None);
+    }
 }

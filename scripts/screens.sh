@@ -235,11 +235,16 @@ run_theme() {
     xdotool mousemove 115 979 click 1
     sleep 1.2
     shot 16-settings
+    # Every section but System Prompt and Model & Model Server starts folded:
+    # unfold Modes, as a click on its title does.
+    xdotool mousemove 487 724 click 1
+    sleep 0.8
+    shot 16a-settings-modes-unfolded
     xdotool mousemove 900 600 click 5 click 5 click 5 click 5 click 5 click 5 click 5
     sleep 0.8
     shot 16b-settings-modes
     # Edit one of the user's own modes.
-    xdotool mousemove 1380 227 click 1
+    xdotool mousemove 1380 530 click 1
     sleep 0.8
     shot 16c-mode-dialog
     xdotool key Escape
@@ -250,7 +255,13 @@ run_theme() {
     xdotool key Tab Tab
     sleep 0.4
     shot 17-settings-focus
-    # The end of the page: the Logs row.
+    # The end of the page: the folded sections, then Troubleshooting open
+    # with its Logs row.
+    xdotool mousemove 900 600 click --repeat 20 --delay 20 5
+    sleep 0.6
+    shot 17a-settings-end-folded
+    xdotool mousemove 520 1025 click 1
+    sleep 0.6
     xdotool mousemove 900 600 click --repeat 20 --delay 20 5
     sleep 0.6
     shot 17b-settings-logs
@@ -436,7 +447,9 @@ run_theme() {
     # Web search on (a SearXNG address in the settings file). The demo
     # backend plays a model that uses it, over made-up results: a search, a
     # page, then an answer with its sources. Then the Settings section.
-    printf '[Chat]\nWebSearch=true\nWebProvider=searxng\nWebSearxUrl=http://localhost:8080\n' >>"$XDG_CONFIG_HOME/telamon-gatesrc"
+    # The Web Search section open (earlier runs left others open).
+    sed -i '/^SettingsOpen/d' "$XDG_CONFIG_HOME/telamon-gatesrc"
+    printf '[Chat]\nSettingsOpen=model,web\nWebSearch=true\nWebProvider=searxng\nWebSearxUrl=http://localhost:8080\n' >>"$XDG_CONFIG_HOME/telamon-gatesrc"
     "$bin" >"$out/app-web.log" 2>&1 &
     app=$!
     sleep 4
@@ -460,11 +473,11 @@ run_theme() {
     sleep 0.6
     shot 34-settings-web
     # Test Connection against an instance that isn't there.
-    xdotool mousemove 1357 544 click 1
+    xdotool mousemove 1350 677 click 1
     sleep 2.5
     shot 35-settings-web-test-failed
     # Brave Search needs a key, and the container has no keyring.
-    xdotool mousemove 1283 370 click 1
+    xdotool mousemove 1250 505 click 1
     sleep 0.6
     xdotool key Up Up Return
     sleep 0.8
