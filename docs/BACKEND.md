@@ -111,8 +111,25 @@ from advice on trust:
 - **Batch sizes** stay at the defaults (`-b 2048 -ub 512`). There is no
   Vulkan/RDNA3 evidence for a larger `-ub`; benchmark before changing.
 - **Context shift** stays off (the default). With `--keep 0` it can drop the
-  system prompt. Long conversations will instead be trimmed by Gates (not
-  yet done).
+  system prompt. Gates trims long conversations instead (see below).
+
+### Long conversations
+
+Before each reply, Gates checks the conversation fits the server's context.
+
+- It reads the context the server actually runs with (`/v1/models`:
+  `meta.n_ctx`, once per server), so Automatic shows its real size in
+  Settings.
+- It counts the conversation's real tokens with the server's own chat
+  template and tokenizer (`/apply-template`, then `/tokenize`).
+- If they exceed the context minus room for the reply (a quarter of it, at
+  most 2048 tokens), the oldest turns go first. The system prompt and the
+  last message always stay; `trim_to_budget` is the pure, tested rule.
+- A server without those endpoints gets the whole conversation.
+
+`cargo run -p gates-core --example llama-check -- <llama-server> <models dir>
+[context]` checks a build, a model and a graphics card outside the app. With
+a context of 512 it shows trimming.
 - **Speculative decoding** is not used: there are no gains measured on AMD,
   and it needs a matching draft model.
 

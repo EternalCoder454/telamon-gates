@@ -82,6 +82,38 @@ pub struct Llama {
     binary: Option<PathBuf>,
     server: Arc<Server>,
     options: Mutex<Options>,
+    /// The context of the server last asked: its address, and its size.
+    context: Mutex<Option<(String, u32)>>,
+}
+
+/// Room kept for the reply when the conversation is trimmed to the context:
+/// a quarter of it, at most 2048 tokens.
+pub fn reply_room(n_ctx: u32) -> usize {
+    (n_ctx as usize / 4).min(2048)
+}
+
+/// The conversation cut to fit `budget` tokens, as `count` measures it:
+/// the oldest turns go first; the system prompt (sent apart) and the last
+/// message stay. Unmeasurable (`count` gives None): as it is.
+pub fn trim_to_budget(
+    request: &Request,
+    budget: usize,
+    mut count: impl FnMut(&Request) -> Option<usize>,
+) -> Request {
+    let mut trimmed = request.clone();
+    // Bounded: each round drops at least one message.
+    while trimmed.messages.len() > 1 {
+        match count(&trimmed) {
+            Some(n) if n > budget => {}
+            _ => break,
+        }
+        trimmed.messages.remove(0);
+        // A conversation starts with the user's turn.
+        while trimmed.messages.len() > 1 && trimmed.messages[0].role == Role::Assistant {
+            trimmed.messages.remove(0);
+        }
+    }
+    trimmed
 }
 
 impl Llama {
@@ -96,7 +128,94 @@ impl Llama {
             binary,
             server: Server::new(log),
             options: Mutex::new(options),
+            context: Mutex::new(None),
         }
+    }
+
+    /// The server's context in tokens (`/v1/models`: `meta.n_ctx`), asked
+    /// once per server.
+    fn n_ctx(&self, endpoint: &Endpoint) -> Option<u32> {
+        if let Some((base, n)) = self
+            .context
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            && base == endpoint.base
+        {
+            return Some(n);
+        }
+        let text = authorized(
+            agent(Some(Duration::from_secs(5))).get(format!("{}/v1/models", endpoint.base)),
+            endpoint,
+        )
+        .call()
+        .ok()?
+        .into_body()
+        .read_to_string()
+        .ok()?;
+        let n = serde_json::from_str::<Value>(&text)
+            .ok()?
+            .pointer("/data/0/meta/n_ctx")?
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| *n > 0)?;
+        *self.context.lock().unwrap_or_else(|e| e.into_inner()) = Some((endpoint.base.clone(), n));
+        Some(n)
+    }
+
+    /// How many tokens `request` is, by the server's own chat template and
+    /// tokenizer (`/apply-template`, then `/tokenize`). None when the server
+    /// can't say (another kind of server).
+    fn count_tokens(&self, endpoint: &Endpoint, request: &Request) -> Option<usize> {
+        let a = agent(Some(Duration::from_secs(5)));
+        let mut body = request_body(request);
+        body.as_object_mut()?.remove("stream");
+        let prompt = authorized(
+            a.post(format!("{}/apply-template", endpoint.base)),
+            endpoint,
+        )
+        .header("Content-Type", "application/json")
+        .send(body.to_string())
+        .ok()?
+        .into_body()
+        .read_to_string()
+        .ok()?;
+        let prompt = serde_json::from_str::<Value>(&prompt)
+            .ok()?
+            .get("prompt")?
+            .as_str()?
+            .to_string();
+        let tokens = authorized(a.post(format!("{}/tokenize", endpoint.base)), endpoint)
+            .header("Content-Type", "application/json")
+            .send(json!({"content": prompt, "add_special": true}).to_string())
+            .ok()?
+            .into_body()
+            .read_to_string()
+            .ok()?;
+        Some(
+            serde_json::from_str::<Value>(&tokens)
+                .ok()?
+                .get("tokens")?
+                .as_array()?
+                .len(),
+        )
+    }
+
+    /// The conversation as much of it as fits the context, with room for the
+    /// reply.
+    fn fit(&self, endpoint: &Endpoint, request: &Request) -> Request {
+        let Some(n_ctx) = self.n_ctx(endpoint) else {
+            return request.clone();
+        };
+        let budget = (n_ctx as usize).saturating_sub(reply_room(n_ctx));
+        let fitted = trim_to_budget(request, budget, |r| self.count_tokens(endpoint, r));
+        let dropped = request.messages.len() - fitted.messages.len();
+        if dropped > 0 {
+            log::info!(
+                "the conversation was trimmed to the context ({n_ctx} tokens): {dropped} older messages left out"
+            );
+        }
+        fitted
     }
 
     fn options(&self) -> Options {
@@ -152,14 +271,14 @@ impl Llama {
         cancel: &AtomicBool,
         emit: &mut dyn FnMut(Event<'_>),
     ) -> Result<(), BackendError> {
-        let body = request_body(request);
-        let mut call = agent(Some(Duration::from_secs(10)))
-            .post(format!("{}/v1/chat/completions", endpoint.base))
-            .header("Content-Type", "application/json")
-            .header("Accept", "text/event-stream");
-        if !endpoint.api_key.is_empty() {
-            call = call.header("Authorization", format!("Bearer {}", endpoint.api_key));
-        }
+        let body = request_body(&self.fit(endpoint, request));
+        let call = authorized(
+            agent(Some(Duration::from_secs(10)))
+                .post(format!("{}/v1/chat/completions", endpoint.base)),
+            endpoint,
+        )
+        .header("Content-Type", "application/json")
+        .header("Accept", "text/event-stream");
         let response = call.send(body.to_string()).map_err(http_error)?;
         let status = response.status().as_u16();
         let mut body = response.into_body();
@@ -248,6 +367,14 @@ impl Backend for Llama {
         Some(self.models_dir.clone())
     }
 
+    fn context_size(&self) -> Option<u32> {
+        self.context
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|(_, n)| *n)
+    }
+
     fn complete(
         &self,
         request: &Request,
@@ -260,6 +387,15 @@ impl Backend for Llama {
             self.server.release();
         }
         result
+    }
+}
+
+/// The request with the server's key, when it has one.
+fn authorized<B>(request: ureq::RequestBuilder<B>, endpoint: &Endpoint) -> ureq::RequestBuilder<B> {
+    if endpoint.api_key.is_empty() {
+        request
+    } else {
+        request.header("Authorization", format!("Bearer {}", endpoint.api_key))
     }
 }
 
@@ -361,6 +497,43 @@ mod tests {
     }
 
     #[test]
+    fn long_conversations_lose_their_oldest_turns() {
+        let mut long = request();
+        // As a request is: ending with the user's message (q8).
+        long.messages = (0..9)
+            .map(|i| {
+                if i % 2 == 0 {
+                    Message::user(format!("q{i}"))
+                } else {
+                    Message::assistant(format!("a{i}"))
+                }
+            })
+            .collect();
+        // 10 tokens a message.
+        let count = |r: &Request| Some(r.messages.len() * 10);
+        let fitted = trim_to_budget(&long, 45, count);
+        assert_eq!(fitted.messages.len(), 3, "{:?}", fitted.messages);
+        assert_eq!(fitted.messages[0].role, Role::User, "starts with the user");
+        assert_eq!(
+            fitted.messages.last().unwrap().text,
+            "q8",
+            "the last message stays"
+        );
+        assert_eq!(fitted.system_prompt, long.system_prompt);
+        // Fits already, or can't be measured: as it is.
+        assert_eq!(trim_to_budget(&long, 1000, count).messages.len(), 9);
+        assert_eq!(trim_to_budget(&long, 1, |_| None).messages.len(), 9);
+        // Never below the last message, even when it alone is too long.
+        assert_eq!(trim_to_budget(&long, 1, count).messages.len(), 1);
+    }
+
+    #[test]
+    fn room_for_the_reply() {
+        assert_eq!(reply_room(4096), 1024);
+        assert_eq!(reply_room(32768), 2048);
+    }
+
+    #[test]
     fn model_lists() {
         assert_eq!(
             model_ids(r#"{"object":"list","data":[{"id":"qwen3-8b"},{"id":"gemma"}]}"#),
@@ -386,41 +559,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A one-shot HTTP server on a free port: answers one request with
-    /// `response` and hands back what it was sent.
+    /// A small HTTP server on a free port: `/v1/chat/completions` gets
+    /// `response`, anything else a 404 (so the context is unknown and the
+    /// conversation is sent whole). Hands back the chat request it got.
     fn serve_once(response: String) -> (String, std::thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            let mut got = Vec::new();
-            let mut buf = [0u8; 4096];
-            // Headers, then a body of Content-Length.
-            loop {
-                let n = socket.read(&mut buf).unwrap();
-                got.extend_from_slice(&buf[..n]);
-                let text = String::from_utf8_lossy(&got).to_string();
-                if let Some(end) = text.find("\r\n\r\n") {
-                    let length = text
-                        .lines()
-                        .find_map(|l| {
-                            l.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
-                        })
-                        .unwrap_or(0);
-                    if got.len() >= end + 4 + length {
-                        break;
-                    }
+            for _ in 0..8 {
+                let (mut socket, _) = listener.accept().unwrap();
+                let request = read_request(&mut socket);
+                if request.starts_with("POST /v1/chat/completions") {
+                    socket.write_all(response.as_bytes()).unwrap();
+                    return request;
                 }
-                if n == 0 {
-                    break;
-                }
+                let _ = socket.write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
             }
-            socket.write_all(response.as_bytes()).unwrap();
-            String::from_utf8_lossy(&got).to_string()
+            String::new()
         });
         (base, handle)
+    }
+
+    /// One request: headers, then a body of Content-Length.
+    fn read_request(socket: &mut std::net::TcpStream) -> String {
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = socket.read(&mut buf).unwrap();
+            got.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&got).to_string();
+            if let Some(end) = text.find("\r\n\r\n") {
+                let length = text
+                    .lines()
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                    })
+                    .unwrap_or(0);
+                if got.len() >= end + 4 + length {
+                    return text;
+                }
+            }
+            if n == 0 {
+                return text;
+            }
+        }
     }
 
     fn external(base: &str) -> Llama {

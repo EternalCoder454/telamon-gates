@@ -100,6 +100,12 @@ pub trait Backend: Send + Sync {
         None
     }
 
+    /// The context the model runs with now, in tokens, once known (after
+    /// a reply); None when not known.
+    fn context_size(&self) -> Option<u32> {
+        None
+    }
+
     /// Streams the reply to `request`: each piece of text as it comes, in
     /// order, to `emit` (and, if the server measures it, its speed).
     /// Returns when the reply is complete, when it fails, or soon after

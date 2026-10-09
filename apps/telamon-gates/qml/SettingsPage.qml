@@ -98,7 +98,8 @@ TelamonPage {
         SectionRow {
             visible: !page.chat.demo && page.chat.serverUrl.length === 0
             title: qsTr("Context Size")
-            subtitle: qsTr("How much of the conversation the model sees at once")
+            // What Automatic came to, once a reply has run.
+            subtitle: page.chat.contextSize === 0 && page.chat.activeContext > 0 ? qsTr("How much of the conversation the model sees at once. Now %1 tokens.").arg(Number(page.chat.activeContext).toLocaleString(Qt.locale(), "f", 0)) : qsTr("How much of the conversation the model sees at once")
             leading: [
                 Symbol {
                     icon: Symbols.Notes

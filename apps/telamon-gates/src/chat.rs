@@ -53,6 +53,8 @@ pub mod qobject {
         #[qproperty(QString, server_url, cxx_name = "serverUrl")]
         /// Where the backend's model files go; "" when it has no folder.
         #[qproperty(QString, models_folder, cxx_name = "modelsFolder")]
+        /// The context the model ran with last, in tokens; 0 until known.
+        #[qproperty(i32, active_context, cxx_name = "activeContext")]
         #[namespace = "telamon_gates"]
         type Chat = super::ChatRust;
     }
@@ -241,6 +243,7 @@ pub struct ChatRust {
     context_size: i32,
     server_url: QString,
     models_folder: QString,
+    active_context: i32,
 
     conversation: Option<Conversation>,
     rows: Vec<Row>,
@@ -839,6 +842,13 @@ impl qobject::Chat {
             c.touch();
         }
         self.as_mut().update_retryable();
+        let context = self
+            .rust()
+            .backend
+            .as_ref()
+            .and_then(|b| b.context_size())
+            .map_or(0, |n| i32::try_from(n).unwrap_or(i32::MAX));
+        self.as_mut().set_active_context(context);
         self.save();
     }
 
