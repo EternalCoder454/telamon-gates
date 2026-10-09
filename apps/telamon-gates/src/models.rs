@@ -25,6 +25,12 @@ pub mod qobject {
         #[qproperty(QList_f64, sizes)]
         /// A decision model's kind ("laya", "kev"), "" for a chat model.
         #[qproperty(QStringList, kinds)]
+        /// What each can do: the context it was trained for in tokens (0 when
+        /// unknown), and 1 or 0 for whether its template takes tools
+        /// (`toolCapable`) and whether a projector lets it read images.
+        #[qproperty(QList_f64, contexts)]
+        #[qproperty(QList_f64, tool_capable, cxx_name = "toolCapable")]
+        #[qproperty(QList_f64, vision)]
         #[qproperty(QString, folder)]
         /// Hugging Face repositories found, and their downloads.
         #[qproperty(QStringList, results)]
@@ -101,7 +107,7 @@ pub mod qobject {
 use core::pin::Pin;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{CaseSensitivity, QList, QString, QStringList};
-use gates_core::backend::llama::local_models;
+use gates_core::backend::llama::{local_models, local_projectors, projector_for};
 use gates_core::hub::{self, ModelFile};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -115,6 +121,9 @@ pub struct ModelLibraryRust {
     labels: QStringList,
     sizes: QList<f64>,
     kinds: QStringList,
+    contexts: QList<f64>,
+    tool_capable: QList<f64>,
+    vision: QList<f64>,
     folder: QString,
     results: QStringList,
     downloads: QList<f64>,
@@ -152,27 +161,38 @@ fn numbers(items: impl IntoIterator<Item = f64>) -> QList<f64> {
     list
 }
 
+/// A yes as 1 and a no as 0, for a list QML reads.
+fn flag(yes: bool) -> f64 {
+    f64::from(u8::from(yes))
+}
+
 impl qobject::ModelLibrary {
     pub fn refresh(self: Pin<&mut Self>) {
         let dir = self.rust().dir.clone();
         let qt = self.qt_thread();
         std::thread::spawn(move || {
             let _ = std::fs::create_dir_all(&dir);
-            // From each one's header: quantisation, size label, kind.
-            let models: Vec<_> = local_models(&dir)
-                .into_iter()
+            // From each one's header: quantisation, size label, kind, context
+            // and tools; images from a projector file beside it.
+            let found = local_models(&dir);
+            let projectors = local_projectors(&dir);
+            let models: Vec<_> = found
+                .iter()
                 .map(|m| {
                     let quant = if m.info.quant.is_empty() {
                         gates_core::gguf::quant_from_name(&m.name)
                     } else {
-                        m.info.quant
+                        m.info.quant.clone()
                     };
                     (
-                        m.name,
+                        m.name.clone(),
                         quant,
-                        m.info.size_label,
+                        m.info.size_label.clone(),
                         m.size as f64,
-                        m.info.decision,
+                        m.info.decision.clone(),
+                        f64::from(m.info.context_length),
+                        flag(m.info.tools),
+                        flag(projector_for(m, &found, &projectors).is_some()),
                     )
                 })
                 .collect();
@@ -185,6 +205,11 @@ impl qobject::ModelLibrary {
                     .set_labels(strings(models.iter().map(|m| m.2.as_str())));
                 lib.as_mut()
                     .set_kinds(strings(models.iter().map(|m| m.4.as_str())));
+                lib.as_mut()
+                    .set_contexts(numbers(models.iter().map(|m| m.5)));
+                lib.as_mut()
+                    .set_tool_capable(numbers(models.iter().map(|m| m.6)));
+                lib.as_mut().set_vision(numbers(models.iter().map(|m| m.7)));
                 lib.set_sizes(numbers(models.iter().map(|m| m.3)));
             });
         });

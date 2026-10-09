@@ -47,6 +47,8 @@ its place, and the ones left out are listed with the reason.
 4. **Model facts.** Each model's context length, whether it reads images (a
    matching `mmproj`) and whether its chat template takes tools. These come
    from the GGUF header and show on the Models page and in the picker.
+   - **Built** on the Models page: context, Tools and Images badges.
+   - **Not yet:** in the chat's model picker.
 5. **Tools, our own.** A Rust registry in gates-core: no MCP, no Python, and
    nothing to spawn per call. Tools go through llama-server's OpenAI
    `tools`/`tool_calls` with `--jinja`.
@@ -62,7 +64,10 @@ its place, and the ones left out are listed with the reason.
        you allow it.
      - **Tested:** with Qwen3-4B it did a small coding task in 6 steps and
        5.5 s (`docs/BACKEND.md`).
-     - **Not yet:** the date, arithmetic, and searching conversations.
+     - **Date and arithmetic:** `now` (local date, time and zone) and
+       `calculate` (`+ - * / % ^`, brackets and common functions) are built;
+       both run at once.
+     - **Not yet:** searching conversations.
 6. **Fleet.** A dashboard page in the Telamon style showing:
    - each subagent as a card: its model, its task, a live status from
      SystemOne, tokens/s and context used;

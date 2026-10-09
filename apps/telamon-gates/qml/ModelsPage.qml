@@ -38,6 +38,15 @@ TelamonPage {
         return bytes <= page.vram.total ? "tight" : "big";
     }
 
+    // A context length in tokens, as models name it: 32768 is "32K", 131072
+    // and 128000 "128K", 1048576 "1M".
+    function tokens(count) {
+        if (count >= 1024 * 1024) {
+            return qsTr("%1M").arg(Number(count / (1024 * 1024)).toLocaleString(Qt.locale(), "f", count % (1024 * 1024) === 0 ? 0 : 1));
+        }
+        return qsTr("%1K").arg(Math.round(count % 1024 === 0 ? count / 1024 : count / 1000));
+    }
+
     function folderUrl(path) {
         return "file://" + path.split("/").map(encodeURIComponent).join("/");
     }
@@ -103,9 +112,14 @@ TelamonPage {
                 readonly property real bytes: page.models.sizes[index] ?? 0
                 // A decision model's kind ("laya"): it answers SystemOne, not chats.
                 readonly property string kind: page.models.kinds[index] ?? ""
+                // What a chat model can do: its context in tokens (0 when it
+                // doesn't say), tools in its template, images through a projector.
+                readonly property real context: page.models.contexts[index] ?? 0
+                readonly property bool tools: (page.models.toolCapable[index] ?? 0) > 0
+                readonly property bool images: (page.models.vision[index] ?? 0) > 0
 
                 title: modelData
-                subtitle: [row.kind.length > 0 ? qsTr("Decision model") : "", page.models.quants[index], page.models.labels[index], page.size(bytes)].filter(s => s && s.length > 0).join(" · ")
+                subtitle: [row.kind.length > 0 ? qsTr("Decision model") : "", page.models.quants[index], page.models.labels[index], row.kind.length === 0 && row.context > 0 ? qsTr("%1 context").arg(page.tokens(row.context)) : "", page.size(bytes)].filter(s => s && s.length > 0).join(" · ")
                 leading: [
                     Symbol {
                         icon: Symbols.Psychology
@@ -113,6 +127,18 @@ TelamonPage {
                     }
                 ]
 
+                TelamonBadge {
+                    y: parent ? Math.round((parent.height - height) / 2) : 0
+                    visible: row.kind.length === 0 && row.images
+                    symbol: Symbols.Image
+                    text: qsTr("Images")
+                }
+                TelamonBadge {
+                    y: parent ? Math.round((parent.height - height) / 2) : 0
+                    visible: row.kind.length === 0 && row.tools
+                    symbol: Symbols.Build
+                    text: qsTr("Tools")
+                }
                 FitBadge {
                     fit: row.kind.length > 0 ? "" : page.fit(row.bytes)
                 }
