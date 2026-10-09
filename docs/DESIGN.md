@@ -1,9 +1,11 @@
 # Telamon Gates: design
 
 Telamon Gates is the AI chat of Telamon OS: a window to talk to a local model,
-with conversations kept as plain files. This repository is the front end; the
-model is reached through one trait (`docs/BACKEND.md`), and until one is
-connected a demo backend answers.
+with conversations kept as plain files. Models run in llama.cpp's
+`llama-server`, from Telamon's own Vulkan build (`telamon-llama`, packaged in
+`packaging/telamon-llama/`), which Gates starts and stops itself. It is reached
+through one trait (`docs/BACKEND.md`). Without the server, a demo backend
+answers.
 
 ## Layout
 
@@ -38,7 +40,8 @@ beside it.
   is nothing to send; Stop while a reply comes in). Under it, the keys in small boxes (Enter
   Send, Shift+Enter New Line) and "Always double-check the answer." Escape
   stops a reply; Ctrl+N starts a new chat.
-- **Banners**: an info banner while the demo backend is in use; an error
+- **Banners**: an info banner while the demo backend is in use (no
+  telamon-llama), one with Open Folder while the models folder is empty; an error
   banner with Try Again when a reply fails.
 - **Settings**: the backend, the model, the system prompt (saved as you
   type), the shared transparency switch, and the folder the conversations are
@@ -84,6 +87,23 @@ then rename). Ids are hex and dashes only, so no id can name a path outside
 the folder. Settings are `~/.config/telamon-gatesrc`, group `[Chat]`
 (`Model`, `SystemPrompt`), plus the window's size from `TelamonWindow`.
 
+## The model server
+
+The `telamon-llama` package: llama.cpp's `llama-server` alone, built with
+Vulkan (`-DGGML_VULKAN=ON`), statically linked to llama.cpp's own libraries,
+in `/usr/libexec/telamon-llama/` (nothing in /usr/bin, so it never clashes
+with Fedora's `llama-cpp`).
+
+- Left out: model downloading (`LLAMA_OPENSSL=OFF`), the embedded web UI,
+  tests, examples and the other tools.
+- Its CPU code is portable (`GGML_NATIVE=OFF`), since the graphics card does
+  the work.
+- `%prep` checks the source tarball's sha256.
+- `%check` runs `--version`.
+
+Gates runs it per `docs/BACKEND.md`: on 127.0.0.1 only, with a random port
+and API key, stopped when idle, and dying with Gates.
+
 ## Privilege and attack surface
 
 No privilege: no polkit, no system bus, no root. What comes in from outside
@@ -110,6 +130,11 @@ serde; one that doesn't parse is skipped and logged.
 Startup to first frame under 300 ms; idle CPU 0 (nothing runs while no reply
 comes in); RSS under 120 MB with a long conversation open; a keystroke in the
 composer under 16 ms.
+
+Model files are trusted as much as any file the user puts in the folder: they
+are parsed by llama.cpp (in its own process, not Gates'). The server's API is
+reachable only from this computer and only with its key. A server address set
+in Settings is used as given, over plain http.
 
 ## Phase
 

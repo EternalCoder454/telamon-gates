@@ -22,12 +22,7 @@ impl Store {
     /// `$XDG_DATA_HOME/telamon-gates/conversations`, or under
     /// `~/.local/share` when that is unset.
     pub fn default_dir() -> PathBuf {
-        let base = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-            .unwrap_or_else(|| PathBuf::from("/nonexistent"));
-        base.join("telamon-gates").join("conversations")
+        data_dir().join("conversations")
     }
 
     pub fn dir(&self) -> &Path {
@@ -107,6 +102,26 @@ impl Store {
         }
         Ok(self.dir.join(format!("{id}.json")))
     }
+}
+
+/// `$XDG_DATA_HOME/telamon-gates` (`~/.local/share/telamon-gates`): the
+/// conversations and the models.
+pub fn data_dir() -> PathBuf {
+    xdg("XDG_DATA_HOME", ".local/share").join("telamon-gates")
+}
+
+/// `$XDG_STATE_HOME/telamon-gates` (`~/.local/state/telamon-gates`): the
+/// model server's log.
+pub fn state_dir() -> PathBuf {
+    xdg("XDG_STATE_HOME", ".local/state").join("telamon-gates")
+}
+
+fn xdg(var: &str, fallback: &str) -> PathBuf {
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(fallback)))
+        .unwrap_or_else(|| PathBuf::from("/nonexistent"))
 }
 
 /// Ids name files: lowercase hex and dashes only, so none can leave the

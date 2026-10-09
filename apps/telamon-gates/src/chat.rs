@@ -46,6 +46,13 @@ pub mod qobject {
         #[qproperty(bool, retryable)]
         /// The user's first name, for the greeting; "" when unknown.
         #[qproperty(QString, user_name, cxx_name = "userName")]
+        /// The model server's options (Settings): 0 is automatic.
+        #[qproperty(i32, gpu_layers, cxx_name = "gpuLayers")]
+        #[qproperty(i32, context_size, cxx_name = "contextSize")]
+        /// A llama-server elsewhere; "" runs one here.
+        #[qproperty(QString, server_url, cxx_name = "serverUrl")]
+        /// Where the backend's model files go; "" when it has no folder.
+        #[qproperty(QString, models_folder, cxx_name = "modelsFolder")]
         #[namespace = "telamon_gates"]
         type Chat = super::ChatRust;
     }
@@ -81,6 +88,17 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "saveSystemPrompt"]
         fn save_system_prompt(self: Pin<&mut Chat>, text: &QString);
+
+        /// Saves the model server's options and applies them from the next
+        /// reply (a running server stops, freeing the graphics card).
+        #[qinvokable]
+        #[cxx_name = "saveServerOptions"]
+        fn save_server_options(
+            self: Pin<&mut Chat>,
+            gpu_layers: i32,
+            context_size: i32,
+            server_url: &QString,
+        );
 
         /// Asks the backend again for its models.
         #[qinvokable]
@@ -219,6 +237,10 @@ pub struct ChatRust {
     count: i32,
     retryable: bool,
     user_name: QString,
+    gpu_layers: i32,
+    context_size: i32,
+    server_url: QString,
+    models_folder: QString,
 
     conversation: Option<Conversation>,
     rows: Vec<Row>,
@@ -288,6 +310,26 @@ impl qobject::Chat {
         self.as_mut().set_system_prompt(QString::from(
             settings::get(settings::SYSTEM_PROMPT).as_str(),
         ));
+        let options = settings::backend_options();
+        self.as_mut()
+            .set_gpu_layers(i32::try_from(options.gpu_layers).unwrap_or(0));
+        self.as_mut()
+            .set_context_size(i32::try_from(options.context).unwrap_or(0));
+        self.as_mut()
+            .set_server_url(QString::from(options.server_url.as_str()));
+        let folder = self.rust().backend.as_ref().and_then(|b| b.models_folder());
+        if let Some(folder) = folder {
+            self.as_mut()
+                .set_models_folder(QString::from(folder.to_string_lossy().as_ref()));
+            // There from the start, so Open Folder always opens it.
+            if let Some(io) = &self.rust().io {
+                io.run(move |_| {
+                    if let Err(e) = std::fs::create_dir_all(&folder) {
+                        log::warn!("cannot make {}: {e}", folder.display());
+                    }
+                });
+            }
+        }
         self.refresh_models();
     }
 
@@ -406,6 +448,48 @@ impl qobject::Chat {
         if let Some(io) = &self.rust().io {
             settings::set(io, settings::SYSTEM_PROMPT, text.to_string());
         }
+    }
+
+    pub fn save_server_options(
+        mut self: Pin<&mut Self>,
+        gpu_layers: i32,
+        context_size: i32,
+        server_url: &QString,
+    ) {
+        let options = gates_core::Options {
+            gpu_layers: u32::try_from(gpu_layers).unwrap_or(0),
+            context: u32::try_from(context_size).unwrap_or(0),
+            server_url: server_url
+                .to_string()
+                .trim()
+                .trim_end_matches('/')
+                .to_string(),
+        };
+        self.as_mut()
+            .set_gpu_layers(i32::try_from(options.gpu_layers).unwrap_or(0));
+        self.as_mut()
+            .set_context_size(i32::try_from(options.context).unwrap_or(0));
+        self.as_mut()
+            .set_server_url(QString::from(options.server_url.as_str()));
+        if let Some(io) = &self.rust().io {
+            let number = |n: u32| if n == 0 { String::new() } else { n.to_string() };
+            settings::set(io, settings::GPU_LAYERS, number(options.gpu_layers));
+            settings::set(io, settings::CONTEXT, number(options.context));
+            settings::set(io, settings::SERVER_URL, options.server_url.clone());
+        }
+        let Some(backend) = self.rust().backend.clone() else {
+            return;
+        };
+        // Stopping a running server waits for it: not on the GUI thread.
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            backend.set_options(&options);
+            let name = backend.name();
+            let _ = qt.queue(move |mut chat| {
+                chat.as_mut().set_backend_name(QString::from(name.as_str()));
+                chat.refresh_models();
+            });
+        });
     }
 
     pub fn refresh_models(self: Pin<&mut Self>) {

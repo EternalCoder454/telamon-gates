@@ -11,10 +11,10 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin=$(realpath "${1:-$repo/build/dev/telamon-gates}")
 out=$repo/out/smoke
 rm -rf "$out"
-mkdir -p "$out"/{config,data,cache,runtime,home}
+mkdir -p "$out"/{config,data,cache,runtime,home,state}
 chmod 700 "$out/runtime"
 export HOME=$out/home XDG_CONFIG_HOME=$out/config XDG_DATA_HOME=$out/data \
-    XDG_CACHE_HOME=$out/cache XDG_RUNTIME_DIR=$out/runtime
+    XDG_CACHE_HOME=$out/cache XDG_RUNTIME_DIR=$out/runtime XDG_STATE_HOME=$out/state
 # Telamon OS's desktops run at 1.5x.
 export QT_SCALE_FACTOR=${QT_SCALE_FACTOR:-1.5}
 
@@ -31,6 +31,14 @@ if [ "${SMOKE_DARK:-0}" = 1 ]; then
         done
         printf '[Colors:Selection]\nBackgroundNormal=138,122,244\nForegroundNormal=20,18,31\n'
     } >"$XDG_CONFIG_HOME/kdeglobals"
+fi
+
+# SMOKE_MODEL=<file.gguf>: put a model in the models folder, so the reply
+# comes from llama.cpp (telamon-llama, or llama-server on $PATH) instead of
+# the demo. The binary must be installed in the container.
+if [ -n "${SMOKE_MODEL:-}" ]; then
+    mkdir -p "$XDG_DATA_HOME/telamon-gates/models"
+    cp "$SMOKE_MODEL" "$XDG_DATA_HOME/telamon-gates/models/"
 fi
 
 # Two saved conversations: one from today, one from last month.
@@ -97,6 +105,10 @@ export bin out
 xvfb-run -a -s "-screen 0 1800x1300x24" dbus-run-session -- bash -c run
 echo "--- app log"
 cat "$out/app.log"
+if [ -n "${SMOKE_MODEL:-}" ]; then
+    echo "--- llama-server log (last lines)"
+    tail -5 "$out/state/telamon-gates/llama-server.log" 2>/dev/null || echo "(none)"
+fi
 echo "--- conversations"
 ls -la "$dir"
 replied=0

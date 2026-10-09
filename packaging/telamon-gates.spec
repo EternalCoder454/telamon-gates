@@ -46,6 +46,8 @@ Requires:       telamon-ui >= 2.0.6
 Requires:       kf6-qqc2-desktop-style
 Requires:       qt6-qtdeclarative
 Requires:       qt6-qtsvg
+# The model server (llama.cpp with Vulkan); without it the demo answers.
+Recommends:     telamon-llama
 
 %description
 Telamon Gates is the AI chat of Telamon OS: conversations with a local model,

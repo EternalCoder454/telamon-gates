@@ -70,7 +70,7 @@ run_theme() {
     mkdir -p "$x"/{config,data,cache,runtime,home} "$out"
     chmod 700 "$x/runtime"
     export HOME=$x/home XDG_CONFIG_HOME=$x/config XDG_DATA_HOME=$x/data \
-        XDG_CACHE_HOME=$x/cache XDG_RUNTIME_DIR=$x/runtime
+        XDG_CACHE_HOME=$x/cache XDG_RUNTIME_DIR=$x/runtime XDG_STATE_HOME=$x/state
     if [ "$theme" = dark ]; then
         dark_scheme >"$XDG_CONFIG_HOME/kdeglobals"
     fi
@@ -102,6 +102,12 @@ run_theme() {
 
     mkdir -p "$dir"
     seed_all "$dir"
+    # SCREENS_MODEL=<file.gguf>: replies from llama.cpp (installed in the
+    # container) after the first run, which shows the no-model state.
+    if [ -n "${SCREENS_MODEL:-}" ]; then
+        mkdir -p "$XDG_DATA_HOME/telamon-gates/models"
+        cp "$SCREENS_MODEL" "$XDG_DATA_HOME/telamon-gates/models/"
+    fi
     "$bin" >"$out/app.log" 2>&1 &
     app=$!
     sleep 4

@@ -44,6 +44,8 @@ When in doubt, do what it does.
 | Smoke run + screenshots | `scripts/dev.sh scripts/smoke.sh` (`SMOKE_DARK=1` for a dark scheme) |
 | Every page and state, light and dark | `scripts/dev.sh scripts/screens.sh` → `out/screens/{light,dark}/NN-<state>.png`; review them zoomed in, not whole |
 | RPM | `podman run --rm --security-opt label=disable -v "$PWD":/src:ro -v <framework rpms>:/fw:ro -v <out>:/out -e ATLAS_LOCAL_RPMS=/fw registry.fedoraproject.org/fedora:44 /src/packaging/build-rpm.sh /out` |
+| telamon-llama RPM | `podman run --rm --security-opt label=disable -v "$PWD/packaging/telamon-llama":/pkg:ro -v <out>:/out registry.fedoraproject.org/fedora:44 /pkg/build-rpm.sh /out` (about 3 min) |
+| Smoke run with a real model | install the telamon-llama RPM in the dev container, then `SMOKE_MODEL=<file.gguf> scripts/smoke.sh` (also `SCREENS_MODEL` for screens.sh) |
 | Telamon checks | `<framework checkout>/tools/lint-app.sh apps/telamon-gates` and `tools/check-app-names.sh apps/telamon-gates` |
 
 The framework RPMs come from the framework checkout's

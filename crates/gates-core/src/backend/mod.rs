@@ -6,12 +6,32 @@
 //! an implementation may use plain blocking I/O.
 
 mod demo;
+pub mod llama;
+pub mod server;
+pub mod sse;
 
 pub use demo::Demo;
+pub use llama::Llama;
 
 use crate::conversation::Message;
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
+
+/// The user's choices for the model server (Settings). The default leaves
+/// everything to llama.cpp and runs the server here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Options {
+    /// Model layers on the graphics card; 0 lets llama.cpp choose from the
+    /// free video memory.
+    pub gpu_layers: u32,
+    /// The context, in tokens (how much of the conversation the model
+    /// sees); 0 lets llama.cpp choose.
+    pub context: u32,
+    /// A llama-server already running elsewhere (`http://host:port`); empty
+    /// for the one Gates runs itself.
+    pub server_url: String,
+}
 
 /// What to answer: the conversation so far, ending with the user's message.
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +91,14 @@ pub trait Backend: Send + Sync {
     /// The models the user can pick from, in the order to show them. Empty
     /// when the backend serves one model and there is nothing to pick.
     fn models(&self) -> Result<Vec<String>, BackendError>;
+
+    /// New choices from Settings; they apply from the next reply.
+    fn set_options(&self, _options: &Options) {}
+
+    /// Where the backend's model files are, if it has a folder of them.
+    fn models_folder(&self) -> Option<PathBuf> {
+        None
+    }
 
     /// Streams the reply to `request`: each piece of text as it comes, in
     /// order, to `emit` (and, if the server measures it, its speed).

@@ -38,10 +38,22 @@ pub struct TelamonObjects {
     pub vram: *mut c_void,
 }
 
-/// The backend replies come from. This is the one line to change to connect
-/// a real model: see `docs/BACKEND.md`.
+/// The backend replies come from: llama.cpp when telamon-llama (or a
+/// `llama-server` on `$PATH`) is installed or a server address is set, else
+/// the built-in demo. See `docs/BACKEND.md`.
 fn backend() -> Arc<dyn Backend> {
-    Arc::new(gates_core::backend::Demo::default())
+    let options = settings::backend_options();
+    let binary = gates_core::backend::llama::find_server();
+    if binary.is_none() && options.server_url.is_empty() {
+        log::info!("no llama-server: the demo backend answers");
+        return Arc::new(gates_core::backend::Demo::default());
+    }
+    Arc::new(gates_core::backend::Llama::new(
+        gates_core::store::data_dir().join("models"),
+        binary,
+        gates_core::store::state_dir().join("llama-server.log"),
+        options,
+    ))
 }
 
 /// Called once from `main.cpp`: makes every QObject and starts reading the

@@ -48,32 +48,73 @@ pub enum Event<'a> {
 - A panic in a backend is caught and shown as "The backend stopped
   unexpectedly."
 
-## Plugging one in
+## Plugging in another one
 
-1. Add a module next to `demo.rs` in `crates/gates-core/src/backend/` (say
-   `llama.rs`) with a type that implements `Backend`. Put its HTTP client in
+1. Add a module next to `demo.rs` and `llama.rs` in
+   `crates/gates-core/src/backend/` with a type that implements `Backend`. Put its HTTP client in
    `crates/gates-core/Cargo.toml`; nothing Qt-related belongs there.
 2. Export it from `backend/mod.rs`.
-3. In `apps/telamon-gates/src/lib.rs`, `fn backend()` is the one line that
-   picks the backend. Return yours there.
+3. In `apps/telamon-gates/src/lib.rs`, `fn backend()` picks the backend.
+   Return yours there.
 4. Add tests beside it with recorded responses (see `demo.rs`'s tests for
    the shape: pieces in order, and cancel stops it).
 
-## llama
+## llama (built in)
 
-Assumed: "llama.app" serves llama.cpp's `llama-server` API, which is
-OpenAI-compatible. Then:
+`backend/llama.rs` is the llama.cpp backend; `lib.rs` picks it when
+telamon-llama is installed (`/usr/libexec/telamon-llama/llama-server`, else a
+`llama-server` on `$PATH`) or a server address is set in Settings, and keeps
+the demo otherwise.
 
-- `models()`: `GET {base}/v1/models`, the `data[].id` values.
-- `complete()`: `POST {base}/v1/chat/completions` with
-  `{"model", "messages": [{"role": "system"|"user"|"assistant", "content"}], "stream": true}`.
-  The answer is server-sent events: each `data: {...}` line carries
-  `choices[0].delta.content`; `data: [DONE]` ends it. Emit each `content`
-  as `Event::Text`, and the last chunk's `timings.predicted_per_second` (when
-  present) as `Event::Speed`.
-- The base address (for example `http://127.0.0.1:8080`) is the backend's own
-  setting. The settings file is `~/.config/telamon-gatesrc`; the app reads it
-  with `settings::get` in `apps/telamon-gates/src/settings.rs`.
+- **Models** are the `.gguf` files in `$XDG_DATA_HOME/telamon-gates/models`
+  (`local_models`); the picker's name is the file name without `.gguf`. With
+  a server address, `GET /v1/models` lists them instead.
+- **The server Gates runs** (`backend/server.rs`): started on the first reply
+  with the chosen model, stopped after 5 idle minutes (the model leaves the
+  graphics card's memory), restarted when the model or an option changes.
+  - It listens on 127.0.0.1 only, on a free port, and wants a fresh random
+    `--api-key` each start, so no other program can use it.
+  - It is started from one long-lived thread and dies with Gates
+    (PR_SET_PDEATHSIG). That signal fires when the *thread* that started the
+    child ends, so starting it from a reply's worker killed it after every
+    reply; `the_server_outlives_the_thread_that_asked_for_it` tests this.
+  - Flags: `--parallel 1 --jinja --no-webui --offline`. GPU layers
+    (`--n-gpu-layers`) and context (`--ctx-size`) are passed only when set in
+    Settings. Left out, llama.cpp's own fit (`--fit`, on by default since
+    v0.6) chooses both from the free video memory, which a number would turn
+    off.
+  - Its output goes to `$XDG_STATE_HOME/telamon-gates/llama-server.log`; a
+    failed start quotes the log's last line.
+- **A reply** is `POST /v1/chat/completions` with `"stream": true` (the
+  system prompt first). `backend/sse.rs` reads the server-sent events:
+  - `choices[0].delta.content` becomes `Event::Text`;
+  - the last chunk's `timings.predicted_per_second` becomes `Event::Speed`;
+  - `data: [DONE]` ends it;
+  - an `error` object becomes a `BackendError` with its message.
+
+  Stop drops the connection, and llama-server stops generating.
+- **The HTTP client** is `ureq` without TLS: plain http to 127.0.0.1, or to a
+  server address on the LAN (Settings checks the address is `http://`).
+
+### Tuning, and what was left at llama.cpp's defaults
+
+Checked against the v0.6.0 source and a web search (2026-10-08), not taken
+from advice on trust:
+
+- **Prompt caching** is on by default (`cache_prompt`): a new message
+  reuses the conversation already in the cache.
+- **Flash attention** is `auto`. Vulkan supports it, and it is kept only
+  where the model's layers can use it.
+- **KV cache** stays f16. q8_0 halves it at little quality cost, but a
+  quantised V cache needs flash attention on. This is a Performant-phase
+  option.
+- **Batch sizes** stay at the defaults (`-b 2048 -ub 512`). There is no
+  Vulkan/RDNA3 evidence for a larger `-ub`; benchmark before changing.
+- **Context shift** stays off (the default). With `--keep 0` it can drop the
+  system prompt. Long conversations will instead be trimmed by Gates (not
+  yet done).
+- **Speculative decoding** is not used: there are no gains measured on AMD,
+  and it needs a matching draft model.
 
 Every reply is untrusted text. The window already treats it so (see
 `markdown.rs`: escaped, no raw HTML, no images, web links only): a backend
