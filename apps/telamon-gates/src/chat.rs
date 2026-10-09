@@ -1827,21 +1827,45 @@ impl qobject::Chat {
         if !provider.needs_key() || *self.web_testing() {
             return;
         }
-        if let Ok(mut cache) = self.rust().web_cache.lock() {
-            *cache = None;
-        }
+        let keys = match self.rust().web_keys.clone() {
+            Some(keys) if *self.keyring_available() => keys,
+            _ => {
+                // The key may still be in the keyring: it stays "saved".
+                self.as_mut().set_web_test_ok(false);
+                self.set_web_test_result(QString::from(
+                    "The key can't be removed while the system keyring isn't running. Start it and try again.",
+                ));
+                return;
+            }
+        };
+        // Busy while the keyring deletes, so a Save can't race it.
+        self.as_mut().set_web_testing(true);
         self.as_mut().set_web_test_result(QString::default());
-        let keys = self.rust().web_keys.clone();
-        // The item is gone from the keyring when it can be reached; the
-        // setting is cleared either way.
-        self.as_mut().remember_key(provider, false);
-        if let (Some(keys), true) = (keys, *self.keyring_available()) {
-            std::thread::spawn(move || {
-                if let Err(e) = keys.remove(&provider.key_name()) {
-                    log::warn!("cannot remove the web search key: {e}");
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let result = keys.remove(&provider.key_name());
+            let _ = qt.queue(move |mut chat| {
+                chat.as_mut().set_web_testing(false);
+                match result {
+                    Ok(()) => {
+                        if chat.provider() == provider
+                            && let Ok(mut cache) = chat.rust().web_cache.lock()
+                        {
+                            *cache = None;
+                        }
+                        chat.remember_key(provider, false);
+                    }
+                    Err(e) => {
+                        // Still in the keyring, so still shown as saved.
+                        log::warn!("cannot remove the web search key: {e}");
+                        chat.as_mut().set_web_test_ok(false);
+                        chat.set_web_test_result(QString::from(
+                            format!("The key wasn't removed. {e}").as_str(),
+                        ));
+                    }
                 }
             });
-        }
+        });
     }
 
     pub fn test_web_search(mut self: Pin<&mut Self>) {
@@ -1858,7 +1882,7 @@ impl qobject::Chat {
             let name = setup.provider.name();
             // The real service, even when the demo backend answers replies.
             let result = setup
-                .live()
+                .live(&AtomicBool::new(false))
                 .and_then(|live| web::Web::search(&live, "telamon", 1, &AtomicBool::new(false)));
             let _ = qt.queue(move |mut chat| {
                 chat.as_mut().set_web_testing(false);
@@ -2287,7 +2311,7 @@ impl qobject::Chat {
                     if mode.id != modes::STORY.id
                         && (tools_unknown || tool_models.contains(&request.model)) =>
                 {
-                    match setup.connect() {
+                    match setup.connect(&cancel) {
                         Ok(connection) => Some(connection),
                         Err(e) => {
                             log::warn!("web search: {e}");

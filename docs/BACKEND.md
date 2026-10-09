@@ -416,7 +416,11 @@ the user; each call shows as a tool row.
 
   Titles and snippets are reduced to plain text, links kept only when http(s),
   duplicates dropped. The key is never in an address, so it can't reach an
-  error message. HTTP (`ureq`, native-tls) ignores proxies.
+  error message, and a printed request shows its header names only. Services
+  with a key are reached over https only and never follow a redirect (which
+  would hand the key to wherever it points); a SearXNG instance, which has no
+  key and is often plain http on the user's own network, may. HTTP (`ureq`,
+  native-tls) ignores proxies.
 - **The key** is kept by `web::keys::KeyStore`: the system keyring through
   `oo7` (Secret Service; KWallet answers it on Plasma) for the app, `Memory`
   for tests, `Missing` for "no keyring". Without a keyring Settings says so and
@@ -428,16 +432,28 @@ the user; each call shows as a tool row.
   the address; redirects followed here, 5 at most, each checked again; a
   resolver that drops non-public addresses (`public_ip`: loopback, private,
   link-local, CGNAT, documentation, multicast, reserved, and IPv6 forms that
-  carry an IPv4 address: mapped, NAT64, 6to4); 15 s in all, 1.5 MB read, 20 KB
-  of text kept. HTML becomes text: scripts, styles, menus and footers dropped,
+  carry an IPv4 address or lead to one: mapped, NAT64 (both ranges), 6to4,
+  Teredo); 15 s in all (one deadline for every hop), 1.5 MB read, 20 KB of
+  text kept. A panic while reading a page (a parser bug met on a hostile
+  page) is caught and answered as "couldn't read the page", never mistaken
+  for Stop. HTML becomes text: scripts, styles, menus and footers dropped,
   `<main>` preferred, headings as `#` lines, links as `[text](url)` with
   absolute http(s) targets, invisible and direction-changing characters
   removed. Plain text and JSON are read as they are; other types are refused.
-- **What the model may open** (`web/session.rs`): addresses shown in a search
-  result or a page it read, written in the user's messages or earlier tool
-  results, or on a site the user named. Anything else is refused ("Search for
-  it first"), which stops an injected page from sending the conversation out
-  in an address.
+- **What the model may open** (`web/session.rs`): the address of each result
+  of a `web_search` (the line after its title, never its snippet, which
+  whoever wrote the page controls), addresses the user wrote, and websites the
+  user named: the host of an address they wrote (any page, any query), or a
+  bare domain written as a word of its own (bounded by whitespace or
+  punctuation; not part of an email or a path; not a file name: a word ending
+  in `rs`, `md`, `zip`, `sh`, `py`, `go`, `json`, `toml`, `txt`, `mov` and
+  the like is a file unless it starts with `www.`), which may be opened at a
+  path but never with a query string. Links on pages it read do **not** count:
+  a page can make as many as it likes, and each fetch is a covert channel.
+  Anything else is refused ("Search for it first"), which stops an injected
+  page from sending the conversation out in an address. Addresses are
+  compared without their fragment, and a trailing slash only matters where
+  the path is more than the root.
 - **Stop:** each call runs on a thread of its own that the reply waits on, so
   Stop returns within 40 ms; the thread ends by its time limits.
 - **The prompt** (`web::PROMPT`) tells the model the results are data, not

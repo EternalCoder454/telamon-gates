@@ -11,7 +11,8 @@
 //!   the address connected to, so a name that answers differently the second
 //!   time (DNS rebinding) gets nothing. A page can't make Gates probe the
 //!   local network, this computer or a cloud metadata service;
-//! - **bounded**: 15 s in all, 5 redirects, 1.5 MB read, 20 KB of text kept.
+//! - **bounded**: 15 s in all (one deadline for every hop), 5 redirects, 1.5 MB
+//!   read, 20 KB of text kept.
 
 use super::{Page, WebError, html};
 use std::io::{self, Read};
@@ -44,7 +45,7 @@ impl Policy {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
-    /// For the whole fetch of one address, redirects not counted apart.
+    /// For the whole fetch: every hop of every redirect together.
     pub timeout: Duration,
     pub connect: Duration,
     /// Bytes of the page read.
@@ -106,6 +107,14 @@ fn public_v6(ip: Ipv6Addr) -> bool {
         let [a, b] = s[6].to_be_bytes();
         let [c, d] = s[7].to_be_bytes();
         return public_v4(Ipv4Addr::new(a, b, c, d));
+    }
+    // 64:ff9b:1::/48, local-use NAT64 (RFC 8215): translators to private hosts.
+    if s[..3] == [0x64, 0xff9b, 1] {
+        return false;
+    }
+    // 2001::/32, Teredo: tunnels to addresses of the client's choosing.
+    if s[0] == 0x2001 && s[1] == 0 {
+        return false;
     }
     // 2002::/16, 6to4.
     if s[0] == 0x2002 {
@@ -252,14 +261,25 @@ impl Fetcher {
                 "That isn't a web address. Use a full one, such as https://example.com/page.",
             )
         })?;
+        let started = std::time::Instant::now();
         for _ in 0..=self.limits.redirects {
             if cancel.load(Ordering::Relaxed) {
                 return Err(WebError::new("Stopped."));
             }
             self.check(&url)?;
+            // What is left of the one deadline for all hops.
+            let left = self
+                .limits
+                .timeout
+                .checked_sub(started.elapsed())
+                .filter(|d| !d.is_zero())
+                .ok_or_else(|| WebError::new("The website took too long to answer."))?;
             let response = self
                 .agent
                 .get(url.as_str())
+                .config()
+                .timeout_global(Some(left))
+                .build()
                 .header("Accept", ACCEPT)
                 .call()
                 .map_err(explain)?;
@@ -500,6 +520,9 @@ mod tests {
             "2002:7f00:1::",
             "2002:a9fe:a9fe::1",
             "::127.0.0.1",
+            "64:ff9b:1::1",
+            "64:ff9b:1:ffff::a00:1",
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2",
         ] {
             assert!(!public_ip(ip(private)), "{private} must be refused");
         }
@@ -512,6 +535,7 @@ mod tests {
             "100.128.0.1",
             "2606:4700:4700::1111",
             "2a00:1450:4001::200e",
+            "2001:4860:4860::8888",
             "::ffff:8.8.8.8",
         ] {
             assert!(public_ip(ip(public)), "{public} is public");
@@ -787,6 +811,50 @@ mod tests {
             "{e}"
         );
         let _ = server.join();
+    }
+
+    #[test]
+    fn one_deadline_covers_every_hop() {
+        // Each hop answers after 300 ms with a redirect to the next: each is
+        // inside the limit, together they are not.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let stop = done.clone();
+        let server = std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let Ok((mut socket, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                socket.set_nonblocking(false).unwrap();
+                let mut buf = [0u8; 4096];
+                let _ = socket.read(&mut buf);
+                std::thread::sleep(Duration::from_millis(300));
+                let _ = socket.write_all(&response("302 Found", "Location: /next\r\n", b""));
+            }
+        });
+        let limits = Limits {
+            timeout: Duration::from_millis(800),
+            redirects: 20,
+            ..quick()
+        };
+        let started = Instant::now();
+        let e = lax(limits)
+            .get(
+                &format!("http://127.0.0.1:{port}/"),
+                &AtomicBool::new(false),
+            )
+            .unwrap_err();
+        done.store(true, Ordering::Relaxed);
+        server.join().unwrap();
+        assert!(e.to_string().contains("took too long"), "{e}");
+        assert!(
+            started.elapsed() < Duration::from_millis(1800),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

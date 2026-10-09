@@ -187,6 +187,16 @@ pub fn cancellable<T: Send + 'static>(
     }
 }
 
+/// Runs `work`, turning a panic in it (a parser bug met on a hostile page)
+/// into an error, so it is never taken for a Stop.
+pub fn guarded<T>(work: impl FnOnce() -> Result<T, WebError>) -> Result<T, WebError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|_| {
+        Err(WebError::new(
+            "Couldn't read the page: something in it broke the reader.",
+        ))
+    })
+}
+
 /// The real web: a search service and the page fetcher.
 pub struct Live {
     provider: Provider,
@@ -214,7 +224,7 @@ impl Live {
             provider,
             key: key.trim().to_string(),
             base: base.trim().to_string(),
-            agent: providers::agent(),
+            agent: providers::agent(provider),
             fetcher: Arc::new(Fetcher::new()),
         })
     }
@@ -230,14 +240,17 @@ impl Web for Live {
         let count = count.clamp(1, MAX_RESULTS);
         let call = providers::request(self.provider, &self.key, &self.base, query, count)?;
         let (agent, provider) = (self.agent.clone(), self.provider);
-        let body = cancellable(cancel, move |_| providers::send(&agent, provider, &call))
-            .ok_or_else(|| WebError::new("Stopped."))??;
+        let body = cancellable(cancel, move |_| {
+            guarded(|| providers::send(&agent, provider, &call))
+        })
+        .ok_or_else(|| WebError::new("Stopped."))??;
         providers::parse(self.provider, &body, count)
     }
 
     fn fetch(&self, url: &str, cancel: &AtomicBool) -> Result<Page, WebError> {
         let (fetcher, url) = (self.fetcher.clone(), url.to_string());
-        cancellable(cancel, move |stop| fetcher.get(&url, stop))
+        // A bug in reading a page is "couldn't read it", never "Stopped".
+        cancellable(cancel, move |stop| guarded(|| fetcher.get(&url, stop)))
             .ok_or_else(|| WebError::new("Stopped."))?
     }
 }
@@ -277,10 +290,13 @@ impl Setup {
         }
     }
 
-    /// The real service, whatever the backend is (Test Connection).
-    pub fn live(&self) -> Result<Live, WebError> {
+    /// The real service, whatever the backend is (Test Connection). Reading
+    /// the key may wait for the user to unlock the keyring: Stop gives up on
+    /// that (the wait itself ends when the keyring does).
+    pub fn live(&self, cancel: &AtomicBool) -> Result<Live, WebError> {
         let key = if self.provider.needs_key() {
-            self.key()?
+            let setup = self.clone();
+            cancellable(cancel, move |_| setup.key()).ok_or_else(|| WebError::new("Stopped."))??
         } else {
             String::new()
         };
@@ -288,11 +304,11 @@ impl Setup {
     }
 
     /// The web for a reply: the real one, or the demo's.
-    pub fn connect(&self) -> Result<Box<dyn Web>, WebError> {
+    pub fn connect(&self, cancel: &AtomicBool) -> Result<Box<dyn Web>, WebError> {
         if self.demo {
             return Ok(Box::new(Canned::default()));
         }
-        Ok(Box::new(self.live()?))
+        Ok(Box::new(self.live(cancel)?))
     }
 }
 
@@ -487,6 +503,58 @@ pub(crate) mod testing {
 mod tests {
     use super::*;
 
+    static NO_STOP: AtomicBool = AtomicBool::new(false);
+
+    #[test]
+    fn a_panic_in_reading_a_page_is_an_error_not_a_stop() {
+        let done = cancellable(&NO_STOP, |_| guarded::<()>(|| panic!("a parser bug"))).unwrap();
+        assert!(
+            done.unwrap_err()
+                .to_string()
+                .starts_with("Couldn't read the page")
+        );
+        // Unguarded, the thread's panic would look like a Stop (None).
+        assert!(cancellable(&NO_STOP, |_| -> u8 { panic!("unguarded") }).is_none());
+    }
+
+    #[test]
+    fn stop_gives_up_on_a_keyring_that_waits() {
+        // A keyring that never answers (an unlock prompt left alone).
+        struct Waiting;
+        impl KeyStore for Waiting {
+            fn check(&self) -> Result<(), String> {
+                Ok(())
+            }
+            fn get(&self, _: &str) -> Result<Option<String>, String> {
+                std::thread::sleep(Duration::from_secs(5));
+                Ok(None)
+            }
+            fn set(&self, _: &str, _: &str) -> Result<(), String> {
+                Ok(())
+            }
+            fn remove(&self, _: &str) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let setup = Setup {
+            provider: Provider::Brave,
+            url: String::new(),
+            keys: Arc::new(Waiting),
+            cache: Arc::default(),
+            demo: false,
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let started = std::time::Instant::now();
+        let e = setup.live(&stop).err().unwrap();
+        assert_eq!(e.to_string(), "Stopped.");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
     #[test]
     fn providers_by_id() {
         for p in Provider::ALL {
@@ -519,15 +587,15 @@ mod tests {
             demo: false,
         };
         // No key yet: Settings is the place to add it.
-        let e = setup.live().err().unwrap();
+        let e = setup.live(&NO_STOP).err().unwrap();
         assert!(e.to_string().contains("no API key"), "{e}");
         // A key kept for another service doesn't count.
         keys.set(&Provider::Tavily.key_name(), "test-key-not-real")
             .unwrap();
-        assert!(setup.live().is_err());
+        assert!(setup.live(&NO_STOP).is_err());
         keys.set(&Provider::Brave.key_name(), "test-key-not-real")
             .unwrap();
-        assert!(setup.live().is_ok());
+        assert!(setup.live(&NO_STOP).is_ok());
         // Cached: the keyring isn't asked again.
         keys.remove(&Provider::Brave.key_name()).unwrap();
         assert_eq!(setup.key().unwrap(), "test-key-not-real");
@@ -539,17 +607,23 @@ mod tests {
             cache: Arc::default(),
             demo: false,
         };
-        assert!(searx.live().is_ok());
+        assert!(searx.live(&NO_STOP).is_ok());
         // No keyring: the reason is the answer, and nothing is saved.
         let none = Setup {
             provider: Provider::Tavily,
             keys: Arc::new(keys::Missing),
             ..searx.clone()
         };
-        assert!(none.live().err().unwrap().to_string().contains("keyring"));
+        assert!(
+            none.live(&NO_STOP)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("keyring")
+        );
         // The demo never touches the network or the keyring.
         let demo = Setup { demo: true, ..none };
-        assert!(demo.connect().is_ok());
+        assert!(demo.connect(&NO_STOP).is_ok());
     }
 
     #[test]

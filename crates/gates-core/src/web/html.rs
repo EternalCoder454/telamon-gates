@@ -235,9 +235,12 @@ impl<'a> Reader<'a> {
             }
             if !key.is_empty() {
                 attrs.push((key, value));
-            } else {
-                j += 1;
+            } else if j == key_start {
+                // No progress (nothing a tag can hold): step over one whole
+                // character, never into the middle of one.
+                j += html[j..].chars().next().map_or(1, char::len_utf8);
             }
+            j = j.min(bytes.len());
         }
         if closing {
             self.end(&name);
@@ -246,9 +249,7 @@ impl<'a> Reader<'a> {
         self.start(&name, &attrs, self_closing);
         // Text up to the closing tag, for elements whose content isn't markup.
         if RAW.contains(&name.as_str()) && !self_closing {
-            let lower_rest = html[j..].to_ascii_lowercase();
-            let close = format!("</{name}");
-            let end = lower_rest.find(&close).map_or(html.len(), |e| j + e);
+            let end = find_closing(html, j, &name).unwrap_or(html.len());
             if name == "title" {
                 if self.title.is_empty() {
                     self.title = decode(&html[j..end]);
@@ -459,6 +460,25 @@ fn tidy_line(text: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Where `</name` (any case) first appears in `html` from `from`, without
+/// copying the page: a page of thousands of raw-text tags stays linear.
+fn find_closing(html: &str, from: usize, name: &str) -> Option<usize> {
+    let bytes = html.as_bytes();
+    let needle = name.as_bytes();
+    let mut i = from;
+    while i + 2 + needle.len() <= bytes.len() {
+        i += bytes[i..].iter().position(|&b| b == b'<')?;
+        if i + 2 + needle.len() <= bytes.len()
+            && bytes[i + 1] == b'/'
+            && bytes[i + 2..i + 2 + needle.len()].eq_ignore_ascii_case(needle)
+        {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 /// A list item that is only a link: `- [label](address)`.
@@ -672,6 +692,43 @@ mod tests {
         let html = "<table><tr><th>Name</th><th>Size</th></tr><tr><td>a</td><td>1</td></tr></table>\
                     <pre>line 1\n  line 2</pre>";
         assert_eq!(text(html), "Name | Size\na | 1\n\nline 1\n  line 2");
+    }
+
+    #[test]
+    fn odd_attributes_never_panic() {
+        // An attribute with no name, then a multibyte character.
+        assert_eq!(text("<p><a =\"x\"é>link</a> after</p>"), "link after");
+        assert_eq!(text("<a =x é>é</a>"), "é");
+        // The same at the end of the input.
+        assert_eq!(text("<p>seen</p><title =\"x\""), "seen");
+        assert_eq!(text("<title ="), "");
+        assert_eq!(text("<p x=\"unclosed é"), "");
+        assert_eq!(text("<a href=é"), "");
+        // Whatever the bytes, the reader reaches the end without a panic.
+        let nasty = "<<a =\"é<b ='<title =é<//é</é<!-<? = / \"'>é<style ='é";
+        for cut in 0..nasty.len() {
+            if nasty.is_char_boundary(cut) {
+                let _ = text(&nasty[..cut]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_page_of_raw_tags_is_read_in_linear_time() {
+        let page = format!(
+            "<p>start</p>{}<p>end</p>",
+            "<style></style>".repeat(100_000)
+        );
+        assert!(page.len() > 1_500_000);
+        let started = std::time::Instant::now();
+        assert_eq!(text(&page), "start\n\nend");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        // Mixed case closes them too, and an unclosed one runs to the end once.
+        assert_eq!(text("<STYLE>x</Style><p>a</p><script>never"), "a");
     }
 
     #[test]

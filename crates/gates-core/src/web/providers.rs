@@ -12,13 +12,28 @@ use std::time::Duration;
 use url::Url;
 
 /// A search's request, ready to send.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Call {
     pub post: bool,
     pub url: String,
     pub headers: Vec<(&'static str, String)>,
     /// The JSON body of a POST.
     pub body: Option<String>,
+}
+
+// The headers carry the API key: a debug print shows their names only.
+impl std::fmt::Debug for Call {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Call")
+            .field("post", &self.post)
+            .field("url", &self.url)
+            .field(
+                "headers",
+                &self.headers.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+            )
+            .field("body", &self.body.as_ref().map(|b| b.len()))
+            .finish()
+    }
 }
 
 /// The answer is read to this size at most.
@@ -246,18 +261,27 @@ pub fn send(agent: &ureq::Agent, provider: Provider, call: &Call) -> Result<Stri
     Ok(text)
 }
 
-/// The client every search service is reached with: bounded in time, no
-/// proxy (the key would pass through it), and the answer's status is the
-/// caller's to read.
-pub fn agent() -> ureq::Agent {
+/// The client a search service is reached with: bounded in time, no proxy
+/// (the key would pass through it), and the answer's status is the caller's
+/// to read. A service with a key is only reached over https and never
+/// follows a redirect, which would hand the key to wherever it points; a
+/// SearXNG instance (no key, often plain http on the user's own network)
+/// may redirect a few times.
+pub fn agent(provider: Provider) -> ureq::Agent {
+    ureq::Agent::new_with_config(client_config(provider.needs_key()))
+}
+
+/// The client's configuration (`agent`); `keyed` for a service with a key.
+fn client_config(keyed: bool) -> ureq::config::Config {
     ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(8)))
         .timeout_global(Some(Duration::from_secs(20)))
         .http_status_as_error(false)
+        .https_only(keyed)
+        .max_redirects(if keyed { 0 } else { 3 })
         .proxy(None)
         .user_agent("telamon-gates")
         .build()
-        .into()
 }
 
 #[cfg(test)]
@@ -417,6 +441,31 @@ mod tests {
             assert!(!call.url.contains(key));
         }
         assert!(request(Provider::Brave, key, "", "   ", 5).is_err());
+    }
+
+    #[test]
+    fn a_printed_call_never_shows_the_key() {
+        let key = "test-key-not-real";
+        for provider in [Provider::Brave, Provider::Tavily] {
+            let call = request(provider, key, "", "q", 3).unwrap();
+            let shown = format!("{call:?}");
+            assert!(!shown.contains(key), "{shown}");
+            assert!(shown.contains("headers"));
+        }
+    }
+
+    #[test]
+    fn keyed_services_are_https_only_and_never_redirected() {
+        for provider in [Provider::Brave, Provider::Tavily] {
+            let config = client_config(provider.needs_key());
+            assert!(config.https_only(), "{provider:?}");
+            assert_eq!(config.max_redirects(), 0, "{provider:?}");
+        }
+        // SearXNG has no key to leak, and is often plain http, here or on
+        // the user's network.
+        let searx = client_config(Provider::Searxng.needs_key());
+        assert!(!searx.https_only());
+        assert!(searx.max_redirects() > 0);
     }
 
     #[test]

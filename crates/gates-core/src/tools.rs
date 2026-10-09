@@ -285,8 +285,9 @@ fn web_search(
                 "\n({} To read a page, call fetch_page with its address.)",
                 crate::web::UNTRUSTED
             ));
-            // The model may open what it was shown.
-            session.show(&out);
+            // The model may open the results' own addresses.
+            let urls: Vec<String> = results.iter().map(|r| r.url.clone()).collect();
+            session.show_results(&urls);
             let n = results.len();
             Outcome::ok(
                 out,
@@ -318,9 +319,9 @@ fn fetch_page(session: &crate::web::Session<'_>, url: &str, cancel: &AtomicBool)
             if page.truncated {
                 out.push_str("\n\n(The page is longer; this is its first part.)");
             }
-            // The addresses on the page are the ones it may go on to.
-            session.show(&page.text);
-            session.show(&page.url);
+            // The page's own links are not added to what may be opened: a page
+            // can carry any number of them, and each fetch is a covert channel
+            // (`web/session.rs`).
             let kb = page.text.len().div_ceil(1024);
             Outcome::ok(out, format!("Read {} ({kb} KB)", short_url(&page.url)))
         }
@@ -2318,13 +2319,18 @@ mod tests {
         assert!(read.output.contains("The body."));
         assert!(read.output.contains("this is its first part"));
         assert_eq!(read.summary, "Read example.org/r2 (1 KB)");
-        // The page's own links may be followed.
+        // The page's own links may not: only search results and the user's
+        // words are on the list.
         let deeper = go_web(
             &session,
             "fetch_page",
             json!({"url": "https://example.org/deeper"}),
         );
-        assert!(deeper.ok, "{deeper:?}");
+        assert!(
+            !deeper.ok && deeper.output.contains("Search for it first"),
+            "{deeper:?}"
+        );
+        assert!(!fake.calls().iter().any(|c| c.contains("deeper")));
         // A failing page tells the model why.
         let gone = go_web(
             &session,
