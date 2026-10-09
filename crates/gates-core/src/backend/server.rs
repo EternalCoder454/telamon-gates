@@ -17,6 +17,7 @@ use std::net::TcpListener;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -170,6 +171,16 @@ impl Server {
     /// with something else, and ready to answer. Counts as in use until
     /// `release`.
     pub fn acquire(&self, launch: &Launch) -> Result<Endpoint, BackendError> {
+        self.acquire_until(launch, &AtomicBool::new(false))
+    }
+
+    /// As `acquire`; `cancel` turning true while the model loads stops the
+    /// start (Stop, before the reply even began).
+    pub fn acquire_until(
+        &self,
+        launch: &Launch,
+        cancel: &AtomicBool,
+    ) -> Result<Endpoint, BackendError> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let alive = match state.running.as_mut() {
             Some(r) => r.launch == *launch && matches!(r.child.try_wait(), Ok(None)),
@@ -180,7 +191,7 @@ impl Server {
             if let Some(old) = state.running.take() {
                 stop(old.child);
             }
-            state.running = Some(self.start(launch)?);
+            state.running = Some(self.start(launch, cancel)?);
         }
         let Some(endpoint) = state.running.as_ref().map(|r| r.endpoint.clone()) else {
             return Err(BackendError::Other(
@@ -243,7 +254,7 @@ impl Server {
         }
     }
 
-    fn start(&self, launch: &Launch) -> Result<Running, BackendError> {
+    fn start(&self, launch: &Launch, cancel: &AtomicBool) -> Result<Running, BackendError> {
         let port = free_port()
             .map_err(|e| BackendError::Other(format!("No free port for the model server: {e}.")))?;
         let api_key = random_key().map_err(|e| {
@@ -289,7 +300,7 @@ impl Server {
             base: format!("http://127.0.0.1:{port}"),
             api_key,
         };
-        match wait_ready(&mut child, &endpoint.base, self.load) {
+        match wait_ready(&mut child, &endpoint.base, self.load, cancel) {
             Ok(()) => Ok(Running {
                 child,
                 launch: launch.clone(),
@@ -339,6 +350,10 @@ pub fn should_stop(busy: usize, last_used: Option<Instant>, now: Instant) -> boo
 
 /// Asks the server to quit, then makes sure.
 fn stop(mut child: Child) {
+    // Already gone (and reaped): its number may be another process's now.
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
     let pid = child.id() as libc::pid_t;
     // SAFETY: a signal to our own child, which has not been reaped yet.
     unsafe {
@@ -357,11 +372,19 @@ fn stop(mut child: Child) {
 
 /// Polls `/health` (no key needed) until the model is loaded. Fails when
 /// the process ends or `limit` passes.
-fn wait_ready(child: &mut Child, base: &str, limit: Duration) -> Result<(), String> {
+fn wait_ready(
+    child: &mut Child,
+    base: &str,
+    limit: Duration,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
     let agent = super::llama::agent(Some(Duration::from_secs(2)));
     let url = format!("{base}/health");
     let deadline = Instant::now() + limit;
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("it was stopped while it loaded.".into());
+        }
         if let Ok(Some(status)) = child.try_wait() {
             return Err(format!("it stopped ({status})."));
         }

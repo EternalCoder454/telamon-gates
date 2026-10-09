@@ -10,7 +10,6 @@ use super::sse::{self, Line};
 use super::{Backend, BackendError, Event, Options, Request};
 use crate::conversation::{Role, ToolCall};
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -401,7 +400,7 @@ impl Llama {
 
     /// Where to send the request, and whether it holds the managed server
     /// (to release after).
-    fn endpoint(&self, model: &str) -> Result<(Endpoint, bool), BackendError> {
+    fn endpoint(&self, model: &str, cancel: &AtomicBool) -> Result<(Endpoint, bool), BackendError> {
         let options = self.options();
         if !options.server_url.is_empty() {
             return Ok((
@@ -439,7 +438,7 @@ impl Llama {
             batch: None,
             projector,
         };
-        Ok((self.server.acquire(&launch)?, true))
+        Ok((self.server.acquire_until(&launch, cancel)?, true))
     }
 
     fn stream(
@@ -450,35 +449,67 @@ impl Llama {
         emit: &mut dyn FnMut(Event<'_>),
     ) -> Result<(), BackendError> {
         let body = request_body(&self.fit(endpoint, request));
-        let call = authorized(
-            agent(Some(Duration::from_secs(10)))
-                .post(format!("{}/v1/chat/completions", endpoint.base)),
-            endpoint,
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        // Our own client: Stop shuts its connection, also while the server
+        // is still reading the prompt, and the server drops the work.
+        let bearer = format!("Bearer {}", endpoint.api_key);
+        let mut headers = vec![
+            ("Content-Type", "application/json"),
+            ("Accept", "text/event-stream"),
+        ];
+        if !endpoint.api_key.is_empty() {
+            headers.push(("Authorization", bearer.as_str()));
+        }
+        let mut response = super::stream::post(
+            &format!("{}/v1/chat/completions", endpoint.base),
+            &headers,
+            &body.to_string(),
         )
-        .header("Content-Type", "application/json")
-        .header("Accept", "text/event-stream");
-        let response = call.send(body.to_string()).map_err(http_error)?;
-        let status = response.status().as_u16();
-        let mut body = response.into_body();
-        if status != 200 {
-            let text = body.read_to_string().unwrap_or_default();
+        .map_err(io_error)?;
+        if response.status != 200 {
+            let status = response.status;
+            let text = response.text();
             return Err(BackendError::Refused(format!(
                 "The model server refused the request ({status}): {}",
                 sse::error_message(&text)
             )));
         }
-        let reader = BufReader::new(body.into_reader());
+        response.until_stopped(cancel, |response| Self::read_events(response, cancel, emit))
+    }
+
+    /// The events of a streamed answer, to `[DONE]`.
+    fn read_events(
+        response: &mut super::stream::Response,
+        cancel: &AtomicBool,
+        emit: &mut dyn FnMut(Event<'_>),
+    ) -> Result<(), BackendError> {
         // Tool calls come in pieces, by index; they go out whole at the end.
         let mut calls: Vec<ToolCall> = Vec::new();
         // Until `[DONE]`: a stream that just ends was cut off (the server
         // crashed or the network went).
-        for line in reader.lines() {
+        loop {
             if cancel.load(Ordering::Relaxed) {
-                // Dropping the reader closes the connection: the server stops.
+                // The connection is shut: the server stops.
                 return Ok(());
             }
-            let line =
-                line.map_err(|e| BackendError::Other(format!("The reply was cut off: {e}.")))?;
+            let line = match response.line() {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
+                Err(_) if cancel.load(Ordering::Relaxed) => return Ok(()),
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return Err(BackendError::Unreachable(
+                        "The model server stopped answering.".into(),
+                    ));
+                }
+                Err(e) => return Err(BackendError::Other(format!("The reply was cut off: {e}."))),
+            };
             for event in sse::parse(&line) {
                 match event {
                     Line::Text(t) => emit(Event::Text(&t)),
@@ -607,12 +638,19 @@ impl Backend for Llama {
         cancel: &AtomicBool,
         emit: &mut dyn FnMut(Event<'_>),
     ) -> Result<(), BackendError> {
-        let (endpoint, managed) = self.endpoint(&request.model)?;
-        let result = self.stream(&endpoint, request, cancel, emit);
-        if managed {
-            self.server.release();
+        let (endpoint, managed) = self.endpoint(&request.model, cancel)?;
+        // Released however the reply ends, a panic included: else the idle
+        // stop never comes and the model stays in the graphics card.
+        struct Release<'a>(Option<&'a Server>);
+        impl Drop for Release<'_> {
+            fn drop(&mut self) {
+                if let Some(server) = self.0 {
+                    server.release();
+                }
+            }
         }
-        result
+        let _release = Release(managed.then_some(&*self.server));
+        self.stream(&endpoint, request, cancel, emit)
     }
 }
 
@@ -702,6 +740,21 @@ pub fn model_ids(text: &str) -> Vec<String> {
 }
 
 /// A failed request as the user reads it.
+/// What a failed connection means, for the window.
+fn io_error(e: std::io::Error) -> BackendError {
+    use std::io::ErrorKind::*;
+    match e.kind() {
+        ConnectionRefused => {
+            BackendError::Unreachable("Nothing answered at the model server's address.".into())
+        }
+        TimedOut | WouldBlock => {
+            BackendError::Unreachable("The model server didn't answer in time.".into())
+        }
+        NotFound => BackendError::Unreachable("The model server's address wasn't found.".into()),
+        _ => BackendError::Other(format!("The model server couldn't be reached: {e}.")),
+    }
+}
+
 fn http_error(e: ureq::Error) -> BackendError {
     match e {
         ureq::Error::Io(io) if io.kind() == std::io::ErrorKind::ConnectionRefused => {

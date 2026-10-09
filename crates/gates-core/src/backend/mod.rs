@@ -9,6 +9,7 @@ mod demo;
 pub mod llama;
 pub mod server;
 pub mod sse;
+pub mod stream;
 
 pub use demo::Demo;
 pub use llama::Llama;

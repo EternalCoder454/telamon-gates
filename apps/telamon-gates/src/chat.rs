@@ -424,6 +424,8 @@ pub struct ChatRust {
     chosen_decision: String,
     /// Bumped by each look for decision models: an older one drops.
     looking: u64,
+    /// The same for the backend's model list.
+    listing: u64,
     pub io: Option<Io>,
     // Boxed: a thread handle is not Unpin, and the struct must be.
     pub library: Option<Box<CxxQtThread<library::qobject::Library>>>,
@@ -981,10 +983,17 @@ impl qobject::Chat {
         let Some(backend) = self.rust().backend.clone() else {
             return;
         };
+        // A slow answer can't replace a newer one.
+        let listing = {
+            let mut rust = self.as_mut().rust_mut();
+            rust.listing += 1;
+            rust.listing
+        };
         let qt = self.qt_thread();
         std::thread::spawn(move || {
             let result = backend.models();
             let _ = qt.queue(move |mut chat| match result {
+                _ if chat.rust().listing != listing => {}
                 Ok(models) => {
                     let mut list = QStringList::default();
                     for m in &models {

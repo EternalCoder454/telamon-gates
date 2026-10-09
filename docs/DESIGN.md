@@ -222,11 +222,20 @@ Functionable. From the PR #3 review, for their phases:
   sandbox (see Agent mode). Left: a local process could take the free port
   between the check and the server's start (it would then have to answer
   as llama-server, and never gets the key).
-- Reliable: Stop doesn't close the connection while the server is still
-  reading the prompt or loading the model, so the next message waits behind
-  it; a server that hangs mid-reply holds its worker for good; a panic in a
-  reply skips `release()`, so the idle stop never comes; `stop()` can signal
-  a PID already reaped.
+- Reliable (done):
+  - **Stop:** the chat request goes through Gates' own small HTTP client
+    (`backend/stream.rs`), so Stop shuts the connection at once. That
+    includes while the server is still reading the prompt, and llama-server
+    then cancels the work. On the RX 7900, the next message's first words
+    came 1.75 s after a Stop in a long prompt (`examples/stop-check`).
+  - **Loads and hangs:** Stop during a model load ends the load. A server
+    silent for 10 minutes counts as gone.
+  - **Clean-up:** a panic in a reply still releases the server, `stop()`
+    never signals a process already reaped, and an older model list can't
+    replace a newer one.
+  - **Left:** on the processor, llama-server notices a cancel only between
+    its 2,048-token prompt batches. For a 4B model on the i9 that is minutes,
+    so the next message waits.
 - Performant: the binary grew from 4.0 to 7.4 MB stripped (rustls, ring and
   webpki-roots, for Hugging Face downloads; Fedora's OpenSSL through ureq's
   native-tls would drop most of it). The telamon-llama CI cache likely never hits (ccache hashes
