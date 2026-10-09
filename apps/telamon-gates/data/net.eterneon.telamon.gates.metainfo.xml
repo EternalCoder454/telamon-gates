@@ -45,7 +45,7 @@
           <li>Agent mode: works in a sandboxed folder with tools, and asks before it changes anything</li>
           <li>Fleet: several agents on one goal, on a dashboard</li>
           <li>Pictures and files in messages; edit, branch and export conversations</li>
-          <li>Faster: rewriting text up to 5 times quicker, the model ready while you type</li>
+          <li>Faster: rewriting text up to 10 times quicker, speed-up drafts for bigger models, the model ready while you type</li>
         </ul>
       </description>
     </release>
