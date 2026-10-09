@@ -162,6 +162,24 @@ impl Conversation {
     pub fn touch(&mut self) {
         self.updated = now_ms();
     }
+
+    /// A new conversation with this one's messages up to and including
+    /// message `upto`, its mode and folder: a way to try something else
+    /// from there without losing what came after.
+    pub fn branch(&self, upto: usize) -> Conversation {
+        let now = now_ms();
+        let end = (upto + 1).min(self.messages.len());
+        Conversation {
+            id: new_id(now),
+            title: format!("{} (branch)", self.title.trim_end_matches(" (branch)")),
+            created: now,
+            updated: now,
+            // Every tool call answered (a branch can cut between them).
+            messages: crate::agent::repair(self.messages[..end].to_vec()),
+            mode: self.mode.clone(),
+            workspace: self.workspace.clone(),
+        }
+    }
 }
 
 /// The first line of `text`, trimmed, at most `TITLE_CHARS` characters (cut
@@ -221,6 +239,23 @@ mod tests {
         let a = Conversation::new("a");
         let b = Conversation::new("b");
         assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn branches() {
+        let mut c = Conversation::new("Story");
+        c.mode = "story".into();
+        for t in ["one", "two", "three", "four"] {
+            c.messages.push(Message::user(t));
+        }
+        let b = c.branch(1);
+        assert_ne!(b.id, c.id);
+        assert_eq!(b.title, "Story (branch)");
+        assert_eq!(b.messages.len(), 2);
+        assert_eq!(b.mode, "story");
+        // A branch of a branch isn't "(branch) (branch)".
+        assert_eq!(b.branch(0).title, "Story (branch)");
+        assert_eq!(c.branch(99).messages.len(), 4);
     }
 
     #[test]

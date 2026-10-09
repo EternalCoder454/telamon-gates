@@ -103,6 +103,22 @@ pub mod qobject {
         #[qinvokable]
         fn regenerate(self: Pin<&mut Chat>);
 
+        /// Opens a new conversation with the messages up to `row`.
+        #[qinvokable]
+        #[cxx_name = "branchFrom"]
+        fn branch_from(self: Pin<&mut Chat>, row: i32);
+
+        /// Your message at `row` becomes `text`; what came after it goes,
+        /// and a new reply comes.
+        #[qinvokable]
+        #[cxx_name = "editMessage"]
+        fn edit_message(self: Pin<&mut Chat>, row: i32, text: &QString);
+
+        /// Saves the open conversation to `path`, as "markdown" or "json".
+        #[qinvokable]
+        #[cxx_name = "exportTo"]
+        fn export_to(self: Pin<&mut Chat>, path: &QString, format: &QString);
+
         #[qinvokable]
         #[cxx_name = "pickModel"]
         fn pick_model(self: Pin<&mut Chat>, name: &QString);
@@ -632,13 +648,93 @@ impl qobject::Chat {
             return;
         };
         self.as_mut().set_error(QString::default());
-        if last == Role::Assistant {
-            self.as_mut().pop();
+        // Back to your last message: a reply, and an agent's steps with it.
+        if last != Role::User {
+            while self
+                .rust()
+                .conversation
+                .as_ref()
+                .and_then(|c| c.messages.last())
+                .is_some_and(|m| m.role != Role::User)
+            {
+                self.as_mut().pop();
+            }
         }
         if let Some(c) = self.as_mut().rust_mut().conversation.as_mut() {
             c.touch();
         }
         self.ask();
+    }
+
+    pub fn branch_from(mut self: Pin<&mut Self>, row: i32) {
+        if *self.loading() {
+            return;
+        }
+        let Some(branch) = usize::try_from(row).ok().and_then(|row| {
+            self.rust()
+                .conversation
+                .as_ref()
+                .filter(|c| row < c.messages.len())
+                .map(|c| c.branch(row))
+        }) else {
+            return;
+        };
+        self.as_mut().leave();
+        self.as_mut().rust_mut().opening += 1;
+        self.as_mut().show(Some(branch));
+        self.save();
+    }
+
+    pub fn edit_message(mut self: Pin<&mut Self>, row: i32, text: &QString) {
+        let text = text.to_string();
+        let text = text.trim();
+        if text.is_empty() || *self.generating() || *self.loading() {
+            return;
+        }
+        let Ok(row) = usize::try_from(row) else {
+            return;
+        };
+        let mine = self
+            .rust()
+            .conversation
+            .as_ref()
+            .and_then(|c| c.messages.get(row))
+            .is_some_and(|m| m.role == Role::User);
+        if !mine {
+            return;
+        }
+        while self.rust().rows.len() > row {
+            self.as_mut().pop();
+        }
+        self.as_mut().set_error(QString::default());
+        if let Some(c) = self.as_mut().rust_mut().conversation.as_mut() {
+            c.touch();
+        }
+        self.as_mut().push(Message::user(text));
+        self.ask();
+    }
+
+    pub fn export_to(self: Pin<&mut Self>, path: &QString, format: &QString) {
+        let (Some(c), Some(io)) = (self.rust().conversation.clone(), self.rust().io.clone()) else {
+            return;
+        };
+        let path = PathBuf::from(path.to_string());
+        let text = if format.to_string() == "json" {
+            gates_core::export::json(&c)
+        } else {
+            gates_core::export::markdown(&c)
+        };
+        let qt = self.qt_thread();
+        io.run(move |_| {
+            // Whole or not at all: a file beside it, then a rename.
+            let tmp = path.with_extension("gates-export.tmp");
+            let result = std::fs::write(&tmp, &text).and_then(|()| std::fs::rename(&tmp, &path));
+            if let Err(e) = result {
+                let _ = std::fs::remove_file(&tmp);
+                let message = format!("Couldn't save {}: {e}.", path.display());
+                let _ = qt.queue(move |chat| chat.set_error(QString::from(message.as_str())));
+            }
+        });
     }
 
     pub fn pick_model(mut self: Pin<&mut Self>, name: &QString) {

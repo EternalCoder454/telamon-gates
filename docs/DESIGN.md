@@ -59,6 +59,17 @@ beside it.
   Cancel. A download goes to a hidden `.name.part`, resumes from it, is
   checked against the sha256 Hugging Face publishes, and only then is renamed
   into place; the chat's model list follows.
+- **Edit, Branch, Export**:
+  - **Your messages:** with the pointer on one, Edit and Branch From Here
+    show beside it. Edit turns it into a text box: Send replaces what came
+    after it and asks again; Escape or Cancel leaves it as it was.
+  - **Replies:** Branch From Here sits beside Copy and Regenerate.
+  - **Branching:** opens a new conversation, "Title (branch)", with the
+    messages up to there (tool calls kept whole), and the same mode and
+    folder. Regenerate in an agent run goes back to your last message.
+  - **Export…** in the header saves Markdown (who said what, tool steps as
+    one line, no tool output) or Gates' own JSON, through the portal's save
+    dialog.
 - **Agent mode**: Agent in the mode switch. Above the composer:
   - the conversation's folder, with Choose Folder… (the portal's folder
     dialog);

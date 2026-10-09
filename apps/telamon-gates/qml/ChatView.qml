@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls as QQC2
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import Telamon.Ui
@@ -100,6 +101,43 @@ Item {
                 onActivated: index => view.chat.pickModel(view.chat.models[index])
                 Accessible.name: qsTr("Model")
             }
+            // Save the conversation as a file: Markdown to read, or JSON.
+            ToolbarButton {
+                visible: view.chat.count > 0
+                symbol: Symbols.Download
+                text: qsTr("Export…")
+                focusable: true
+                onClicked: exportMenu.popup()
+
+                ContextMenu {
+                    id: exportMenu
+                    ContextMenuItem {
+                        text: qsTr("Markdown…")
+                        onTriggered: {
+                            saver.format = "markdown";
+                            saver.open();
+                        }
+                    }
+                    ContextMenuItem {
+                        text: qsTr("JSON…")
+                        onTriggered: {
+                            saver.format = "json";
+                            saver.open();
+                        }
+                    }
+                }
+            }
+        }
+
+        FileDialog {
+            id: saver
+            property string format: "markdown"
+            fileMode: FileDialog.SaveFile
+            title: qsTr("Export Conversation")
+            nameFilters: saver.format === "json" ? [qsTr("JSON (*.json)")] : [qsTr("Markdown (*.md)")]
+            defaultSuffix: saver.format === "json" ? "json" : "md"
+            selectedFile: "file:///" + encodeURIComponent((view.chat.title.length > 0 ? view.chat.title : qsTr("Conversation")).replace(/[\/:*?"<>|]/g, "-")) + (saver.format === "json" ? ".json" : ".md")
+            onAccepted: view.chat.exportTo(decodeURIComponent(selectedFile.toString().replace(/^file:\/\//, "")), saver.format)
         }
 
         InfoBanner {

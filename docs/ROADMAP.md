@@ -41,6 +41,7 @@ its place, and the ones left out are listed with the reason.
    message, to get a new conversation up to that point. This lets you try a
    story another way without losing the first. Export a conversation as
    Markdown or JSON.
+   - **Built.**
 4. **Model facts.** Each model's context length, whether it reads images (a
    matching `mmproj`) and whether its chat template takes tools. These come
    from the GGUF header and show on the Models page and in the picker.

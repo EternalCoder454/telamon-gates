@@ -138,6 +138,15 @@ run_theme() {
     shot 07-hover-sidebar
     open_chat "Show me"
     shot 08-showcase
+    # The pointer on your message: Edit and Branch From Here under it.
+    xdotool mousemove 1300 193
+    sleep 0.6
+    shot 08b-message-actions
+    xdotool mousemove 1092 197 click 1
+    sleep 0.6
+    shot 08c-editing
+    xdotool key Escape
+    sleep 0.4
     open_chat "migration"
     shot 09-long-end
     xdotool mousemove 900 500 click 4 click 4 click 4 click 4 click 4 click 4

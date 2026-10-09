@@ -6,6 +6,7 @@
 pub mod agent;
 pub mod backend;
 pub mod conversation;
+pub mod export;
 pub mod gguf;
 pub mod hub;
 pub mod markdown;
