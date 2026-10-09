@@ -99,6 +99,8 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
         let mut rust = chat.pin_mut().rust_mut();
         rust.io = Some(io);
         rust.backend = Some(backend.clone());
+        // The web search key goes in the system keyring, nowhere else.
+        rust.web_keys = Some(Arc::new(gates_core::web::SecretService));
         rust.library = Some(Box::new(library_thread));
     }
     chat.pin_mut().start();
@@ -110,6 +112,8 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
         models_dir.to_string_lossy().as_ref(),
     ));
     models.pin_mut().rust_mut().dir = models_dir;
+    // The free space isn't known until the Models page asks.
+    models.pin_mut().set_free(-1.0);
     models.pin_mut().refresh();
 
     let mut fleet = fleet::qobject::fleet_make_unique();

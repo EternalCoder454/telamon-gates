@@ -1,14 +1,19 @@
-//! Agent mode's loop: the model answers with tool calls, Gates runs them
+//! The tool loop: the model answers with tool calls, Gates runs them
 //! (asking the user first for any that change something), sends the
 //! results back, and the model goes on, until it answers without a tool
-//! or `MAX_STEPS` pass. llama-server keeps the conversation's prefix in its
+//! or the steps run out. llama-server keeps the conversation's prefix in its
 //! cache, so each step costs only what is new.
+//!
+//! Agent mode's tools work in a folder (`run`). Chat and Code replies, when
+//! Settings turn the web on, get only the web tools and a few steps
+//! (`run_tools` with no workspace); Agent mode gets them beside its own.
 //!
 //! Blocks (the model, the tools, the user's answer): call it from a worker.
 
 use crate::backend::{Backend, BackendError, Event, Request};
 use crate::conversation::{Message, ToolCall};
 use crate::tools::{self, Effect, Outcome, Workspace};
+use crate::web::Session;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Model turns in one reply at most: past this, it is going round.
@@ -39,6 +44,12 @@ pub trait Host {
     /// The backend has something to tell the user that isn't the reply
     /// (`Event::Notice`). Plain text. Ignored unless the host shows it.
     fn notice(&mut self, _text: &str) {}
+    /// What is being done now, for a progress line ("Searching: rust
+    /// async"); "" when nothing is.
+    fn status(&mut self, _line: &str) {}
+    /// The reply's text so far is replaced by `text` (Deep Research links
+    /// its citations once the report is written).
+    fn replace(&mut self, _text: &str) {}
 }
 
 /// `messages` made safe to send: every tool call answered by a result
@@ -78,19 +89,60 @@ pub fn repair(messages: Vec<Message>) -> Vec<Message> {
     out
 }
 
+/// Model turns in a reply with only the web tools at most: the last one is
+/// asked for without tools, so it has to answer with what it found.
+pub const WEB_STEPS: usize = 6;
+
+/// What a run offers the model.
+pub struct Tools<'a> {
+    /// Agent mode's folder and its tools; None for the web tools alone.
+    pub workspace: Option<&'a Workspace>,
+    /// The web tools; None for none.
+    pub web: Option<&'a Session<'a>>,
+    pub max_steps: usize,
+}
+
 /// Runs the agent on `request` (whose `tools` it sets) in `workspace`.
 pub fn run(
     backend: &dyn Backend,
-    mut request: Request,
+    request: Request,
     workspace: &Workspace,
     cancel: &AtomicBool,
     host: &mut dyn Host,
 ) -> Result<(), BackendError> {
-    request.tools = tools::schema();
+    let tools = Tools {
+        workspace: Some(workspace),
+        web: None,
+        max_steps: MAX_STEPS,
+    };
+    run_tools(backend, request, &tools, cancel, host)
+}
+
+/// The loop, with the tools `tools` offers.
+pub fn run_tools(
+    backend: &dyn Backend,
+    mut request: Request,
+    tools: &Tools<'_>,
+    cancel: &AtomicBool,
+    host: &mut dyn Host,
+) -> Result<(), BackendError> {
+    let mut offered = Vec::new();
+    if tools.workspace.is_some() {
+        offered.extend(tools::schema());
+    }
+    if tools.web.is_some() {
+        offered.extend(tools::web_schema());
+    }
+    request.tools = offered;
     let mut edits_allowed = false;
-    for step in 0..MAX_STEPS {
+    let max_steps = tools.max_steps.max(1);
+    for step in 0..max_steps {
         if step > 0 {
             host.next_turn();
+        }
+        // Web tools alone: the last turn has none, so the answer comes.
+        if tools.workspace.is_none() && step + 1 == max_steps {
+            request.tools = Vec::new();
         }
         let mut text = String::new();
         let mut calls: Vec<ToolCall> = Vec::new();
@@ -103,7 +155,8 @@ pub fn run(
             Event::ToolCalls(c) => calls = c.to_vec(),
             Event::Notice(n) => host.notice(n),
         })?;
-        if cancel.load(Ordering::Relaxed) || calls.is_empty() {
+        // No calls, or the turn that had no tools to ask for: the answer.
+        if cancel.load(Ordering::Relaxed) || calls.is_empty() || request.tools.is_empty() {
             return Ok(());
         }
         host.calls(&calls);
@@ -111,57 +164,78 @@ pub fn run(
             tool_calls: calls.clone(),
             ..Message::assistant(text)
         });
+        let mut web_calls = 0;
         for call in &calls {
             if cancel.load(Ordering::Relaxed) {
                 return Ok(());
             }
-            let outcome = match tools::spec(&call.name) {
-                None => tools::run(workspace, &call.name, &call.arguments, cancel),
-                Some(spec) if spec.effect == Effect::Read => {
-                    tools::run(workspace, &call.name, &call.arguments, cancel)
+            let outcome = if tools::is_web(&call.name) {
+                match tools.web {
+                    Some(session) if web_calls < tools::MAX_WEB_CALLS_PER_TURN => {
+                        web_calls += 1;
+                        host.status(&tools::progress(&call.name, &call.arguments));
+                        tools::run_web(session, &call.name, &call.arguments, cancel)
+                    }
+                    Some(_) => Outcome {
+                        ok: false,
+                        summary: "Too many web calls at once".into(),
+                        output: "Error: Too many web calls at once. Ask for fewer, or one \
+                                 after another."
+                            .into(),
+                    },
+                    None => tools::unavailable(&call.name),
                 }
-                Some(spec) => {
-                    // Arguments that can't run are refused without asking.
-                    let (title, detail) =
-                        match tools::describe(workspace, &call.name, &call.arguments) {
-                            Ok(asked) => asked,
-                            Err(e) => {
-                                let outcome = Outcome {
-                                    ok: false,
-                                    summary: e.clone(),
-                                    output: format!("Error: {e}"),
-                                };
-                                let message = Message {
-                                    failed: true,
-                                    summary: Some(outcome.summary),
-                                    ..Message::tool(call.id.clone(), outcome.output)
-                                };
-                                request.messages.push(message.clone());
-                                host.result(message);
-                                continue;
-                            }
+            } else if let Some(workspace) = tools.workspace {
+                match tools::spec(&call.name) {
+                    None => tools::run(workspace, &call.name, &call.arguments, cancel),
+                    Some(spec) if spec.effect == Effect::Read => {
+                        tools::run(workspace, &call.name, &call.arguments, cancel)
+                    }
+                    Some(spec) => {
+                        // Arguments that can't run are refused without asking.
+                        let (title, detail) =
+                            match tools::describe(workspace, &call.name, &call.arguments) {
+                                Ok(asked) => asked,
+                                Err(e) => {
+                                    let outcome = Outcome {
+                                        ok: false,
+                                        summary: e.clone(),
+                                        output: format!("Error: {e}"),
+                                    };
+                                    let message = Message {
+                                        failed: true,
+                                        summary: Some(outcome.summary),
+                                        ..Message::tool(call.id.clone(), outcome.output)
+                                    };
+                                    request.messages.push(message.clone());
+                                    host.result(message);
+                                    continue;
+                                }
+                            };
+                        // "Allow All Edits" covers plain edits; version control,
+                        // build scripts, hidden files and programs always ask.
+                        let asked = if spec.effect == Effect::Write
+                            && edits_allowed
+                            && !tools::sensitive(workspace, &call.name, &call.arguments)
+                        {
+                            Approval::Allow
+                        } else {
+                            host.approve(call, &title, &detail)
                         };
-                    // "Allow All Edits" covers plain edits; version control,
-                    // build scripts, hidden files and programs always ask.
-                    let asked = if spec.effect == Effect::Write
-                        && edits_allowed
-                        && !tools::sensitive(workspace, &call.name, &call.arguments)
-                    {
-                        Approval::Allow
-                    } else {
-                        host.approve(call, &title, &detail)
-                    };
-                    if asked == Approval::AllowEdits && spec.effect == Effect::Write {
-                        edits_allowed = true;
-                    }
-                    if cancel.load(Ordering::Relaxed) {
-                        return Ok(());
-                    }
-                    match asked {
-                        Approval::Deny => Outcome::declined(),
-                        _ => tools::run(workspace, &call.name, &call.arguments, cancel),
+                        if asked == Approval::AllowEdits && spec.effect == Effect::Write {
+                            edits_allowed = true;
+                        }
+                        if cancel.load(Ordering::Relaxed) {
+                            return Ok(());
+                        }
+                        match asked {
+                            Approval::Deny => Outcome::declined(),
+                            _ => tools::run(workspace, &call.name, &call.arguments, cancel),
+                        }
                     }
                 }
+            } else {
+                tools::unavailable(&call.name)
             };
             let message = Message {
                 failed: !outcome.ok,
@@ -171,9 +245,10 @@ pub fn run(
             request.messages.push(message.clone());
             host.result(message);
         }
+        host.status("");
     }
     Err(BackendError::Other(format!(
-        "The agent stopped after {MAX_STEPS} steps without finishing. Tell it how to go on."
+        "The agent stopped after {max_steps} steps without finishing. Tell it how to go on."
     )))
 }
 
@@ -373,5 +448,289 @@ mod tests {
             .count();
         assert_eq!(asks, 1);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ---- the web tools
+
+    use crate::web::testing::Fake;
+    use std::time::Duration;
+
+    /// Writes what it hears down; Stop can be wired to a line it sees.
+    struct Spy<'a> {
+        events: Vec<String>,
+        stop_on: Option<(&'a str, &'a AtomicBool)>,
+    }
+
+    impl<'a> Spy<'a> {
+        fn new() -> Spy<'a> {
+            Spy {
+                events: Vec::new(),
+                stop_on: None,
+            }
+        }
+    }
+
+    impl Host for Spy<'_> {
+        fn text(&mut self, piece: &str) {
+            self.events.push(format!("text {piece}"));
+        }
+        fn speed(&mut self, _: f64) {}
+        fn calls(&mut self, calls: &[ToolCall]) {
+            self.events.push(format!("calls {}", calls.len()));
+        }
+        fn approve(&mut self, _: &ToolCall, title: &str, _: &str) -> Approval {
+            panic!("a web tool asked the user: {title}");
+        }
+        fn result(&mut self, m: Message) {
+            self.events
+                .push(format!("result {}", m.summary.unwrap_or_default()));
+        }
+        fn next_turn(&mut self) {
+            self.events.push("next".into());
+        }
+        fn status(&mut self, line: &str) {
+            self.events.push(format!("status {line}"));
+            if let Some((when, flag)) = self.stop_on
+                && line.starts_with(when)
+            {
+                flag.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn web_fake() -> Fake {
+        Fake::default()
+            .with_results(
+                "rust async",
+                vec![Fake::result("The Book", "https://example.org/r1", "Async.")],
+            )
+            .with_page(Fake::page(
+                "https://example.org/r1",
+                "The Book",
+                "Futures are lazy.",
+            ))
+    }
+
+    fn only_web<'a>(session: &'a Session<'a>) -> Tools<'a> {
+        Tools {
+            workspace: None,
+            web: Some(session),
+            max_steps: WEB_STEPS,
+        }
+    }
+
+    fn tool_names(request: &Request) -> Vec<String> {
+        request
+            .tools
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap_or("").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn the_web_loop_searches_reads_and_answers() {
+        let fake = web_fake();
+        let session = Session::new(&fake, &request().messages);
+        let backend = Scripted {
+            turns: Mutex::new(vec![
+                vec![call("1", "web_search", r#"{"query":"rust async"}"#)],
+                vec![call(
+                    "2",
+                    "fetch_page",
+                    r#"{"url":"https://example.org/r1"}"#,
+                )],
+            ]),
+            seen: Mutex::new(Vec::new()),
+        };
+        let mut host = Spy::new();
+        run_tools(
+            &backend,
+            request(),
+            &only_web(&session),
+            &AtomicBool::new(false),
+            &mut host,
+        )
+        .unwrap();
+        assert_eq!(
+            host.events,
+            vec![
+                "text Looking.",
+                "calls 1",
+                "status Searching: rust async",
+                "result Searched for \"rust async\" (1 result)",
+                "status ",
+                "next",
+                "text Looking.",
+                "calls 1",
+                "status Reading: example.org/r1",
+                "result Read example.org/r1 (1 KB)",
+                "status ",
+                "next",
+                "text All done.",
+            ]
+        );
+        let seen = backend.seen.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        // Only the web tools were offered: no folder, no files, no commands.
+        for r in seen.iter() {
+            assert_eq!(tool_names(r), vec!["web_search", "fetch_page"]);
+        }
+        // The last turn saw the whole exchange, results included.
+        let last = seen.last().unwrap();
+        assert_eq!(last.messages.len(), 5);
+        assert!(last.messages[2].text.contains("https://example.org/r1"));
+        assert!(last.messages[4].text.contains("Futures are lazy."));
+        assert_eq!(
+            fake.calls(),
+            vec!["search rust async", "fetch https://example.org/r1"]
+        );
+    }
+
+    #[test]
+    fn the_last_web_step_has_no_tools_so_the_answer_comes() {
+        let fake = web_fake();
+        let session = Session::new(&fake, &request().messages);
+        let turns: Vec<Vec<ToolCall>> = (0..20)
+            .map(|i| {
+                vec![call(
+                    &i.to_string(),
+                    "web_search",
+                    r#"{"query":"rust async"}"#,
+                )]
+            })
+            .collect();
+        let backend = Scripted {
+            turns: Mutex::new(turns),
+            seen: Mutex::new(Vec::new()),
+        };
+        let mut host = Spy::new();
+        // A model that never stops searching still ends, without an error.
+        run_tools(
+            &backend,
+            request(),
+            &only_web(&session),
+            &AtomicBool::new(false),
+            &mut host,
+        )
+        .unwrap();
+        let seen = backend.seen.lock().unwrap();
+        assert_eq!(seen.len(), WEB_STEPS);
+        assert_eq!(tool_names(&seen[WEB_STEPS - 2]).len(), 2);
+        assert!(seen[WEB_STEPS - 1].tools.is_empty());
+        // Five searches ran; the sixth turn's calls were not run.
+        assert_eq!(fake.calls().len(), WEB_STEPS - 1);
+    }
+
+    #[test]
+    fn agent_mode_gets_the_web_beside_its_own_tools() {
+        let (dir, ws) = workspace("web");
+        let fake = web_fake();
+        let session = Session::new(&fake, &request().messages);
+        let backend = Scripted {
+            turns: Mutex::new(vec![vec![
+                call("1", "list_dir", "{}"),
+                call("2", "web_search", r#"{"query":"rust async"}"#),
+            ]]),
+            seen: Mutex::new(Vec::new()),
+        };
+        let tools = Tools {
+            workspace: Some(&ws),
+            web: Some(&session),
+            max_steps: MAX_STEPS,
+        };
+        let mut host = Spy::new();
+        run_tools(
+            &backend,
+            request(),
+            &tools,
+            &AtomicBool::new(false),
+            &mut host,
+        )
+        .unwrap();
+        let seen = backend.seen.lock().unwrap();
+        assert_eq!(seen[0].tools.len(), tools::TOOLS.len() + 2);
+        assert!(host.events.iter().any(|e| e.starts_with("result Listed")));
+        assert!(host.events.iter().any(|e| e.starts_with("result Searched")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn web_calls_are_few_per_turn_and_unoffered_ones_are_refused() {
+        let fake = web_fake();
+        let session = Session::new(&fake, &request().messages);
+        let six: Vec<ToolCall> = (0..6)
+            .map(|i| call(&i.to_string(), "web_search", r#"{"query":"rust async"}"#))
+            .collect();
+        let backend = Scripted {
+            turns: Mutex::new(vec![six]),
+            seen: Mutex::new(Vec::new()),
+        };
+        let mut host = Spy::new();
+        run_tools(
+            &backend,
+            request(),
+            &only_web(&session),
+            &AtomicBool::new(false),
+            &mut host,
+        )
+        .unwrap();
+        assert_eq!(fake.calls().len(), tools::MAX_WEB_CALLS_PER_TURN);
+        let refused = host
+            .events
+            .iter()
+            .filter(|e| e.starts_with("result Too many"))
+            .count();
+        assert_eq!(refused, 2);
+
+        // The web off: a model that asks anyway is told there is no such tool.
+        let backend = Scripted {
+            turns: Mutex::new(vec![vec![call("1", "web_search", r#"{"query":"x"}"#)]]),
+            seen: Mutex::new(Vec::new()),
+        };
+        let none = Tools {
+            workspace: None,
+            web: None,
+            max_steps: WEB_STEPS,
+        };
+        let mut host = Spy::new();
+        run_tools(
+            &backend,
+            request(),
+            &none,
+            &AtomicBool::new(false),
+            &mut host,
+        )
+        .unwrap();
+        // Nothing offered, so the first reply is the answer.
+        assert!(backend.seen.lock().unwrap()[0].tools.is_empty());
+    }
+
+    #[test]
+    fn stop_ends_a_search_at_once() {
+        let fake = Fake {
+            delay: Duration::from_secs(5),
+            ..web_fake()
+        };
+        let session = Session::new(&fake, &request().messages);
+        let backend = Scripted {
+            turns: Mutex::new(vec![
+                vec![call("1", "web_search", r#"{"query":"rust async"}"#)],
+                vec![call("2", "web_search", r#"{"query":"rust async"}"#)],
+            ]),
+            seen: Mutex::new(Vec::new()),
+        };
+        let cancel = AtomicBool::new(false);
+        let mut host = Spy::new();
+        host.stop_on = Some(("Searching", &cancel));
+        let started = std::time::Instant::now();
+        run_tools(&backend, request(), &only_web(&session), &cancel, &mut host).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        // It went no further than the second turn's start.
+        assert!(backend.seen.lock().unwrap().len() <= 2);
+        assert_eq!(fake.calls().len(), 1);
     }
 }

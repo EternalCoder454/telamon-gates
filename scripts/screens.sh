@@ -112,6 +112,22 @@ run_theme() {
     app=$!
     sleep 4
     shot 01-first-run
+    # Dismissed with its cross.
+    xdotool mousemove 1444 130 click 1
+    sleep 0.8
+    shot 01b-banner-dismissed
+    kill "$app"
+    wait "$app" || true
+
+    # The model server is there (a stand-in on $PATH) but the container has
+    # no render node: the graphics banner.
+    mkdir -p "$out/fakebin"
+    printf '#!/bin/sh\nexit 0\n' >"$out/fakebin/llama-server"
+    chmod +x "$out/fakebin/llama-server"
+    PATH="$out/fakebin:$PATH" "$bin" >"$out/app-no-gpu.log" 2>&1 &
+    app=$!
+    sleep 4
+    shot 01c-no-graphics
     kill "$app"
     wait "$app" || true
 
@@ -255,6 +271,38 @@ run_theme() {
     kill "$app"
     wait "$app" || true
 
+    # The Models page with downloads left behind: two Gates noted the
+    # repository of, one without a note, and one untouched for 40 days, which
+    # opening the page deletes. Sparse files, so they take no room.
+    local models=$XDG_DATA_HOME/telamon-gates/models
+    mkdir -p "$models"
+    truncate -s 7516192768 "$models/.Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf.part"
+    printf '{"repo":"unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF","size":17665334432}' >"$models/.Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf.part.json"
+    truncate -s 1288490189 "$models/.gpt-oss-20b-MXFP4.gguf.part"
+    printf '{"repo":"ggml-org/gpt-oss-20b-GGUF","size":12109566624}' >"$models/.gpt-oss-20b-MXFP4.gguf.part.json"
+    truncate -s 314572800 "$models/.Mystery-Q4_K_M.gguf.part"
+    truncate -s 1048576 "$models/.Ancient-Q8_0.gguf.part"
+    touch -d "40 days ago" "$models/.Ancient-Q8_0.gguf.part"
+    "$bin" >"$out/app-partials.log" 2>&1 &
+    app=$!
+    sleep 4
+    win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)
+    xdotool windowsize "$win" 1512 1080
+    sleep 1.5
+    xdotool mousemove 115 919 click 1
+    sleep 2
+    shot 20b-models-partials
+    ls -A "$models" >"$out/partials-after-opening.txt"
+    # Delete asks first.
+    xdotool mousemove "${PARTIAL_DELETE_X:-1419}" "${PARTIAL_DELETE_Y:-424}" click 1
+    sleep 0.8
+    shot 20c-models-partial-delete
+    xdotool key Escape
+    sleep 0.4
+    kill "$app"
+    wait "$app" || true
+    rm -f "$models"/.*.part "$models"/.*.part.json
+
     # The Fleet page with sample agents (TELAMON_GATES_SEED, src/fleet.rs):
     # one asking, one working at a narrow width, the coordinator planning.
     TELAMON_GATES_SEED=fleet "$bin" >"$out/app-fleet.log" 2>&1 &
@@ -295,6 +343,45 @@ run_theme() {
     xdotool mousemove 115 859 click 1
     sleep 1.5
     shot 30-fleet-planning
+    kill "$app"
+    wait "$app" || true
+
+    # Web search on (a SearXNG address in the settings file). The demo
+    # backend plays a model that uses it, over made-up results: a search, a
+    # page, then an answer with its sources. Then the Settings section.
+    printf '[Chat]\nWebSearch=true\nWebProvider=searxng\nWebSearxUrl=http://localhost:8080\n' >>"$XDG_CONFIG_HOME/telamon-gatesrc"
+    "$bin" >"$out/app-web.log" 2>&1 &
+    app=$!
+    sleep 4
+    win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)
+    xdotool windowsize "$win" 1512 1080
+    sleep 1.5
+    xdotool mousemove 900 978 click 1
+    xdotool type --delay 10 "What are Rust lifetimes?"
+    xdotool key Return
+    sleep 1.8
+    shot 31-web-searching
+    sleep 12
+    shot 32-web-answered
+    # A tool row opened to what the search gave the model.
+    xdotool mousemove 1451 358 click 1
+    sleep 0.6
+    shot 33-web-tool-output
+    xdotool mousemove 115 979 click 1
+    sleep 1.2
+    xdotool mousemove 900 600 click 5 click 5 click 5 click 5 click 5 click 5 click 5 click 5 click 5 click 5 click 5 click 5
+    sleep 0.6
+    shot 34-settings-web
+    # Test Connection against an instance that isn't there.
+    xdotool mousemove 1357 544 click 1
+    sleep 2.5
+    shot 35-settings-web-test-failed
+    # Brave Search needs a key, and the container has no keyring.
+    xdotool mousemove 1283 370 click 1
+    sleep 0.6
+    xdotool key Up Up Return
+    sleep 0.8
+    shot 36-settings-web-no-keyring
     kill "$app"
     wait "$app" || true
     rm -rf "$x"

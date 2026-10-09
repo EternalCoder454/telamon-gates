@@ -140,14 +140,28 @@ Item {
             onAccepted: view.chat.exportTo(decodeURIComponent(selectedFile.toString().replace(/^file:\/\//, "")), saver.format)
         }
 
+        // The first-run check (off the window's thread) found no model
+        // server: say so, and what to do. The demo keeps answering.
         InfoBanner {
             Layout.fillWidth: true
             Layout.maximumWidth: view.columnWidth
             Layout.alignment: Qt.AlignHCenter
             type: "info"
-            shown: view.chat.demo
+            shown: view.chat.serverMissing
             closable: true
-            text: qsTr("No model server is installed: replies come from the built-in demo. Install telamon-llama to chat with local models.")
+            text: qsTr("The model server (telamon-llama) is not installed, so replies come from the built-in demo. Install telamon-llama from the Store to chat with local models.")
+        }
+
+        // The server is there, but there is no graphics device for it: it
+        // would run on the processor.
+        InfoBanner {
+            Layout.fillWidth: true
+            Layout.maximumWidth: view.columnWidth
+            Layout.alignment: Qt.AlignHCenter
+            type: "warning"
+            shown: view.chat.noGpu && !view.chat.serverMissing
+            closable: true
+            text: qsTr("No graphics card with Vulkan support was found, so models will run on the processor and answer slowly. Check that your graphics driver is installed.")
         }
 
         // The model server is there, but no model yet.
@@ -364,6 +378,33 @@ Item {
                 anchors.centerIn: parent
                 visible: view.chat.loading
                 animated: visible
+            }
+        }
+
+        // What the reply is doing now ("Searching: …"). Plain text: the
+        // words come from the model and the web.
+        RowLayout {
+            visible: view.chat.generating && view.chat.status.length > 0
+            Layout.fillWidth: true
+            Layout.maximumWidth: view.columnWidth
+            Layout.alignment: Qt.AlignHCenter
+            Layout.bottomMargin: Kirigami.Units.smallSpacing
+            Layout.leftMargin: TelamonStyle.spacing
+            spacing: TelamonStyle.spacing
+
+            TelamonSpinner {
+                Layout.alignment: Qt.AlignVCenter
+                Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                Layout.preferredHeight: Kirigami.Units.iconSizes.small
+                animated: parent.visible
+            }
+            TelamonLabel {
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                opacity: 0.8
+                text: view.chat.status
+                Accessible.name: view.chat.status
             }
         }
 

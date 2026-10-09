@@ -65,6 +65,25 @@ run() {
     local app=$!
     sleep 4
     shot 1-start
+    # One window: a second launch raises this one and exits at once (code 0),
+    # and this one stays.
+    "$bin" >"$out/app2.log" 2>&1 &
+    local second=$!
+    for _ in $(seq 50); do
+        kill -0 "$second" 2>/dev/null || break
+        sleep 0.1
+    done
+    if kill -0 "$second" 2>/dev/null; then
+        echo "FAIL: a second launch is still running (a second window)" >&2
+        kill "$second" "$app"
+        exit 1
+    fi
+    wait "$second" && echo "single instance: the second launch exited with 0"
+    if ! kill -0 "$app" 2>/dev/null; then
+        echo "FAIL: the first instance is gone after the second launch" >&2
+        exit 1
+    fi
+    echo "single instance: the first launch (pid $app) is still running"
     xdotool type --delay 15 "Explain Rust ownership in two lines"
     shot 2-typed
     xdotool key Return
@@ -108,6 +127,16 @@ cat "$out/app.log"
 if [ -n "${SMOKE_MODEL:-}" ]; then
     echo "--- llama-server log (last lines)"
     tail -5 "$out/state/telamon-gates/llama-server.log" 2>/dev/null || echo "(none)"
+fi
+echo "--- Gates' log"
+cat "$out/state/telamon-gates/telamon-gates.log" || true
+if ! grep -q ' starting$' "$out/state/telamon-gates/telamon-gates.log"; then
+    echo "FAIL: no start line in the log under \$XDG_STATE_HOME/telamon-gates" >&2
+    exit 1
+fi
+if [ "$(grep -c ' starting$' "$out/state/telamon-gates/telamon-gates.log")" != 1 ]; then
+    echo "FAIL: more than one start line: the second launch ran past the single-instance check" >&2
+    exit 1
 fi
 echo "--- conversations"
 ls -la "$dir"

@@ -27,6 +27,8 @@ use std::time::{Duration, Instant};
 pub const IDLE: Duration = Duration::from_secs(5 * 60);
 /// How long a model may take to load before starting counts as failed.
 const LOAD: Duration = Duration::from_secs(300);
+/// The server's host-side prompt cache, in MiB (`--cache-ram`).
+const CACHE_RAM_MIB: u32 = 2048;
 
 /// What the server is started with. A change restarts it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,10 +97,14 @@ pub fn lighter(launch: &Launch, from: Step) -> Option<(Launch, Step)> {
         return Some((smaller, Step::Layers));
     }
     if from <= Step::Layers {
-        let layers = launch
-            .gpu_layers
-            .or((launch.layers > 0).then_some(launch.layers))
-            .filter(|n| *n > 0)?;
+        // A setting above the model's layers (99 means "all") counts as
+        // the model's own number: half of 99 would still be all of them.
+        let known = (launch.layers > 0).then_some(launch.layers);
+        let layers = match (launch.gpu_layers, known) {
+            (Some(set), Some(all)) => Some(set.min(all)),
+            (set, all) => set.or(all),
+        }
+        .filter(|n| *n > 0)?;
         let fewer = Launch {
             gpu_layers: Some(layers / 2),
             ..launch.clone()
@@ -205,6 +211,13 @@ impl Launch {
             "--jinja".into(),
             "--no-webui".into(),
             "--offline".into(),
+            // The prompts of conversations switched away from, kept in system
+            // memory so switching back doesn't read them again: llama.cpp
+            // keeps up to 8 GiB, which on a desktop competes with everything
+            // else. 2 GiB holds several long conversations (BACKEND.md →
+            // Performance).
+            "--cache-ram".into(),
+            CACHE_RAM_MIB.to_string(),
         ];
         if let Some(n) = self.gpu_layers {
             args.extend(["--n-gpu-layers".into(), n.to_string()]);
@@ -292,7 +305,19 @@ impl State {
         let now = Instant::now();
         // Only the models that died lately are remembered: it stays small.
         self.crashes.retain(|_, d| d.recent(now) > 0);
-        self.crashes.entry(model).or_default().record(now, last);
+        let deaths = self.crashes.entry(model.clone()).or_default();
+        deaths.record(now, last.clone());
+        let (n, limit) = (deaths.recent(now), CRASH_LIMIT);
+        crate::applog::warn(&format!(
+            "the model server for {} stopped ({n} of {limit} in the last {} minutes{}); its last line: {last}",
+            model_name(&model),
+            CRASH_WINDOW.as_secs() / 60,
+            if n >= limit {
+                ": it won't be started again for now"
+            } else {
+                ""
+            }
+        ));
     }
 }
 
@@ -562,11 +587,11 @@ impl Server {
                 return Err(failed);
             }
             if let Some((next, after)) = lighter(&current, step) {
-                log::warn!(
+                crate::applog::warn(&format!(
                     "{} ran out of memory loading: retrying with {}",
                     model_name(&requested.model),
                     changes(&current, &next)
-                );
+                ));
                 current = next;
                 step = after;
                 continue;
@@ -859,6 +884,9 @@ mod tests {
         assert_eq!(pair("--ctx-size"), "8192");
         assert!(args.iter().any(|a| a == "--no-webui"));
         assert!(args.iter().any(|a| a == "--offline"));
+        // The prompt cache in system memory is capped.
+        let at = args.iter().position(|a| a == "--cache-ram").unwrap();
+        assert_eq!(args[at + 1], "2048");
         // Context shift stays off (llama.cpp's default): with --keep 0 it
         // can drop the system prompt.
         assert!(!args.iter().any(|a| a == "--context-shift"));
@@ -1043,6 +1071,13 @@ mod tests {
         };
         let (fewer, _) = lighter(&floor, Step::Context).unwrap();
         assert_eq!((fewer.context, fewer.gpu_layers), (Some(4096), Some(15)));
+        // "All layers" set as 99 on a 36-layer model: half of 36, not of 99.
+        let all = Launch {
+            context: Some(MIN_CONTEXT),
+            gpu_layers: Some(99),
+            ..launch()
+        };
+        assert_eq!(lighter(&all, Step::Context).unwrap().0.gpu_layers, Some(18));
         // Halving stops at the floor.
         let near = Launch {
             context: Some(6000),

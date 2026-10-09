@@ -139,8 +139,8 @@ pub fn data_dir() -> PathBuf {
     xdg("XDG_DATA_HOME", ".local/share").join("telamon-gates")
 }
 
-/// `$XDG_STATE_HOME/telamon-gates` (`~/.local/state/telamon-gates`): the
-/// model server's log.
+/// `$XDG_STATE_HOME/telamon-gates` (`~/.local/state/telamon-gates`): Gates'
+/// own log (`applog`) and the model server's.
 pub fn state_dir() -> PathBuf {
     xdg("XDG_STATE_HOME", ".local/state").join("telamon-gates")
 }
