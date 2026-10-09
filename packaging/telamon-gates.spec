@@ -26,6 +26,8 @@ BuildRequires:  git-core
 BuildRequires:  desktop-file-utils
 # The agent's commands run in a bubblewrap sandbox (the tests run one too).
 BuildRequires:  bubblewrap
+# Downloads from Hugging Face use the system's TLS.
+BuildRequires:  pkgconfig(openssl)
 BuildRequires:  libappstream-glib
 BuildRequires:  cmake(Qt6Core)
 BuildRequires:  cmake(Qt6Gui)

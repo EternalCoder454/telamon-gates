@@ -16,4 +16,6 @@ serde_json = "1"
 sha2 = "0.10"
 # HTTP to llama-server (127.0.0.1, or an address on the LAN) and HTTPS to
 # Hugging Face for model downloads.
-ureq = { version = "3", default-features = false, features = ["rustls"] }
+# TLS through the system's OpenSSL and certificate store (smaller than a
+# bundled one, and it trusts what the system trusts).
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
