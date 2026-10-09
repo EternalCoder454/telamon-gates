@@ -15,6 +15,7 @@ pub mod hub;
 pub mod markdown;
 pub mod modes;
 pub mod preflight;
+pub mod research;
 pub mod sandbox;
 pub mod store;
 pub mod systemone;

@@ -598,3 +598,457 @@ pub fn run(
     host.replace(&finish_report(&text, &sources, stopped_early.as_deref()));
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::conversation::ToolCall;
+    use crate::web::testing::Fake;
+    use std::sync::Mutex;
+
+    fn base() -> Request {
+        Request {
+            model: "m".into(),
+            system_prompt: "You are a research analyst.".into(),
+            messages: vec![Message::user("How do heat pumps work in the cold?")],
+            sampling: None,
+            tools: Vec::new(),
+            response_format: None,
+            brief: false,
+        }
+    }
+
+    fn sources() -> Vec<Source> {
+        vec![
+            Source {
+                n: 1,
+                title: "Heat Pumps [Explained]".into(),
+                url: "https://example.org/pumps".into(),
+            },
+            Source {
+                n: 2,
+                title: "".into(),
+                url: "https://example.net/cold (2)".into(),
+            },
+        ]
+    }
+
+    // ---- the plan
+
+    #[test]
+    fn the_plan_asks_for_json_and_reads_what_comes() {
+        let request = plan_request(&base(), "q?");
+        let format = request.response_format.unwrap();
+        assert_eq!(format["type"], "json_object");
+        assert_eq!(format["schema"]["properties"]["questions"]["maxItems"], MAX_QUESTIONS);
+        assert!(request.tools.is_empty());
+        // Reasoning follows the mode: not brief for Deep Research.
+        assert!(!plan_request(&base(), "q").brief);
+
+        let fenced = "```json\n{\"questions\": [\"What is COP?\", \"what is cop?\", \" Why\\nit drops \", \"\", 5]}\n```";
+        assert_eq!(parse_plan(fenced, "q"), vec!["What is COP?", "Why it drops"]);
+        assert_eq!(parse_plan(r#"["a", "b"]"#, "q"), vec!["a", "b"]);
+        assert_eq!(
+            parse_plan(r#"{"questions": [{"question": "x"}, {"q": "y"}]}"#, "q"),
+            vec!["x", "y"]
+        );
+        let many = format!(
+            "{{\"questions\": [{}]}}",
+            (0..10).map(|i| format!("\"q{i}\"")).collect::<Vec<_>>().join(",")
+        );
+        assert_eq!(parse_plan(&many, "q").len(), MAX_QUESTIONS);
+        // No plan: the question itself, so the research goes on.
+        assert_eq!(parse_plan("I can't do that.", "The question?"), vec!["The question?"]);
+        assert_eq!(parse_plan(r#"{"questions": []}"#, "The question?"), vec!["The question?"]);
+    }
+
+    // ---- citations
+
+    #[test]
+    fn numbers_become_links_to_pages_that_were_read() {
+        let s = sources();
+        assert_eq!(
+            link_citations("Works [1]. Cold [2][1], both [1, 2].", &s),
+            "Works [\\[1\\]](https://example.org/pumps). Cold \
+             [\\[2\\]](https://example.net/cold%20%282%29)[\\[1\\]](https://example.org/pumps), both \
+             [\\[1\\]](https://example.org/pumps)[\\[2\\]](https://example.net/cold%20%282%29)."
+        );
+        // A number with no page is taken out, and the space before it.
+        assert_eq!(link_citations("Made up [7].", &s), "Made up.");
+        // Square brackets that aren't numbers are left, and so is a link.
+        assert_eq!(
+            link_citations("A [note] and [1](https://x.org) and [a][b] [", &s),
+            "A [note] and [1](https://x.org) and [a][b] ["
+        );
+    }
+
+    #[test]
+    fn only_pages_that_were_read_can_be_linked_or_named() {
+        let s = sources();
+        let text = "See [the book](https://example.org/pumps/) and [a trap](https://evil.example/x), \
+                    or https://evil.example/y and <https://example.net/cold%20(2)>. \
+                    Also https://example.org/pumps and [[3]](https://evil.example/z).";
+        let got = drop_unfetched(text, &s);
+        assert!(!got.contains("evil.example"), "{got}");
+        assert!(got.contains("[the book](https://example.org/pumps/)"));
+        assert!(got.contains("a trap"), "a link keeps its words: {got}");
+        assert!(got.contains("https://example.org/pumps"));
+    }
+
+    #[test]
+    fn the_models_own_sources_section_goes_and_gates_writes_its_own() {
+        let model = "## Summary\nHeat pumps move heat [1].\n\n## Sources\n1. https://evil.example/\n2. Another\n\n## Limits\nThin data [2].";
+        assert_eq!(
+            cut_sources_section(model),
+            "## Summary\nHeat pumps move heat [1].\n\n## Limits\nThin data [2]."
+        );
+        let done = finish_report(
+            model,
+            &sources(),
+            Some("Research stopped at its time limit: 2 of 4 questions were researched."),
+        );
+        assert!(done.contains("Heat pumps move heat [\\[1\\]](https://example.org/pumps)."));
+        assert!(!done.contains("evil.example"));
+        assert!(
+            done.contains(
+                "## Sources\n\n1. [Heat Pumps Explained](https://example.org/pumps)\n2. [example.net/cold%20(2)](https://example.net/cold%20%282%29)\n"
+            ),
+            "{done}"
+        );
+        assert!(done.ends_with(
+            "_Research stopped at its time limit: 2 of 4 questions were researched._\n"
+        ));
+        assert_eq!(done.matches("## Sources").count(), 1);
+    }
+
+    // ---- a run
+
+    /// A model that plans, takes notes and writes, and keeps its requests.
+    struct Writer {
+        plan: String,
+        report: String,
+        seen: Mutex<Vec<Request>>,
+        /// Fails the notes of this many questions.
+        fail_notes: usize,
+    }
+
+    impl Writer {
+        fn new(questions: usize) -> Writer {
+            let list: Vec<String> = (1..=questions)
+                .map(|i| format!("\"Question {i}?\""))
+                .collect();
+            Writer {
+                plan: format!("{{\"questions\": [{}]}}", list.join(",")),
+                report: "## Summary\nIt works [1][2]. Also [9] and https://evil.example/leak.\n\n## Sources\n- bogus".into(),
+                seen: Mutex::new(Vec::new()),
+                fail_notes: 0,
+            }
+        }
+        fn kinds(&self) -> Vec<&'static str> {
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|r| {
+                    if r.response_format.is_some() {
+                        "plan"
+                    } else if r.system_prompt == NOTES_PROMPT {
+                        "notes"
+                    } else {
+                        "report"
+                    }
+                })
+                .collect()
+        }
+    }
+
+    impl Backend for Writer {
+        fn name(&self) -> String {
+            "writer".into()
+        }
+        fn models(&self) -> Result<Vec<String>, BackendError> {
+            Ok(Vec::new())
+        }
+        fn complete(
+            &self,
+            request: &Request,
+            _cancel: &AtomicBool,
+            emit: &mut dyn FnMut(Event<'_>),
+        ) -> Result<(), BackendError> {
+            self.seen.lock().unwrap().push(request.clone());
+            if request.response_format.is_some() {
+                emit(Event::Text(&self.plan));
+            } else if request.system_prompt == NOTES_PROMPT {
+                let notes = self
+                    .seen
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|r| r.system_prompt == NOTES_PROMPT)
+                    .count();
+                if notes <= self.fail_notes {
+                    return Err(BackendError::Refused("busy".into()));
+                }
+                emit(Event::Text("- A fact [1]."));
+            } else {
+                for piece in self.report.split_inclusive(' ') {
+                    emit(Event::Text(piece));
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct Rec<'a> {
+        events: Vec<String>,
+        streamed: String,
+        replaced: Option<String>,
+        stop_on: Option<(&'a str, &'a AtomicBool)>,
+    }
+
+    impl Host for Rec<'_> {
+        fn text(&mut self, piece: &str) {
+            self.streamed.push_str(piece);
+        }
+        fn speed(&mut self, _: f64) {}
+        fn calls(&mut self, _: &[ToolCall]) {
+            panic!("Deep Research runs no tool calls of the model's");
+        }
+        fn approve(&mut self, _: &ToolCall, _: &str, _: &str) -> crate::agent::Approval {
+            panic!("nothing to approve");
+        }
+        fn result(&mut self, _: Message) {
+            panic!("no tool rows");
+        }
+        fn next_turn(&mut self) {}
+        fn status(&mut self, line: &str) {
+            self.events.push(line.to_string());
+            if let Some((when, flag)) = self.stop_on
+                && line.starts_with(when)
+            {
+                flag.store(true, Ordering::Relaxed);
+            }
+        }
+        fn replace(&mut self, text: &str) {
+            self.replaced = Some(text.to_string());
+        }
+    }
+
+    const HOSTS: [&str; 4] = ["example.org", "example.org", "example.net", "example.com"];
+
+    /// Results and pages for `n` questions: four results each, two on one site.
+    fn web_for(n: usize) -> Fake {
+        let mut fake = Fake::default();
+        for q in 1..=n {
+            let results = (1..=4)
+                .map(|r| {
+                    Fake::result(
+                        &format!("Result {q}.{r}"),
+                        &format!("https://{}/q{q}/r{r}", HOSTS[r - 1]),
+                        "snippet",
+                    )
+                })
+                .collect();
+            fake = fake.with_results(&format!("Question {q}?"), results);
+            for r in 1..=4 {
+                let url = format!("https://{}/q{q}/r{r}", HOSTS[r - 1]);
+                fake = fake.with_page(Fake::page(&url, &format!("Page {q}.{r}"), "Words on the page."));
+            }
+        }
+        fake
+    }
+
+    fn go(writer: &Writer, web: &dyn Web, limits: Limits, host: &mut Rec<'_>, cancel: &AtomicBool) -> Result<(), BackendError> {
+        run(writer, web, base(), limits, cancel, host)
+    }
+
+    #[test]
+    fn a_run_plans_searches_reads_takes_notes_and_writes() {
+        let (writer, web) = (Writer::new(2), web_for(2));
+        let mut host = Rec::default();
+        go(&writer, &web, Limits::default(), &mut host, &AtomicBool::new(false)).unwrap();
+        assert_eq!(writer.kinds(), vec!["plan", "notes", "notes", "report"]);
+        assert_eq!(
+            host.events,
+            vec![
+                "Planning the research",
+                "Searching: Question 1?",
+                "Reading: example.org/q1/r1",
+                "Reading: example.org/q1/r2",
+                "Reading: example.net/q1/r3",
+                "Taking notes: Question 1?",
+                "Searching: Question 2?",
+                // example.org was read twice already: its pages are skipped.
+                "Reading: example.net/q2/r3",
+                "Reading: example.com/q2/r4",
+                "Taking notes: Question 2?",
+                "Writing the report",
+            ]
+        );
+        // The report streamed as it came, then was replaced by the finished one.
+        assert!(host.streamed.starts_with("## Summary\nIt works [1][2]."));
+        let done = host.replaced.unwrap();
+        assert!(
+            done.contains("It works [\\[1\\]](https://example.org/q1/r1)[\\[2\\]](https://example.org/q1/r2)."),
+            "{done}"
+        );
+        // The invented number, the invented address and the model's own
+        // sources list are gone; the real list has every page read.
+        assert!(!done.contains("[9]") && !done.contains("evil.example") && !done.contains("bogus"), "{done}");
+        for n in 1..=5 {
+            assert!(done.contains(&format!("\n{n}. [")), "source {n}: {done}");
+        }
+        assert!(!done.contains("\n6. ["));
+        // Everything that was cited was fetched.
+        let fetched: Vec<String> = web
+            .calls()
+            .iter()
+            .filter_map(|c| c.strip_prefix("fetch ").map(str::to_string))
+            .collect();
+        assert_eq!(fetched.len(), 5);
+        let linked: Vec<&str> = done
+            .split("](")
+            .skip(1)
+            .filter_map(|rest| rest.split(')').next())
+            .collect();
+        assert!(linked.len() >= 7, "{done}");
+        for url in linked {
+            assert!(fetched.iter().any(|f| normalize(f) == normalize(url)), "{url}");
+        }
+        // The report was asked for with the notes and the source list, and
+        // never the pages themselves.
+        let seen = writer.seen.lock().unwrap();
+        let report = seen.last().unwrap();
+        assert!(report.system_prompt.starts_with("You are a research analyst."));
+        assert!(report.system_prompt.contains("Do not write web addresses"));
+        let body = &report.messages[0].text;
+        assert!(body.contains("### Question 1?\n- A fact [1]."));
+        assert!(body.contains("[1] Page 1.1 (example.org/q1/r1)"));
+        assert!(!body.contains("Words on the page."));
+        // The notes saw the pages, numbered.
+        assert!(seen[1].messages[0].text.contains("[1] Page 1.1\nWords on the page."));
+    }
+
+    #[test]
+    fn web_calls_are_bounded() {
+        let (writer, web) = (Writer::new(6), web_for(6));
+        let mut host = Rec::default();
+        let limits = Limits {
+            calls: 7,
+            ..Limits::default()
+        };
+        go(&writer, &web, limits, &mut host, &AtomicBool::new(false)).unwrap();
+        assert_eq!(web.calls().len(), 7);
+        let done = host.replaced.unwrap();
+        assert!(
+            done.contains("Research stopped at its limit of 7 web calls: 2 of 6 questions were researched."),
+            "{done}"
+        );
+        // The report still came, from what was read.
+        assert!(writer.kinds().ends_with(&["report"]));
+        // With the full allowance, 6 questions stay under 30 calls.
+        let (writer, web) = (Writer::new(6), web_for(6));
+        go(&writer, &web, Limits::default(), &mut Rec::default(), &AtomicBool::new(false)).unwrap();
+        assert!(web.calls().len() <= 30, "{}", web.calls().len());
+    }
+
+    #[test]
+    fn the_research_has_a_time_limit() {
+        let (writer, web) = (Writer::new(4), web_for(4));
+        let web = Fake {
+            delay: Duration::from_millis(40),
+            ..web
+        };
+        let mut host = Rec::default();
+        let limits = Limits {
+            time: Duration::from_millis(100),
+            ..Limits::default()
+        };
+        let started = Instant::now();
+        go(&writer, &web, limits, &mut host, &AtomicBool::new(false)).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(web.calls().len() < 12, "{}", web.calls().len());
+        assert!(host.replaced.unwrap().contains("Research stopped at its time limit"));
+    }
+
+    #[test]
+    fn stop_works_at_every_step() {
+        for step in ["Planning", "Searching", "Reading", "Taking notes", "Writing"] {
+            let (writer, web) = (Writer::new(3), web_for(3));
+            let cancel = AtomicBool::new(false);
+            let mut host = Rec {
+                stop_on: Some((step, &cancel)),
+                ..Rec::default()
+            };
+            let started = Instant::now();
+            let result = go(&writer, &web, Limits::default(), &mut host, &cancel);
+            assert!(result.is_ok(), "{step}: {result:?}");
+            assert!(started.elapsed() < Duration::from_secs(2), "{step}");
+            // Stopped: no finished report, and no further steps after it.
+            assert!(host.replaced.is_none(), "{step}: a report came");
+            let after: Vec<&String> = host
+                .events
+                .iter()
+                .skip_while(|e| !e.starts_with(step))
+                .skip(1)
+                .collect();
+            assert!(after.is_empty(), "{step}: went on with {after:?}");
+        }
+    }
+
+    #[test]
+    fn a_slow_web_call_is_given_up_on_stop() {
+        let (writer, web) = (Writer::new(2), web_for(2));
+        let web = Fake {
+            delay: Duration::from_secs(5),
+            ..web
+        };
+        let cancel = AtomicBool::new(false);
+        let mut host = Rec {
+            stop_on: Some(("Searching", &cancel)),
+            ..Rec::default()
+        };
+        let started = Instant::now();
+        go(&writer, &web, Limits::default(), &mut host, &cancel).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(host.replaced.is_none());
+    }
+
+    #[test]
+    fn nothing_read_is_an_error_and_a_failed_note_is_not() {
+        // Searches find nothing: nothing to write about.
+        let (writer, web) = (Writer::new(2), Fake::default());
+        let e = go(&writer, &web, Limits::default(), &mut Rec::default(), &AtomicBool::new(false))
+            .unwrap_err();
+        assert!(e.to_string().contains("couldn't read any web pages"), "{e}");
+        assert!(!writer.kinds().contains(&"report"));
+        // Every page fails to open: the same.
+        let web = Fake::default()
+            .with_results("Question 1?", vec![Fake::result("A", "https://example.org/a", "")])
+            .with_failing_page("https://example.org/a", "There is no such page (404).");
+        let e = go(&Writer::new(1), &web, Limits::default(), &mut Rec::default(), &AtomicBool::new(false))
+            .unwrap_err();
+        assert!(e.to_string().contains("couldn't read"), "{e}");
+        // The model refusing one note doesn't end the research.
+        let mut writer = Writer::new(2);
+        writer.fail_notes = 1;
+        let web = web_for(2);
+        let mut host = Rec::default();
+        go(&writer, &web, Limits::default(), &mut host, &AtomicBool::new(false)).unwrap();
+        assert!(host.replaced.unwrap().contains("## Sources"));
+        let seen = writer.seen.lock().unwrap();
+        let body = &seen.last().unwrap().messages[0].text;
+        assert!(body.contains("### Question 2?") && !body.contains("### Question 1?"));
+    }
+
+    #[test]
+    fn reasoning_follows_the_mode() {
+        let mut brief = base();
+        brief.brief = true;
+        assert!(plan_request(&brief, "q").brief);
+        assert!(notes_request(&brief, "q", &[]).brief);
+        assert!(report_request(&brief, "q", &[], &[]).brief);
+        assert!(!report_request(&base(), "q", &[], &[]).brief);
+    }
+}

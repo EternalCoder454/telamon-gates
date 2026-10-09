@@ -85,8 +85,27 @@ pub const AGENT: Mode = Mode {
     brief: false,
 };
 
+/// Researches a question on the web and writes a cited report
+/// (`research.rs`). Pinned by the user, like Agent: SystemOne never picks it,
+/// and it needs Web Search on and a model that can call tools. Its prompt is
+/// the report writer's; the planning and note-taking steps have their own.
+/// Reasoning is the model's own: the report is where it pays.
+pub const DEEP_RESEARCH: Mode = Mode {
+    id: "research",
+    prompt: "You are a research analyst writing a report from notes taken on web pages. \
+             Start with a short summary that answers the question in a few sentences. Then \
+             give the findings under clear headings, and end with what is uncertain, where \
+             sources disagree, or what the notes don't cover. Use only facts in the notes, \
+             and say plainly when they don't answer something.",
+    sampling: Some(Sampling {
+        temperature: 0.3,
+        top_p: 0.9,
+    }),
+    brief: false,
+};
+
 /// Every mode, in the order the window offers them.
-pub const MODES: [Mode; 4] = [CHAT, STORY, CODE, AGENT];
+pub const MODES: [Mode; 5] = [CHAT, STORY, CODE, AGENT, DEEP_RESEARCH];
 
 /// The modes SystemOne picks from.
 pub const PICKABLE: [Mode; 3] = [CHAT, STORY, CODE];
@@ -164,6 +183,7 @@ fn builtin_name(id: &str) -> &'static str {
         "story" => "Story",
         "code" => "Code",
         "agent" => "Agent",
+        "research" => "Deep Research",
         _ => "Chat",
     }
 }
@@ -329,7 +349,14 @@ mod tests {
         let (story, code) = (STORY.sampling.unwrap(), CODE.sampling.unwrap());
         assert!(story.temperature > 0.8 && code.temperature < 0.5);
         // Reasoning is kept short where it adds little.
-        const { assert!(CHAT.brief && STORY.brief && !CODE.brief && !AGENT.brief) };
+        const {
+            assert!(
+                CHAT.brief && STORY.brief && !CODE.brief && !AGENT.brief && !DEEP_RESEARCH.brief
+            )
+        };
+        // Agent and Deep Research are never picked for the user.
+        assert!(PICKABLE.iter().all(|m| m.id != "agent" && m.id != "research"));
+        assert!(valid_choice("research") && mode("research").id == "research");
     }
 
     #[test]
