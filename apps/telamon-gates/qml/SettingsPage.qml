@@ -55,6 +55,25 @@ TelamonPage {
             }
         }
         SectionRow {
+            visible: page.chat.models.length > 1
+            title: qsTr("Model for Code")
+            subtitle: qsTr("Code and Agent mode use it; a coding model writes better code")
+            leading: [
+                Symbol {
+                    icon: Symbols.Code
+                    color: TelamonStyle.accent
+                }
+            ]
+
+            TelamonComboBox {
+                // First "the same as the chat model", then every model.
+                model: [qsTr("Same as the Model")].concat(page.chat.models)
+                currentIndex: page.chat.codeModel.length > 0 ? Math.max(0, page.chat.models.indexOf(page.chat.codeModel) + 1) : 0
+                onActivated: index => page.chat.pickCodeModel(index === 0 ? "" : page.chat.models[index - 1])
+                Accessible.name: qsTr("Model for Code")
+            }
+        }
+        SectionRow {
             visible: page.chat.modelsFolder.length > 0 && page.chat.serverUrl.length === 0
             title: qsTr("Models Folder")
             subtitle: page.chat.modelsFolder
