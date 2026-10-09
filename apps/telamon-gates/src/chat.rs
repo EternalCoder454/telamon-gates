@@ -438,6 +438,8 @@ pub struct ChatRust {
     looking: u64,
     /// The same for the backend's model list.
     listing: u64,
+    /// Whether commands' sandbox was tried yet (`check_sandbox`).
+    sandbox_checked: bool,
     /// When the model was last warmed up (`prepare`).
     warmed: Option<Instant>,
     /// SystemOne's pick for the text being written: the text, the mode,
@@ -651,12 +653,9 @@ impl qobject::Chat {
             .set_agent_network(settings::get(settings::AGENT_NETWORK) == "true");
         self.as_mut()
             .set_agent_home(settings::get(settings::AGENT_HOME) == "true");
-        // Trying bubblewrap runs it: on a worker.
-        let qt = self.qt_thread();
-        std::thread::spawn(move || {
-            let available = gates_core::sandbox::available();
-            let _ = qt.queue(move |chat| chat.set_commands_available(available));
-        });
+        // Assumed until Agent mode first shows (`check_sandbox`): trying
+        // bubblewrap runs it twice, which a launch needn't pay for.
+        self.as_mut().set_commands_available(true);
         {
             let mut rust = self.as_mut().rust_mut();
             rust.server_binary = find_server();
@@ -1123,6 +1122,7 @@ impl qobject::Chat {
             return;
         }
         self.as_mut().set_mode(QString::from(mode.as_str()));
+        self.as_mut().check_sandbox();
         // A new chat keeps it until its first message makes the file.
         let saved = match self.as_mut().rust_mut().conversation.as_mut() {
             Some(c) => {
@@ -1263,6 +1263,20 @@ impl qobject::Chat {
         if saved {
             self.save();
         }
+    }
+
+    /// In Agent mode, the first time: whether commands can run here (their
+    /// sandbox can be made). On a worker; it runs bubblewrap.
+    fn check_sandbox(mut self: Pin<&mut Self>) {
+        if self.mode().to_string() != modes::AGENT.id || self.rust().sandbox_checked {
+            return;
+        }
+        self.as_mut().rust_mut().sandbox_checked = true;
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let available = gates_core::sandbox::available();
+            let _ = qt.queue(move |chat| chat.set_commands_available(available));
+        });
     }
 
     pub fn use_sandbox(mut self: Pin<&mut Self>) {
@@ -1585,6 +1599,7 @@ impl qobject::Chat {
             .filter(|m| self.rust().modes.has(m))
             .unwrap_or_else(|| modes::AUTO.to_string());
         self.as_mut().set_mode(QString::from(mode.as_str()));
+        self.as_mut().check_sandbox();
         self.as_mut().begin_reset_model();
         let rows: Vec<Row> = conversation
             .as_ref()
