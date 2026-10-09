@@ -425,9 +425,31 @@ Qwen3-4B-Instruct-2507 Q4_K_M unless said; temperature 0; scripts in
 
   Drafts are kept out of the chat model list, and the Models page shows them
   as Speed-Up.
-- **Context cache precision** (Settings → Smaller Context Cache, off by
-  default). A 32k context costs 7,104 MiB at f16 against 4,954 MiB at q8_0
-  (−30%), and generation drops from 154 to 139 tok/s (−10%).
+- **Context cache precision** (Settings → Smaller Context Cache, **on by
+  default** since 1.2). A 32k context costs 7,104 MiB at f16 against
+  4,954 MiB at q8_0 (−30%) for the 4B, and generation drops from 154 to
+  139 tok/s (−10%). Quality holds:
+  - Qwen3-Coder-30B-A3B scored 22/24 on all 3 runs of the code test with a
+    q8_0 cache, against 21/24 at f16 (4 runs). Rust was 8/8 both ways.
+  - It ran at 164 against 180 tok/s.
+  - Published llama.cpp tests agree: q8_0 K and V keep about 98% top-token
+    agreement with f16 (ggml-org/llama.cpp discussion #23470).
+  - Our llama.cpp (v0.6.0) also has the activation rotation from PR #21038,
+    which improves quantized caches further.
+  - q4_0 is avoided.
+- **Prompt cache in system memory** (`--cache-ram`, `server::CACHE_RAM_MIB`).
+  llama.cpp keeps the prompts of conversations switched away from in
+  system memory, up to 8 GiB by default. On a desktop that competes with
+  everything else. After 8 conversations of about 8.9k tokens each
+  (Qwen3-4B):
+
+  | `--cache-ram` | Server memory | Back to the first conversation |
+  |---|---|---|
+  | 8192 (default) | 7,396 MiB | 1 token read, 0.3 s |
+  | **2048** | **2,272 MiB** | 8,870 tokens read again, 2.4 s |
+
+  Gates uses 2048: 5.1 GiB less memory. Only a return to a conversation
+  several switches back is read again.
 - **Prompt cache.** Within a conversation, the next message reads only
   what's new: 16 tokens in 0.16 s after a 13k-token prompt.
 - **Trimming with room to spare.** Once a conversation overflows the

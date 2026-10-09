@@ -1130,7 +1130,7 @@ impl qobject::Chat {
             settings::set(
                 io,
                 settings::SMALL_CACHE,
-                if on { "true".into() } else { String::new() },
+                if on { "true" } else { "false" }.into(),
             );
         }
         let (gpu, ctx, url) = (

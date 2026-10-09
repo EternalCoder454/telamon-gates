@@ -26,6 +26,8 @@ use std::time::{Duration, Instant};
 pub const IDLE: Duration = Duration::from_secs(5 * 60);
 /// How long a model may take to load before starting counts as failed.
 const LOAD: Duration = Duration::from_secs(300);
+/// The server's host-side prompt cache, in MiB (`--cache-ram`).
+const CACHE_RAM_MIB: u32 = 2048;
 
 /// What the server is started with. A change restarts it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +79,13 @@ impl Launch {
             "--jinja".into(),
             "--no-webui".into(),
             "--offline".into(),
+            // The prompts of conversations switched away from, kept in system
+            // memory so switching back doesn't read them again: llama.cpp
+            // keeps up to 8 GiB, which on a desktop competes with everything
+            // else. 2 GiB holds several long conversations (BACKEND.md →
+            // Performance).
+            "--cache-ram".into(),
+            CACHE_RAM_MIB.to_string(),
         ];
         if let Some(n) = self.gpu_layers {
             args.extend(["--n-gpu-layers".into(), n.to_string()]);
@@ -502,6 +511,9 @@ mod tests {
         assert_eq!(pair("--ctx-size"), "8192");
         assert!(args.iter().any(|a| a == "--no-webui"));
         assert!(args.iter().any(|a| a == "--offline"));
+        // The prompt cache in system memory is capped.
+        let at = args.iter().position(|a| a == "--cache-ram").unwrap();
+        assert_eq!(args[at + 1], "2048");
         // Context shift stays off (llama.cpp's default): with --keep 0 it
         // can drop the system prompt.
         assert!(!args.iter().any(|a| a == "--context-shift"));
