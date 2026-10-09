@@ -24,6 +24,8 @@ BuildRequires:  corrosion
 # Cargo fetches the telamon-framework crates from GitHub.
 BuildRequires:  git-core
 BuildRequires:  desktop-file-utils
+# The agent's commands run in a bubblewrap sandbox (the tests run one too).
+BuildRequires:  bubblewrap
 BuildRequires:  libappstream-glib
 BuildRequires:  cmake(Qt6Core)
 BuildRequires:  cmake(Qt6Gui)
@@ -47,6 +49,7 @@ Requires:       kf6-qqc2-desktop-style
 Requires:       qt6-qtdeclarative
 Requires:       qt6-qtsvg
 # The model server (llama.cpp with Vulkan); without it the demo answers.
+Requires:       bubblewrap
 Recommends:     telamon-llama
 
 %description

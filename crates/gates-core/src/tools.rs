@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -216,6 +216,8 @@ impl Outcome {
 #[derive(Debug, Clone)]
 pub struct Workspace {
     root: PathBuf,
+    /// What its commands may reach beyond it (`sandbox.rs`).
+    access: crate::sandbox::Access,
 }
 
 impl Workspace {
@@ -234,7 +236,16 @@ impl Workspace {
                 "too wide: choose a project folder",
             ));
         }
-        Ok(Workspace { root })
+        Ok(Workspace {
+            root,
+            access: crate::sandbox::Access::default(),
+        })
+    }
+
+    /// The same workspace, its commands allowed `access`.
+    pub fn with_access(mut self, access: crate::sandbox::Access) -> Workspace {
+        self.access = access;
+        self
     }
 
     pub fn root(&self) -> &Path {
@@ -461,8 +472,18 @@ pub fn describe(ws: &Workspace, name: &str, arguments: &str) -> Result<(String, 
                 .min(RUN_MAX);
             (
                 format!(
-                    "Run a command in {} (stopped after {} s; {} lines, {} characters)",
+                    "Run a command in {} (sandboxed{}{}; stopped after {} s; {} lines, {} characters)",
                     ws.root.display(),
+                    if ws.access.network {
+                        ", with the network"
+                    } else {
+                        ", no network"
+                    },
+                    if ws.access.home {
+                        ", sees your home folder"
+                    } else {
+                        ""
+                    },
                     limit.as_secs(),
                     command.lines().count(),
                     command.chars().count()
@@ -875,7 +896,9 @@ fn edit_file(ws: &Workspace, path: &str, old: &str, new: &str) -> Outcome {
         Err(e) => return Outcome::err(format!("Can't read {path}: {e}.")),
     };
     if old.trim().is_empty() {
-        return Outcome::err("old_text is empty.");
+        return Outcome::err(
+            "old_text is empty: to add text, put the line it goes after in old_text, and that line with the new text in new_text.",
+        );
     }
     // As written first. Not there: models copy what read_file showed, so
     // its line numbers come off (and off the new text, if it has them too),
@@ -889,7 +912,9 @@ fn edit_file(ws: &Workspace, path: &str, old: &str, new: &str) -> Outcome {
         _ => (old.to_string(), new.to_string()),
     };
     if old.trim().is_empty() {
-        return Outcome::err("old_text is empty.");
+        return Outcome::err(
+            "old_text is empty: to add text, put the line it goes after in old_text, and that line with the new text in new_text.",
+        );
     }
     let edited = match text.matches(old.as_str()).count() {
         1 => text.replacen(old.as_str(), &new, 1),
@@ -1041,11 +1066,15 @@ fn run_command(ws: &Workspace, command: &str, limit: Duration, cancel: &AtomicBo
         Ok(p) => p,
         Err(e) => return Outcome::err(format!("Can't run the command: {e}.")),
     };
+    // In its sandbox, always: the workspace, the system's programs, and
+    // only what the user allowed beyond.
+    let mut sandboxed = match crate::sandbox::command(&ws.root, ws.access, command) {
+        Ok(c) => c,
+        Err(e) => return Outcome::err(e),
+    };
     let child = writer.try_clone().and_then(|err| {
-        let mut cmd = Command::new("/bin/sh");
-        cmd.arg("-c")
-            .arg(command)
-            .current_dir(&ws.root)
+        let cmd = &mut sandboxed;
+        cmd.current_dir(&ws.root)
             .stdin(Stdio::null())
             .stdout(writer)
             .stderr(err)

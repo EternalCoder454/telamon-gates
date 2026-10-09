@@ -39,6 +39,13 @@ dark_scheme() {
     printf '[Colors:Selection]\nBackgroundNormal=138,122,244\nForegroundNormal=20,18,31\n'
 }
 
+# An Agent mode conversation in its own sandbox (no folder chosen).
+seed_agent() {
+    local when
+    when=$(($(date +%s%3N) - 3 * 3600000))
+    printf '{"id":"000000000010-0000","title":"Tidy the build scripts","created":%s,"updated":%s,"mode":"agent","messages":[{"role":"user","text":"Tidy the build scripts"},{"role":"assistant","mode":"agent","text":"","tool_calls":[{"id":"a","name":"list_dir","arguments":"{}"}]},{"role":"tool","tool_call_id":"a","summary":"Listed . (3 entries)","text":"src/"},{"role":"assistant","mode":"agent","text":"The folder is empty but for src/. What should the scripts do?"}]}\n' "$when" "$when" >"$1/000000000010-0000.json"
+}
+
 seed_all() {
     local dir=$1
     seed "$dir" 000000000001-0000 "Show me what a reply can look like" 1 <<'EOF'
@@ -51,6 +58,7 @@ EOF
     seed "$dir" 000000000008-0000 "What is in this picture" 2 <<EOF
 [{"role":"user","text":"What is in this picture, and does the notes file match it?","attachments":[{"name":"sunset.png","image":"$pics/0000000000000000000000aa.png"},{"name":"notes.md","text":"# Notes"}]},{"role":"assistant","text":"A soft violet-to-pink gradient, like an evening sky."}]
 EOF
+    seed_agent "$dir"
     seed "$dir" 000000000002-0000 "Rust lifetimes" 2 <<'EOF'
 [{"role":"user","text":"What is a lifetime?"},{"role":"assistant","speed":41.2,"text":"A *lifetime* names how long a reference is valid."}]
 EOF
@@ -126,6 +134,15 @@ run_theme() {
     app=$!
     sleep 4
     shot 02-new-chat
+    # The mode button's menu.
+    xdotool mousemove 470 1035 click 1
+    sleep 0.6
+    shot 02b-mode-menu
+    # A click outside closes it; the field takes the typing again.
+    xdotool mousemove 900 500 click 1
+    sleep 0.3
+    xdotool mousemove 900 978 click 1
+    sleep 0.3
     xdotool type --delay 10 "Write a short story about"
     xdotool key shift+Return
     xdotool type --delay 10 "autumn in Lisbon"
@@ -158,6 +175,8 @@ run_theme() {
     sleep 0.4
     open_chat "picture"
     shot 08d-attachments
+    open_chat "build scripts"
+    shot 08e-agent-sandbox
     open_chat "migration"
     shot 09-long-end
     xdotool mousemove 900 500 click 4 click 4 click 4 click 4 click 4 click 4
@@ -234,7 +253,7 @@ run_theme() {
     rm -rf "$x"
 }
 
-export -f run_theme seed seed_all dark_scheme
+export -f run_theme seed seed_all seed_agent dark_scheme
 export bin root repo
 for theme in light dark; do
     xvfb-run -a -s "-screen 0 1600x1200x24" dbus-run-session -- bash -c "run_theme $theme" >/dev/null 2>&1

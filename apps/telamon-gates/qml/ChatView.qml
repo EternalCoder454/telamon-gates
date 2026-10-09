@@ -206,7 +206,8 @@ Item {
                 anchors.fill: parent
                 model: view.chat
                 clip: true
-                spacing: Kirigami.Units.largeSpacing * 2
+                // Each message keeps its own gap above (MessageDelegate).
+                spacing: 0
                 topMargin: Kirigami.Units.largeSpacing
                 bottomMargin: Kirigami.Units.largeSpacing * 2
                 boundsBehavior: Flickable.StopAtBounds

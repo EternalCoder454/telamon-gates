@@ -16,7 +16,7 @@ ColumnLayout {
 
     // The model is one of ours and its template takes no tools (a server
     // elsewhere is not known: no warning).
-    readonly property bool noTools: panel.chat.serverUrl.length === 0 && panel.chat.models.length > 0 && panel.chat.toolModels.indexOf(panel.chat.model) < 0
+    readonly property bool noTools: !panel.chat.demo && panel.chat.serverUrl.length === 0 && panel.chat.models.length > 0 && panel.chat.toolModels.indexOf(panel.chat.model) < 0
 
     spacing: TelamonStyle.spacing
 
@@ -88,29 +88,59 @@ ColumnLayout {
         }
     }
 
-    // The folder.
+    // Where it works: its own sandbox, or a folder of the user's chosen on
+    // purpose.
     RowLayout {
         Layout.fillWidth: true
         spacing: TelamonStyle.spacing
 
         Symbol {
-            icon: Symbols.FolderOpen
+            icon: panel.chat.sandboxed ? Symbols.Shield : Symbols.FolderOpen
             color: TelamonStyle.accent
         }
         TelamonLabel {
             Layout.fillWidth: true
             textFormat: Text.PlainText
             elide: Text.ElideMiddle
-            opacity: panel.chat.workspace.length > 0 ? 1 : 0.7
-            text: panel.chat.workspace.length > 0 ? panel.chat.workspace : qsTr("Choose the folder the agent works in. It can read anything there, and asks before it changes a file or runs a command.")
-            wrapMode: panel.chat.workspace.length > 0 ? Text.NoWrap : Text.Wrap
+            wrapMode: panel.chat.sandboxed ? Text.Wrap : Text.NoWrap
+            text: panel.chat.sandboxed ? qsTr("Sandbox: the agent works in a folder of its own and can't see the rest of your computer.") : panel.chat.workspace
         }
         SecondaryButton {
-            text: panel.chat.workspace.length > 0 ? qsTr("Change…") : qsTr("Choose Folder…")
+            visible: panel.chat.sandboxed
+            text: qsTr("Use a Folder on This Computer…")
             enabled: !panel.chat.generating
-            symbol: Symbols.FolderOpen
+            onClicked: realFolder.open()
+        }
+        SecondaryButton {
+            visible: !panel.chat.sandboxed
+            text: qsTr("Change…")
+            enabled: !panel.chat.generating
             onClicked: picker.open()
         }
+        SecondaryButton {
+            visible: !panel.chat.sandboxed
+            text: qsTr("Use the Sandbox")
+            symbol: Symbols.Shield
+            enabled: !panel.chat.generating
+            onClicked: panel.chat.useSandbox()
+        }
+    }
+
+    TelamonLabel {
+        visible: !panel.chat.commandsAvailable
+        Layout.fillWidth: true
+        wrapMode: Text.Wrap
+        textStyle: TelamonLabel.Caption
+        opacity: 0.8
+        text: qsTr("Commands are off: they run in a bubblewrap sandbox, and bubblewrap isn't installed.")
+    }
+
+    ConfirmDialog {
+        id: realFolder
+        title: qsTr("Let the Agent Into a Folder?")
+        text: qsTr("The agent can read everything in the folder you choose, and changes files there or runs commands only after you allow it. Commands still run in a sandbox.")
+        acceptText: qsTr("Choose Folder…")
+        onAccepted: picker.open()
     }
 
     FolderDialog {

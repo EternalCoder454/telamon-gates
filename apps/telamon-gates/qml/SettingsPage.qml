@@ -310,6 +310,38 @@ TelamonPage {
     }
 
     Section {
+        title: qsTr("Agent")
+        footer: qsTr("An agent's commands run in a bubblewrap sandbox: they see the agent's folder and the system's programs, nothing else of yours.")
+
+        SectionRow {
+            title: qsTr("Network for Commands")
+            subtitle: qsTr("Let commands download, such as packages for a build")
+            leading: [
+                Symbol {
+                    icon: Symbols.Public
+                    color: TelamonStyle.accent
+                }
+            ]
+            showSwitch: true
+            switchChecked: page.chat.agentNetwork
+            onSwitchToggled: checked => page.chat.setAgentAccess(checked, page.chat.agentHome)
+        }
+        SectionRow {
+            title: qsTr("Your Tools in Commands")
+            subtitle: qsTr("Show commands your home folder, read-only, for toolchains such as cargo or mise")
+            leading: [
+                Symbol {
+                    icon: Symbols.Home
+                    color: TelamonStyle.accent
+                }
+            ]
+            showSwitch: true
+            switchChecked: page.chat.agentHome
+            onSwitchToggled: checked => page.chat.setAgentAccess(page.chat.agentNetwork, checked)
+        }
+    }
+
+    Section {
         title: qsTr("SystemOne")
         footer: qsTr("In Auto, a small decision model reads each message and picks Chat, Story or Code before the chat model answers. When it isn't sure, Chat answers.")
 

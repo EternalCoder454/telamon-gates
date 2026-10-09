@@ -80,6 +80,14 @@ pub mod qobject {
         #[qproperty(QStringList, tool_models, cxx_name = "toolModels")]
         /// The open conversation's folder for Agent mode; "" for none yet.
         #[qproperty(QString, workspace)]
+        /// That folder is the conversation's own sandbox (Gates' folder),
+        /// not one of the user's.
+        #[qproperty(bool, sandboxed)]
+        /// What an agent's sandboxed commands may reach (Settings), and
+        /// whether they can run at all (bubblewrap is there).
+        #[qproperty(bool, agent_network, cxx_name = "agentNetwork")]
+        #[qproperty(bool, agent_home, cxx_name = "agentHome")]
+        #[qproperty(bool, commands_available, cxx_name = "commandsAvailable")]
         /// The agent waits for the user to allow a change: what it is
         /// (a title, the text or command), and "write" or "run".
         #[qproperty(bool, approving)]
@@ -198,10 +206,20 @@ pub mod qobject {
         #[cxx_name = "pickDecisionModel"]
         fn pick_decision_model(self: Pin<&mut Chat>, name: &QString);
 
-        /// The folder Agent mode works in, for the open conversation.
+        /// The folder Agent mode works in, for the open conversation: one
+        /// of the user's, chosen on purpose.
         #[qinvokable]
         #[cxx_name = "chooseWorkspace"]
         fn choose_workspace(self: Pin<&mut Chat>, path: &QString);
+
+        /// Back to the conversation's own sandbox folder.
+        #[qinvokable]
+        #[cxx_name = "useSandbox"]
+        fn use_sandbox(self: Pin<&mut Chat>);
+
+        #[qinvokable]
+        #[cxx_name = "setAgentAccess"]
+        fn set_agent_access(self: Pin<&mut Chat>, network: bool, home: bool);
 
         /// The answer to the change the agent waits on: 0 deny, 1 allow,
         /// 2 allow it and the rest of this reply's edits.
@@ -371,6 +389,10 @@ pub struct ChatRust {
     decision_model: QString,
     tool_models: QStringList,
     workspace: QString,
+    sandboxed: bool,
+    agent_network: bool,
+    agent_home: bool,
+    commands_available: bool,
     approving: bool,
     approval_title: QString,
     approval_detail: QString,
@@ -555,6 +577,11 @@ fn pick_mode(
     }
 }
 
+/// Whether `folder` is one of Gates' own sandbox folders.
+fn is_sandbox(folder: &str) -> bool {
+    std::path::Path::new(folder).starts_with(gates_core::store::data_dir().join("workspaces"))
+}
+
 /// Where the user's modes are kept.
 fn modes_file() -> PathBuf {
     gates_core::store::data_dir().join("modes.json")
@@ -598,6 +625,16 @@ impl qobject::Chat {
         self.as_mut().use_modes(library);
         self.as_mut()
             .set_system_one(settings::get(settings::SYSTEM_ONE) != "false");
+        self.as_mut()
+            .set_agent_network(settings::get(settings::AGENT_NETWORK) == "true");
+        self.as_mut()
+            .set_agent_home(settings::get(settings::AGENT_HOME) == "true");
+        // Trying bubblewrap runs it: on a worker.
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let available = gates_core::sandbox::available();
+            let _ = qt.queue(move |chat| chat.set_commands_available(available));
+        });
         {
             let mut rust = self.as_mut().rust_mut();
             rust.server_binary = find_server();
@@ -1115,6 +1152,7 @@ impl qobject::Chat {
     }
 
     fn use_workspace(mut self: Pin<&mut Self>, path: String) {
+        self.as_mut().set_sandboxed(is_sandbox(&path));
         self.as_mut().set_workspace(QString::from(path.as_str()));
         let saved = match self.as_mut().rust_mut().conversation.as_mut() {
             Some(c) => {
@@ -1125,6 +1163,40 @@ impl qobject::Chat {
         };
         if saved {
             self.save();
+        }
+    }
+
+    pub fn use_sandbox(mut self: Pin<&mut Self>) {
+        if *self.generating() {
+            return;
+        }
+        self.as_mut().set_sandboxed(true);
+        self.as_mut().set_workspace(QString::default());
+        let saved = match self.as_mut().rust_mut().conversation.as_mut() {
+            Some(c) => {
+                c.workspace = None;
+                true
+            }
+            None => false,
+        };
+        if saved {
+            self.save();
+        }
+    }
+
+    pub fn set_agent_access(mut self: Pin<&mut Self>, network: bool, home: bool) {
+        self.as_mut().set_agent_network(network);
+        self.as_mut().set_agent_home(home);
+        if let Some(io) = &self.rust().io {
+            let flag = |on: bool| {
+                if on {
+                    "true".to_string()
+                } else {
+                    String::new()
+                }
+            };
+            settings::set(io, settings::AGENT_NETWORK, flag(network));
+            settings::set(io, settings::AGENT_HOME, flag(home));
         }
     }
 
@@ -1396,6 +1468,8 @@ impl qobject::Chat {
             .and_then(|c| c.workspace.clone())
             .unwrap_or_default();
         self.as_mut()
+            .set_sandboxed(workspace.is_empty() || is_sandbox(&workspace));
+        self.as_mut()
             .set_workspace(QString::from(workspace.as_str()));
         let mode = conversation
             .as_ref()
@@ -1540,17 +1614,20 @@ impl qobject::Chat {
         let user_prompt = self.system_prompt().to_string();
         // Agent mode works in the conversation's folder, which it needs
         // (opened on the worker: a folder can be on a slow disk).
+        // No folder chosen: the conversation's own sandbox, made on the worker.
         let workspace = if pinned.as_ref().is_some_and(|m| m.id == modes::AGENT.id) {
             let folder = self.workspace().to_string();
-            if folder.is_empty() {
-                self.set_error(QString::from(
-                    "Choose a folder for the agent to work in first.",
-                ));
-                return;
-            }
-            Some(PathBuf::from(folder))
+            Some(if folder.is_empty() {
+                gates_core::store::sandbox_dir(&self.conversation_id().to_string())
+            } else {
+                PathBuf::from(folder)
+            })
         } else {
             None
+        };
+        let access = gates_core::sandbox::Access {
+            network: *self.agent_network(),
+            home: *self.agent_home(),
         };
         let mut request = Request {
             model: self.model().to_string(),
@@ -1594,6 +1671,9 @@ impl qobject::Chat {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 match &workspace {
                     Some(folder) => {
+                        if folder.starts_with(gates_core::store::data_dir().join("workspaces")) {
+                            let _ = std::fs::create_dir_all(folder);
+                        }
                         let ws = Workspace::open(folder).map_err(|e| {
                             gates_core::BackendError::Other(format!(
                                 "The agent can't work in {}: {e}.",
@@ -1603,6 +1683,7 @@ impl qobject::Chat {
                         request
                             .system_prompt
                             .push_str(&format!("\n\nThe workspace is {}.", ws.root().display()));
+                        let ws = ws.with_access(access);
                         agent::run(backend.as_ref(), request, &ws, &cancel, &mut stream)
                     }
                     None => backend.complete(&request, &cancel, &mut |event| match event {

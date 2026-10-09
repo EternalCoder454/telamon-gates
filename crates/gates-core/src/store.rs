@@ -104,6 +104,12 @@ impl Store {
     }
 }
 
+/// A conversation's own folder for Agent mode: the sandbox it works in
+/// unless the user chooses a folder on the computer.
+pub fn sandbox_dir(conversation: &str) -> PathBuf {
+    data_dir().join("workspaces").join(conversation)
+}
+
 /// Where pictures sent with messages are kept.
 pub fn attachments_dir() -> PathBuf {
     data_dir().join("attachments")

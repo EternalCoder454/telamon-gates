@@ -59,7 +59,10 @@ Item {
     readonly property color muted: Qt.tint(Kirigami.Theme.backgroundColor, Qt.alpha(Kirigami.Theme.textColor, 0.72))
     readonly property string css: "a { color: " + linkColor + "; } " + "h3 { font-size: x-large; } h4 { font-size: large; } h5 { font-size: medium; } h3, h4, h5 { margin-top: 12px; margin-bottom: 4px; } " + "p { margin-top: 4px; margin-bottom: 4px; } " + "ul, ol { margin-top: 2px; margin-bottom: 2px; -qt-list-indent: 1; } li { margin-top: 2px; margin-bottom: 2px; } " + "code, pre { font-family: '" + TelamonStyle.monoFamily + "'; } code { background-color: " + message.surface + "; } " + "table.quote { margin-top: 6px; margin-bottom: 6px; } td.bar { background-color: " + TelamonStyle.accent + "; } td.quoted { padding-left: 10px; color: " + message.muted + "; } " + "table { border-collapse: collapse; border-color: " + message.rule + "; } th { text-align: left; } " + "pre { margin-top: 4px; margin-bottom: 4px; }"
 
-    implicitHeight: column.implicitHeight
+    // The gap above: none for a turn that shows nothing, a little for a
+    // tool's line under its reply, the usual between messages.
+    readonly property real gap: message.quiet ? 0 : message.tool ? Kirigami.Units.smallSpacing * 2 : Kirigami.Units.largeSpacing * 2
+    implicitHeight: message.quiet ? 0 : column.implicitHeight + message.gap
 
     HoverHandler {
         id: hover
@@ -107,6 +110,7 @@ Item {
 
     ColumnLayout {
         id: column
+        y: message.gap
         width: message.columnWidth
         anchors.horizontalCenter: parent.horizontalCenter
         spacing: Kirigami.Units.smallSpacing

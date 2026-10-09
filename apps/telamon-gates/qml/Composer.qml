@@ -86,9 +86,23 @@ ColumnLayout {
             onTapped: input.forceActiveFocus()
         }
 
+        // Files and pictures to send with the message: at the field's
+        // leading end, across from Send.
+        ToolbarButton {
+            id: attach
+            anchors.left: parent.left
+            anchors.bottom: parent.bottom
+            anchors.leftMargin: field.inset + Math.round((field.line - height) / 2)
+            anchors.bottomMargin: field.inset + Math.round((field.line - height) / 2)
+            symbol: Symbols.AttachFile
+            text: qsTr("Attach Files…")
+            focusable: true
+            onClicked: picker.open()
+        }
+
         QQC2.ScrollView {
             id: scroll
-            anchors.left: parent.left
+            anchors.left: attach.right
             anchors.right: action.left
             anchors.verticalCenter: parent.verticalCenter
             anchors.rightMargin: Kirigami.Units.smallSpacing
@@ -212,55 +226,87 @@ ColumnLayout {
         Layout.fillWidth: true
         spacing: TelamonStyle.spacing
 
-        // How the reply is written: Auto (SystemOne picks per message; without
-        // it, as the last reply) or a mode pinned for the conversation.
-        TelamonSegmentedControl {
-            id: modes
+        // How the reply is written, in one button: Auto (SystemOne picks per
+        // message; without it, as the last reply), a built-in mode, or one
+        // of the user's own. Not changed while a reply runs.
+        SecondaryButton {
+            id: modeButton
 
-            // [id, label, tooltip]
-            readonly property var choices: [
-                ["auto", qsTr("Auto"), composer.chat.systemOneReady ? qsTr("SystemOne picks Chat, Story or Code for each message") : qsTr("Chat, until SystemOne has a decision model (Settings)")],
-                ["chat", qsTr("Chat"), qsTr("Questions, advice and everyday talk")],
-                ["story", qsTr("Story"), qsTr("Creative writing: warmer, and keeps to your story")],
-                ["code", qsTr("Code"), qsTr("Programming: careful and precise")],
-                ["agent", qsTr("Agent"), qsTr("Works in a folder with tools: reads files, and asks before it edits them or runs commands")]
+            // [id, label, symbol, tooltip] for the built-in choices.
+            readonly property var builtIn: [
+                ["auto", qsTr("Auto"), Symbols.AutoAwesome, composer.chat.systemOneReady ? qsTr("SystemOne picks Chat, Story or Code for each message") : qsTr("Chat, until SystemOne has a decision model (Settings)")],
+                ["chat", qsTr("Chat"), Symbols.Chat, qsTr("Questions, advice and everyday talk")],
+                ["story", qsTr("Story"), Symbols.AutoStories, qsTr("Creative writing: warmer, and keeps to your story")],
+                ["code", qsTr("Code"), Symbols.Code, qsTr("Programming: careful and precise")],
+                ["agent", qsTr("Agent"), Symbols.SmartToy, qsTr("Works in a folder with tools: reads files, and asks before it edits them or runs commands")]
             ]
+            readonly property int ownAt: composer.chat.modeIds.indexOf(composer.chat.mode)
+            readonly property var current: modeButton.builtIn.find(c => c[0] === composer.chat.mode) ?? ["", modeButton.ownAt >= 0 ? composer.chat.modeNames[modeButton.ownAt] : qsTr("Chat"), Symbols.EditNote, ""]
 
-            model: modes.choices.map(c => ({
-                        text: c[1],
-                        toolTip: c[2]
-                    }))
-            // None when the conversation is in one of the user's own modes.
-            currentIndex: modes.choices.findIndex(c => c[0] === composer.chat.mode)
-            // Not while a reply runs: an agent keeps its mode and folder.
+            text: modeButton.current[1]
+            symbol: modeButton.current[2]
             enabled: !composer.chat.generating
-            onActivated: index => composer.chat.chooseMode(modes.choices[index][0])
-            Accessible.name: qsTr("Mode")
-        }
+            Accessible.name: qsTr("Mode: %1").arg(modeButton.current[1])
+            onClicked: modeMenu.popup(modeButton, 0, -modeMenu.implicitHeight - TelamonStyle.spacingSmall)
 
-        // Files and pictures to send with the message.
-        ToolbarButton {
-            symbol: Symbols.AttachFile
-            text: qsTr("Attach Files…")
-            focusable: true
-            onClicked: picker.open()
-        }
+            ContextMenu {
+                id: modeMenu
 
-        // The user's own modes (Settings), after the built-in four.
-        TelamonComboBox {
-            id: mine
-            readonly property var ids: composer.chat.modeIds.slice(4)
-            visible: mine.ids.length > 0
-            enabled: !composer.chat.generating
-            Layout.preferredWidth: Kirigami.Units.gridUnit * 8
-            model: [qsTr("Your Modes")].concat(composer.chat.modeNames.slice(4))
-            currentIndex: mine.ids.indexOf(composer.chat.mode) + 1
-            onActivated: index => {
-                if (index > 0) {
-                    composer.chat.chooseMode(mine.ids[index - 1]);
+                ContextMenuItem {
+                    text: modeButton.builtIn[0][1]
+                    symbol: modeButton.builtIn[0][2]
+                    radio: true
+                    checked: composer.chat.mode === "auto"
+                    onTriggered: composer.chat.chooseMode("auto")
+                }
+                ContextMenuItem {
+                    text: modeButton.builtIn[1][1]
+                    symbol: modeButton.builtIn[1][2]
+                    radio: true
+                    checked: composer.chat.mode === "chat"
+                    onTriggered: composer.chat.chooseMode("chat")
+                }
+                ContextMenuItem {
+                    text: modeButton.builtIn[2][1]
+                    symbol: modeButton.builtIn[2][2]
+                    radio: true
+                    checked: composer.chat.mode === "story"
+                    onTriggered: composer.chat.chooseMode("story")
+                }
+                ContextMenuItem {
+                    text: modeButton.builtIn[3][1]
+                    symbol: modeButton.builtIn[3][2]
+                    radio: true
+                    checked: composer.chat.mode === "code"
+                    onTriggered: composer.chat.chooseMode("code")
+                }
+                ContextMenuItem {
+                    text: modeButton.builtIn[4][1]
+                    symbol: modeButton.builtIn[4][2]
+                    radio: true
+                    checked: composer.chat.mode === "agent"
+                    onTriggered: composer.chat.chooseMode("agent")
+                }
+                ContextMenuSeparator {
+                    visible: composer.chat.modeIds.length > 4
                 }
             }
-            Accessible.name: qsTr("Your Modes")
+
+            // The user's own modes, after the separator.
+            Instantiator {
+                model: composer.chat.modeIds.slice(4)
+                delegate: ContextMenuItem {
+                    required property int index
+                    required property string modelData
+                    text: composer.chat.modeNames[index + 4] ?? ""
+                    symbol: Symbols.EditNote
+                    radio: true
+                    checked: composer.chat.mode === modelData
+                    onTriggered: composer.chat.chooseMode(modelData)
+                }
+                onObjectAdded: (index, object) => modeMenu.insertItem(6 + index, object)
+                onObjectRemoved: (index, object) => modeMenu.removeItem(object)
+            }
         }
 
         // Asks for no width of its own, so a narrow window keeps the field (and

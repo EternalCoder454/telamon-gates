@@ -82,7 +82,7 @@ fn main() {
         Options::default(),
     );
     let task = "In this project, change the greeting from \"Hello\" to \"Good morning\", \
-                and add a line to README.md saying how to run it (python3 src/greet.py).";
+                and add a line to README.md saying how to run it (python3 src/greet.py). Then run it to check it prints Good morning.";
     let mode = modes::AGENT;
     let request = Request {
         model: String::new(),

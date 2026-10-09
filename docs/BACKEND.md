@@ -276,6 +276,14 @@ The limits:
   made only under a real folder inside it. Writes go through a fresh
   temporary file with a random name (`O_EXCL`, `O_NOFOLLOW`), so a link a
   repository planted can't redirect them.
+- **The sandbox** (`sandbox.rs`): every command runs in bubblewrap, which
+  shows it the workspace (writable), `/usr` and a few files of `/etc`
+  (read-only), a private `/tmp`, `/dev` and `/run`, and new namespaces: no
+  home folder, no network, no other process, no session bus. Settings →
+  Agent can give it the network, or the home folder read-only (for the
+  user's toolchains); both are off. Without bubblewrap commands don't run.
+  Inside another container (the dev container, CI) it has no `/proc`:
+  binding the host's would reach other processes' files.
 - **Commands** run in their own process group: a timeout or Stop ends
   everything they started, and leftovers end when they do. Their output
   comes through a pipe, kept in memory as its first 8 KiB and last 22 KiB,

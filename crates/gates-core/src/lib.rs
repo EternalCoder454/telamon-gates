@@ -12,6 +12,7 @@ pub mod gguf;
 pub mod hub;
 pub mod markdown;
 pub mod modes;
+pub mod sandbox;
 pub mod store;
 pub mod systemone;
 pub mod tools;

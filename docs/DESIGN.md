@@ -39,11 +39,13 @@ beside it.
 - **Composer**: one rounded field (a hairline border, the accent while
   writing) holding a `TelamonTextArea` that grows to about ten lines and,
   centred on its first line, a square accent Send button (faded while there
-  is nothing to send; Stop while a reply comes in). Under it, on the leading
-  side, a segmented Auto · Chat · Story · Code switch for the conversation
-  (Auto without SystemOne answers as the last reply did, Chat at first).
-  On the trailing side, the keys in small boxes (Enter Send, Shift+Enter New
-  Line) and "Always double-check the answer." Escape
+  is nothing to send; Stop while a reply comes in), and at its leading end
+  the paperclip, Attach Files…. Under it, on the leading side, one mode
+  button showing the conversation's mode and its symbol (Auto, Chat, Story,
+  Code, Agent, or one of the user's own); its menu lists them all, the
+  user's own after a separator. On the trailing side, the keys in small
+  boxes (Enter Send, Shift+Enter New Line) and "Always double-check the
+  answer.", each hidden whole when there's no room. Escape
   stops a reply; Ctrl+N starts a new chat.
 - **Banners**: an info banner while the demo backend is in use (no
   telamon-llama), one with Open Folder while the models folder is empty; an error
@@ -95,9 +97,12 @@ beside it.
   - **Export…** in the header saves Markdown (who said what, tool steps as
     one line, no tool output) or Gates' own JSON, through the portal's save
     dialog.
-- **Agent mode**: Agent in the mode switch. Above the composer:
-  - the conversation's folder, with Choose Folder… (the portal's folder
-    dialog);
+- **Agent mode**: Agent in the mode menu. Above the composer:
+  - where it works: by default its **sandbox**, a folder of its own
+    (`$XDG_DATA_HOME/telamon-gates/workspaces/<conversation>`), with "Use a
+    Folder on This Computer…" (after a confirmation, the portal's folder
+    dialog); in one of the user's folders, its path, Change… and Use the
+    Sandbox;
   - a warning when the model's template takes no tools;
   - while the agent waits, a card with what it wants to do (a title, and
     the new text or command as plain text), plus Deny, Allow All Edits in

@@ -80,6 +80,12 @@ its place, and the ones left out are listed with the reason.
 8. **Images.** Attach an image for models with a projector (`--mmproj`).
    - **Built:** tested with SmolVLM-256M and its projector.
 
+## Secure (after Functionable)
+
+- **Sandboxed workspaces** (built): an agent works in its own folder unless
+  the user lets it into one of theirs, and every command runs in a
+  bubblewrap sandbox without the home folder or the network unless allowed.
+
 ## Left out
 
 - **MLX and ONNX.** MLX is Apple-only; ONNX doesn't run in llama.cpp. GGUF
