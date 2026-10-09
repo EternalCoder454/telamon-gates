@@ -60,8 +60,11 @@ beside it.
   A warning banner with a close button (not part of that check) says when the
   model server had to load the model with less than was set because the
   graphics card's memory was short ("… so it loaded with a context of 16384
-  tokens instead of 32768."); it goes when the next reply starts. All banner
-  text is plain text.
+  tokens instead of 32768."); it goes when the next reply starts. The same
+  banner says when the graphics memory limit stopped the model ("Stopped the
+  model: graphics memory reached 95% (23.4 of 24.0 GiB). Close other programs
+  that use the graphics card, or pick a smaller model."; see Failure modes);
+  it stays until closed or the next message. All banner text is plain text.
   A warning banner with Open Folder and a dismiss cross, above those, when
   reading the conversations put something right (see Data). It is short, with
   no path (Open Folder opens the `damaged` folder, else the conversations):
@@ -188,7 +191,8 @@ beside it.
     agent's workspace). While a run is under way the goal is only read,
     two or three lines. Above it, banners: an error one, and a warning one
     (`notice`, plain text, closable) when the model server loaded the model
-    with less than was set because memory was short.
+    with less than was set because memory was short, or when the graphics
+    memory limit stopped the run.
   - **Question:** when an agent wants to change something, a card with the
     agent's name, the text or command as plain text, and Deny, Allow All
     Edits by This Agent (for edits), and Allow (Run for a command). The
@@ -243,7 +247,11 @@ beside it.
   there are two or more models: Code and Agent replies, and the warm-up while
   typing in those modes, use it; "Same as Model", or a model that is gone,
   means the chat model), Smaller Context Cache (a q8_0 context cache, on
-  by default; off is saved as `false`), the system prompt (saved as you
+  by default; off is saved as `false`), Graphics Memory Limit (a combo box
+  after it: Off, 85%, 90%, 95% (the default) and 98%; saved as `MemoryCap`,
+  unset for 95% and `off` for Off; hidden with the demo backend or a server
+  address, as the other model server rows are; it applies at once, with no
+  restart of the server), the system prompt (saved as you
   type), the shared transparency switch, and the folder the conversations are
   in, with Open Folder. Under Troubleshooting, Logs: the folder of the log
   (`telamon-gates.log`, see Startup) with Open Log Folder.
@@ -259,7 +267,8 @@ beside it.
     `newChat`, `open`, `send`, `stop`, `regenerate`, `pickModel`, `pickCodeModel`,
     `saveSystemPrompt`, `refreshModels`, `dismissError`, `dismissNotice`, `enableWebSearch`,
     `pickWebProvider`, `saveWebUrl`, `saveWebKey`, `removeWebKey`,
-    `testWebSearch`; properties
+    `testWebSearch`, `saveMemoryCap`; properties `memoryCap` (percent, 0 for
+    Off),
     `conversationId`, `title`, `generating`, `loading`, `error`, `notice`
     (plain text from the backend that isn't an error; `dismissNotice`), `demo`, `status`
     (what the reply is doing), `webSearch`, `webProvider`, `webUrl`,
@@ -281,6 +290,10 @@ beside it.
     `updates`): `reload`, `setDayStart`, `remove`, `dismissNotice`; `loaded`,
     `folder`, `logFolder`, and `notice` / `noticeFolder` (the banner above).
   - `Vram`: `available`, `used`, `total` (bytes), `refresh`.
+  - `lib.rs` tells the window when the graphics memory limit is reached
+    (`tell_window_on_limit`): `Chat.memoryLimitReached` and
+    `Fleet.memoryLimitReached` run on the GUI thread, and the watchdog waits
+    up to a second for both before it stops the servers.
   - `io.rs`: the one file thread; `settings.rs`: the settings file.
 - `cpp/main.cpp` only starts Qt (framework startup, single instance) and
   hands the objects to `qml/Main.qml`.
@@ -351,7 +364,10 @@ lands. Each reply streams on its own worker thread; its text comes back in
 batches every 33 ms through `qt_thread().queue`. Every reply has a
 generation number: Stop, New Chat and opening another conversation bump it,
 so late batches of an old reply are dropped. A panicking backend is caught
-and reported.
+and reported. While a model server Gates runs is loading or up, one more
+thread (`gates-vram-watch`, `watchdog.rs`) reads the card's memory every 2 s,
+and ends when no server runs; it never takes a server's lock (a load holds it
+for minutes) and tells the window through `qt_thread().queue`.
 
 ## Data
 
@@ -437,6 +453,25 @@ serde; one that doesn't parse is set aside in `damaged/` and logged.
   with half the context (not below 4096), then half the layers on the card,
   and the chat says what changed; if that fails, the error says so and what
   was tried.
+- The graphics card's memory fills (`watchdog.rs`; a full card has crashed
+  the computer): while the chat model's server or SystemOne's runs or loads,
+  the card's total use (`mem_info_vram_used` over `mem_info_vram_total`, from
+  `vram.rs`, whoever uses it) is read every 2 s. Two readings in a row at or
+  over the limit (95% by default; Settings has Off, 85, 90, 95, 98) stop
+  everything: the reply under way is cancelled as if Stop was pressed (what
+  came stays), the Fleet's run is stopped, every server Gates runs is told to
+  quit and killed after 3 s if it doesn't (a load under way gives up within a
+  quarter of a second), the chat's banner says "Stopped the model: graphics
+  memory reached 95% (23.4 of 24.0 GiB). Close other programs that use the
+  graphics card, or pick a smaller model." and the log gets the same line. A
+  stop is not a crash of the model (no crash count). Nothing starts again by
+  itself: the next message starts a server only when use is below the limit
+  less 5 points (90% for 95%), else it is refused with the same advice
+  ("Not starting the model: graphics memory is at 92% (22.0 of 24.0 GiB), …").
+  With no readable `mem_info` (non-AMD cards, the dev container, Xvfb) or a
+  server address set in Settings (Gates can't stop that server) nothing is
+  watched, and nothing is said. 95% by default because the recommended 30B
+  model with its context uses 85–90% of 24 GiB in normal use.
 - The model server keeps stopping (3 times in 5 minutes for one model): it
   isn't started again; the error names the model and the last line of its
   log. A changed setting, or another model, tries again.

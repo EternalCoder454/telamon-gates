@@ -490,6 +490,19 @@ impl qobject::Fleet {
         self.set_notice(QString::default());
     }
 
+    /// The graphics memory limit was reached (`watchdog.rs`) and the model
+    /// servers are about to stop: the run stops, and the banner says why.
+    /// Called on the watchdog's request, which waits for it.
+    pub fn memory_limit_reached(mut self: Pin<&mut Self>, text: &str) {
+        if !*self.running() {
+            return;
+        }
+        if let Some(control) = &self.rust().control {
+            control.stop_all();
+        }
+        self.as_mut().set_notice(QString::from(text));
+    }
+
     /// The backend's notice for the run of `generation`.
     fn show_notice(self: Pin<&mut Self>, generation: u64, text: &str) {
         if self.rust().generation == generation {

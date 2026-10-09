@@ -23,6 +23,9 @@ TelamonPage {
     // The context sizes on offer, in tokens; 0 is automatic.
     readonly property var contexts: [0, 4096, 8192, 16384, 32768, 65536, 131072]
 
+    // The graphics memory limits on offer, in percent; 0 is off.
+    readonly property var memoryCaps: [0, 85, 90, 95, 98]
+
     Section {
         title: qsTr("Model")
 
@@ -160,6 +163,25 @@ TelamonPage {
             showSwitch: true
             switchChecked: page.chat.smallCache
             onSwitchToggled: checked => page.chat.useSmallCache(checked)
+        }
+        // Only for the server run here: Gates can't stop one elsewhere.
+        SectionRow {
+            visible: !page.chat.demo && page.chat.serverUrl.length === 0
+            title: qsTr("Graphics Memory Limit")
+            subtitle: qsTr("Stops the model if the graphics card's memory fills this far, before a full card crashes the computer")
+            leading: [
+                Symbol {
+                    icon: Symbols.Shield
+                    color: TelamonStyle.accent
+                }
+            ]
+
+            TelamonComboBox {
+                model: page.memoryCaps.map(n => n === 0 ? qsTr("Off") : qsTr("%1%").arg(n))
+                currentIndex: Math.max(0, page.memoryCaps.indexOf(page.chat.memoryCap))
+                onActivated: index => page.chat.saveMemoryCap(page.memoryCaps[index])
+                Accessible.name: qsTr("Graphics Memory Limit")
+            }
         }
         SectionRow {
             title: qsTr("Server Address")

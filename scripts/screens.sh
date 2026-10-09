@@ -365,6 +365,38 @@ run_theme() {
     kill "$app"
     wait "$app" || true
 
+    # The graphics memory limit. A stand-in llama-server streams a reply, and
+    # the card (made up: TELAMON_GATES_DRM, which only debug builds read) fills
+    # under it: the warning banner above the messages, then the Settings row.
+    # scripts/watchdog.sh checks what happens, this only looks.
+    mkdir -p "$out/fakebin2" "$out/drm/card0/device" "$XDG_DATA_HOME/telamon-gates/models"
+    printf '25769803776\n' >"$out/drm/card0/device/mem_info_vram_total"
+    printf '8589934592\n' >"$out/drm/card0/device/mem_info_vram_used"
+    cp "$repo/scripts/fake-llama-server.py" "$out/fakebin2/llama-server"
+    : >"$XDG_DATA_HOME/telamon-gates/models/test.gguf"
+    TELAMON_GATES_DRM=$out/drm PATH="$out/fakebin2:$PATH" "$bin" >"$out/app-memory.log" 2>&1 &
+    app=$!
+    sleep 4
+    win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)
+    xdotool windowsize "$win" 1512 1080
+    sleep 1.5
+    xdotool mousemove 900 978 click 1
+    xdotool type --delay 10 "Tell me about lifetimes"
+    xdotool key Return
+    sleep 4
+    printf '25125558588\n' >"$out/drm/card0/device/mem_info_vram_used"
+    sleep 7
+    xdotool mousemove 900 600
+    shot 42-memory-limit-banner
+    xdotool mousemove 115 979 click 1
+    sleep 1.2
+    shot 43-settings-memory-limit
+    xdotool mousemove 900 600 click 5 click 5 click 5
+    sleep 0.6
+    shot 43b-settings-memory-limit-scrolled
+    kill "$app"
+    wait "$app" || true
+
     # Deep Research: its menu entry says what it needs while Web Search is
     # off; then, with it on (and the demo backend playing the model, over
     # made-up pages), a whole run: planning, searching, reading, notes, the

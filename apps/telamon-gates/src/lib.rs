@@ -52,12 +52,54 @@ fn backend() -> Arc<dyn Backend> {
         log::info!("no llama-server: the demo backend answers");
         return Arc::new(gates_core::backend::Demo::default());
     }
-    Arc::new(gates_core::backend::Llama::new(
+    let llama = gates_core::backend::Llama::new(
         gates_core::store::data_dir().join("models"),
         binary,
         gates_core::store::state_dir().join("llama-server.log"),
         options,
-    ))
+    );
+    if let Some(watchdog) = llama.watchdog() {
+        watchdog.set_cap(settings::memory_cap());
+    }
+    Arc::new(llama)
+}
+
+/// How long the watchdog waits for the window to cancel what is under way
+/// before it stops the servers anyway.
+const WINDOW_REPLY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// When the graphics memory limit is reached the window is told first (the
+/// reply under way is cancelled, the Fleet's run stopped, the banner shown),
+/// then the watchdog stops the servers: a reply cancelled before its server
+/// goes ends as stopped, not as failed. Waits for the window, but only
+/// briefly: a full card comes first.
+fn tell_window_on_limit(
+    backend: &dyn Backend,
+    chat: cxx_qt::CxxQtThread<chat::qobject::Chat>,
+    fleet: cxx_qt::CxxQtThread<fleet::qobject::Fleet>,
+) {
+    let Some(watchdog) = backend.watchdog() else {
+        return;
+    };
+    watchdog.on_trip(move |trip| {
+        let text = trip.message();
+        let (done, answered) = std::sync::mpsc::channel::<()>();
+        let (chat_text, fleet_text) = (text.clone(), text);
+        let (chat_done, fleet_done) = (done.clone(), done);
+        let _ = chat.queue(move |chat| {
+            chat.memory_limit_reached(&chat_text);
+            let _ = chat_done.send(());
+        });
+        let _ = fleet.queue(move |fleet| {
+            fleet.memory_limit_reached(&fleet_text);
+            let _ = fleet_done.send(());
+        });
+        for _ in 0..2 {
+            if answered.recv_timeout(WINDOW_REPLY).is_err() {
+                break;
+            }
+        }
+    });
 }
 
 /// Called once from `main.cpp`: makes every QObject and starts reading the
@@ -123,10 +165,15 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
     {
         let chat_thread = chat.pin_mut().qt_thread();
         let mut rust = fleet.pin_mut().rust_mut();
-        rust.backend = Some(backend);
+        rust.backend = Some(backend.clone());
         rust.chat = Some(Box::new(chat_thread));
     }
     fleet.pin_mut().start_up();
+    tell_window_on_limit(
+        backend.as_ref(),
+        chat.pin_mut().qt_thread(),
+        fleet.pin_mut().qt_thread(),
+    );
 
     TelamonObjects {
         chat: chat.into_raw().cast(),

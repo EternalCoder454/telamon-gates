@@ -21,6 +21,7 @@ pub mod store;
 pub mod systemone;
 pub mod tools;
 pub mod vram;
+pub mod watchdog;
 pub mod web;
 
 pub use backend::{Backend, BackendError, Event, Options, Request};

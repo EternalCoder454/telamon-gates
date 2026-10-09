@@ -100,6 +100,7 @@ fn main() {
                 &binary,
                 &m,
                 std::env::temp_dir().join("fleet-check-systemone.log"),
+                None,
             )
         });
     if system_one.is_none() {
