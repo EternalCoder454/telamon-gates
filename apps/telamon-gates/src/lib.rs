@@ -4,6 +4,7 @@
 //! `gates-core` crate.
 
 mod chat;
+mod fleet;
 mod io;
 mod library;
 mod models;
@@ -38,6 +39,7 @@ pub struct TelamonObjects {
     pub library: *mut c_void,
     pub vram: *mut c_void,
     pub models: *mut c_void,
+    pub fleet: *mut c_void,
 }
 
 /// The backend replies come from: llama.cpp when telamon-llama (or a
@@ -78,6 +80,8 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
         }
     });
 
+    // One backend (and so one model server) for the chat and the fleet.
+    let backend = backend();
     let mut chat = chat::qobject::chat_make_unique();
     let mut library = library::qobject::library_make_unique();
 
@@ -94,7 +98,7 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
     {
         let mut rust = chat.pin_mut().rust_mut();
         rust.io = Some(io);
-        rust.backend = Some(backend());
+        rust.backend = Some(backend.clone());
         rust.library = Some(Box::new(library_thread));
     }
     chat.pin_mut().start();
@@ -108,10 +112,20 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
     models.pin_mut().rust_mut().dir = models_dir;
     models.pin_mut().refresh();
 
+    let mut fleet = fleet::qobject::fleet_make_unique();
+    {
+        let chat_thread = chat.pin_mut().qt_thread();
+        let mut rust = fleet.pin_mut().rust_mut();
+        rust.backend = Some(backend);
+        rust.chat = Some(Box::new(chat_thread));
+    }
+    fleet.pin_mut().start_up();
+
     TelamonObjects {
         chat: chat.into_raw().cast(),
         library: library.into_raw().cast(),
         vram: vram.into_raw().cast(),
         models: models.into_raw().cast(),
+        fleet: fleet.into_raw().cast(),
     }
 }

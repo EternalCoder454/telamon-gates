@@ -242,12 +242,59 @@ run_theme() {
         sleep 1
         shot 24-models-cancelled
     fi
+    # The Fleet page, before any run.
+    xdotool mousemove 115 859 click 1
+    sleep 1.5
+    shot 25-fleet-empty
     # Narrow, on a conversation: the sidebar folds to icons.
     open_chat "Show me"
     win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)
     xdotool windowsize "$win" 640 900
     sleep 1.5
     import -window root -crop 640x900+0+0 +repage "$out/19-narrow.png"
+    kill "$app"
+    wait "$app" || true
+
+    # The Fleet page with sample agents (TELAMON_GATES_SEED, src/fleet.rs):
+    # one asking, one working at a narrow width, the coordinator planning.
+    TELAMON_GATES_SEED=fleet "$bin" >"$out/app-fleet.log" 2>&1 &
+    app=$!
+    sleep 4
+    # The window keeps the narrow size the last run left it at.
+    win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)
+    xdotool windowsize "$win" 1512 1080
+    sleep 1.5
+    xdotool mousemove 115 859 click 1
+    sleep 1.5
+    shot 26-fleet-cards
+    xdotool mousemove 900 700 click 5 click 5 click 5 click 5 click 5 click 5
+    sleep 0.8
+    shot 27-fleet-cards-scrolled
+    kill "$app"
+    wait "$app" || true
+    TELAMON_GATES_SEED=fleet-working "$bin" >"$out/app-fleet-working.log" 2>&1 &
+    app=$!
+    sleep 4
+    win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)
+    xdotool windowsize "$win" 1512 1080
+    sleep 1.5
+    xdotool mousemove 115 859 click 1
+    sleep 1.5
+    shot 28-fleet-working
+    xdotool windowsize "$win" 640 900
+    sleep 1.5
+    import -window root -crop 640x900+0+0 +repage "$out/29-fleet-narrow.png"
+    kill "$app"
+    wait "$app" || true
+    TELAMON_GATES_SEED=fleet-planning "$bin" >"$out/app-fleet-planning.log" 2>&1 &
+    app=$!
+    sleep 4
+    win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)
+    xdotool windowsize "$win" 1512 1080
+    sleep 1.5
+    xdotool mousemove 115 859 click 1
+    sleep 1.5
+    shot 30-fleet-planning
     kill "$app"
     wait "$app" || true
     rm -rf "$x"

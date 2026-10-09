@@ -268,6 +268,7 @@ mod tests {
             messages: vec![Message::user("Tidy up")],
             sampling: None,
             tools: Vec::new(),
+            response_format: None,
         }
     }
 
