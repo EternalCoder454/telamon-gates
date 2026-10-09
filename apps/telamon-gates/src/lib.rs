@@ -110,6 +110,8 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
         models_dir.to_string_lossy().as_ref(),
     ));
     models.pin_mut().rust_mut().dir = models_dir;
+    // The free space isn't known until the Models page asks.
+    models.pin_mut().set_free(-1.0);
     models.pin_mut().refresh();
 
     let mut fleet = fleet::qobject::fleet_make_unique();

@@ -64,7 +64,21 @@ beside it.
   its single-file models, and downloads one at a time with a progress bar and
   Cancel. A download goes to a hidden `.name.part`, resumes from it, is
   checked against the sha256 Hugging Face publishes, and only then is renamed
-  into place; the chat's model list follows. *Recommended* (hidden when a
+  into place; the chat's model list follows. A download checks the free space
+  first (`hub::download`): what is still to fetch (the size minus a `.part`
+  that resumes) plus a margin of 5 %, at least 1 GiB, must fit on the models
+  folder's disk (`statvfs`), or it doesn't start: "Not enough space: this
+  model needs 16.5 GiB and the models folder's disk has 9.2 GiB free." A disk
+  that fills up mid-way (ENOSPC, also a quota) gives the same message and
+  keeps the `.part`. Beside each `.part` is a `.name.part.json` with the
+  repository (and size), removed once the file is in place or the part is
+  deleted. The *Models Folder* row's subtitle adds the free space ("120.0 GiB
+  free"). *Partial Downloads* (shown only when there are some) lists each
+  `.part` not being downloaded now, with its size so far ("1.2 GiB of
+  11.3 GiB") and repository, Resume (when the note is there; the same checked
+  download carries on) and Delete, after a confirmation. Opening the page
+  deletes `.part` files untouched for 30 days (and notes with no part), on a
+  worker thread. *Recommended* (hidden when a
   model server URL is set) offers three tested models, one per use, from
   `docs/BACKEND.md` → Recommended models: For Coding, For Chat and Stories,
   and Small and Fast. Each shows a fit badge (never Too Big for a mixture of
@@ -257,6 +271,11 @@ serde; one that doesn't parse is skipped and logged.
 - A conversation file can't be read: it is left out of the list (logged);
   opening one that vanished shows an error and a new chat.
 - A save fails: logged; the conversation stays in the window.
+- A model download can't fit, or the disk fills up part-way: an error banner
+  on the Models page (brought into view) says how much is needed and free;
+  the `.part` stays for Resume. Hugging Face unreachable, a cut connection and
+  a wrong checksum are errors in the same banner (a wrong checksum deletes
+  the part).
 
 ## Performance budget (Performant phase; not measured against yet)
 
