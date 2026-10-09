@@ -23,6 +23,8 @@ pub mod qobject {
         #[qproperty(QStringList, quants)]
         #[qproperty(QStringList, labels)]
         #[qproperty(QList_f64, sizes)]
+        /// A decision model's kind ("laya", "kev"), "" for a chat model.
+        #[qproperty(QStringList, kinds)]
         #[qproperty(QString, folder)]
         /// Hugging Face repositories found, and their downloads.
         #[qproperty(QStringList, results)]
@@ -65,6 +67,12 @@ pub mod qobject {
         #[qinvokable]
         fn download(self: Pin<&mut ModelLibrary>, file: &QString);
 
+        /// Downloads `file` of `repo` without opening it first (Settings'
+        /// one-click decision models).
+        #[qinvokable]
+        #[cxx_name = "downloadFrom"]
+        fn download_from(self: Pin<&mut ModelLibrary>, repo: &QString, file: &QString);
+
         #[qinvokable]
         #[cxx_name = "cancelDownload"]
         fn cancel_download(self: Pin<&mut ModelLibrary>);
@@ -106,6 +114,7 @@ pub struct ModelLibraryRust {
     quants: QStringList,
     labels: QStringList,
     sizes: QList<f64>,
+    kinds: QStringList,
     folder: QString,
     results: QStringList,
     downloads: QList<f64>,
@@ -149,17 +158,22 @@ impl qobject::ModelLibrary {
         let qt = self.qt_thread();
         std::thread::spawn(move || {
             let _ = std::fs::create_dir_all(&dir);
-            // The header of each, for its quantisation and size label.
+            // From each one's header: quantisation, size label, kind.
             let models: Vec<_> = local_models(&dir)
                 .into_iter()
                 .map(|m| {
-                    let info = gates_core::gguf::read(&m.path).unwrap_or_default();
-                    let quant = if info.quant.is_empty() {
+                    let quant = if m.info.quant.is_empty() {
                         gates_core::gguf::quant_from_name(&m.name)
                     } else {
-                        info.quant
+                        m.info.quant
                     };
-                    (m.name, quant, info.size_label, m.size as f64)
+                    (
+                        m.name,
+                        quant,
+                        m.info.size_label,
+                        m.size as f64,
+                        m.info.decision,
+                    )
                 })
                 .collect();
             let _ = qt.queue(move |mut lib| {
@@ -169,6 +183,8 @@ impl qobject::ModelLibrary {
                     .set_quants(strings(models.iter().map(|m| m.1.as_str())));
                 lib.as_mut()
                     .set_labels(strings(models.iter().map(|m| m.2.as_str())));
+                lib.as_mut()
+                    .set_kinds(strings(models.iter().map(|m| m.4.as_str())));
                 lib.set_sizes(numbers(models.iter().map(|m| m.3)));
             });
         });
@@ -282,7 +298,7 @@ impl qobject::ModelLibrary {
         });
     }
 
-    pub fn download(mut self: Pin<&mut Self>, file: &QString) {
+    pub fn download(self: Pin<&mut Self>, file: &QString) {
         if !self.downloading().is_empty() {
             return;
         }
@@ -298,6 +314,50 @@ impl qobject::ModelLibrary {
             return;
         };
         let repo = self.repo().to_string();
+        self.start_download(repo, model);
+    }
+
+    pub fn download_from(mut self: Pin<&mut Self>, repo: &QString, file: &QString) {
+        if !self.downloading().is_empty() {
+            return;
+        }
+        let (repo, name) = (repo.to_string(), file.to_string());
+        // Shown at once; the size and checksum come from the listing.
+        self.as_mut().set_error(QString::default());
+        self.as_mut().set_progress(0.0);
+        self.as_mut()
+            .set_download_repo(QString::from(repo.as_str()));
+        self.as_mut().set_downloading(QString::from(name.as_str()));
+        // Cancel works from now, while the listing is still coming.
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.as_mut().rust_mut().cancel = Some(cancel.clone());
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let found = hub::files(&repo).and_then(|files| {
+                files
+                    .into_iter()
+                    .find(|f| f.name == name)
+                    .ok_or_else(|| format!("{repo} has no {name}."))
+            });
+            let _ = qt.queue(move |mut lib| {
+                lib.as_mut().set_downloading(QString::default());
+                lib.as_mut().rust_mut().cancel = None;
+                match found {
+                    Ok(_) if cancel.load(Ordering::Relaxed) => {
+                        lib.set_download_repo(QString::default());
+                    }
+                    Ok(model) => lib.start_download(repo, model),
+                    Err(e) => {
+                        lib.as_mut().set_download_repo(QString::default());
+                        lib.set_error(QString::from(e.as_str()));
+                    }
+                }
+            });
+        });
+    }
+
+    fn start_download(mut self: Pin<&mut Self>, repo: String, model: ModelFile) {
+        let file = QString::from(model.name.as_str());
         let dir = self.rust().dir.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         self.as_mut().rust_mut().cancel = Some(cancel.clone());

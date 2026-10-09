@@ -28,7 +28,9 @@ beside it.
   block in a `TelamonCodeView` with a Copy button (a code block inside a list
   or quote stays in the text, so the list isn't cut in two). Under a finished reply:
   Copy, Regenerate on the last one, and its speed in tokens per second
-  (also shown live while it comes). While a reply comes in, the view
+  (also shown live while it comes). Beside them is the mode that wrote it
+  ("Story, picked by SystemOne"), shown when SystemOne picked it or when it
+  isn't Chat. While a reply comes in, the view
   follows it unless you scroll away; "Thinking…" shows until its first words.
 - **Empty chat**: a greeting by the time of day with the user's first name
   (from the account's full name): morning from 5, afternoon from noon,
@@ -37,8 +39,11 @@ beside it.
 - **Composer**: one rounded field (a hairline border, the accent while
   writing) holding a `TelamonTextArea` that grows to about ten lines and,
   centred on its first line, a square accent Send button (faded while there
-  is nothing to send; Stop while a reply comes in). Under it, the keys in small boxes (Enter
-  Send, Shift+Enter New Line) and "Always double-check the answer." Escape
+  is nothing to send; Stop while a reply comes in). Under it, on the leading
+  side, a segmented Auto · Chat · Story · Code switch for the conversation
+  (Auto without SystemOne answers as the last reply did, Chat at first).
+  On the trailing side, the keys in small boxes (Enter Send, Shift+Enter New
+  Line) and "Always double-check the answer." Escape
   stops a reply; Ctrl+N starts a new chat.
 - **Banners**: an info banner while the demo backend is in use (no
   telamon-llama), one with Open Folder while the models folder is empty; an error
@@ -54,6 +59,10 @@ beside it.
   Cancel. A download goes to a hidden `.name.part`, resumes from it, is
   checked against the sha256 Hugging Face publishes, and only then is renamed
   into place; the chat's model list follows.
+- **SystemOne** (in Settings): a switch, on by default; the decision model in
+  use (a picker when there are several); one-click Get Laya / Get Kev when
+  there's none, with the download's progress. On the Models page, a decision
+  model shows "Decision model" and a SystemOne badge instead of a fit badge.
 - **Settings**: the backend, the model, the system prompt (saved as you
   type), the shared transparency switch, and the folder the conversations are
   in, with Open Folder.
@@ -93,7 +102,8 @@ and reported.
 
 `$XDG_DATA_HOME/telamon-gates/conversations/<id>.json`, one file per
 conversation (`id`, `title`, `created`, `updated` in ms since the epoch,
-`messages` of `role`/`text`/`failed`), written atomically (temporary file,
+`messages` of `role`/`text`/`failed`/`speed`/`mode`/`picked`, and the
+conversation's `mode` when it isn't Auto), written atomically (temporary file,
 then rename). Ids are hex and dashes only, so no id can name a path outside
 the folder. Settings are `~/.config/telamon-gatesrc`, group `[Chat]`
 (`Model`, `SystemPrompt`), plus the window's size from `TelamonWindow`.

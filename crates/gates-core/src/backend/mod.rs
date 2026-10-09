@@ -41,6 +41,8 @@ pub struct Request {
     /// Sent first, as the system message; "" for none.
     pub system_prompt: String,
     pub messages: Vec<Message>,
+    /// The mode's sampling; None for the model's own defaults.
+    pub sampling: Option<crate::modes::Sampling>,
 }
 
 /// What a backend streams while it answers.

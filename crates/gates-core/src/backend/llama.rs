@@ -51,9 +51,21 @@ pub struct LocalModel {
     pub name: String,
     pub path: PathBuf,
     pub size: u64,
+    /// What its header says (quantisation, size label, and whether it is a
+    /// decision model, which can't chat).
+    pub info: crate::gguf::Info,
 }
 
-/// The `.gguf` files in `dir`, by name.
+/// The models in `dir` that chat: decision models answer SystemOne's
+/// questions and write no text.
+pub fn chat_models(dir: &Path) -> Vec<LocalModel> {
+    local_models(dir)
+        .into_iter()
+        .filter(|m| m.info.decision.is_empty())
+        .collect()
+}
+
+/// The `.gguf` files in `dir`, by name. Reads each one's header.
 pub fn local_models(dir: &Path) -> Vec<LocalModel> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -70,10 +82,16 @@ pub fn local_models(dir: &Path) -> Vec<LocalModel> {
             let meta = e.metadata().ok()?;
             let usable =
                 meta.is_file() && !name.is_empty() && !name.starts_with('.') && is_model(&name);
-            usable.then_some(LocalModel {
+            if !usable {
+                return None;
+            }
+            // A file that isn't GGUF still shows: llama.cpp says why.
+            let info = crate::gguf::read(&path).unwrap_or_default();
+            Some(LocalModel {
                 name,
                 size: meta.len(),
                 path,
+                info,
             })
         })
         .collect();
@@ -264,7 +282,7 @@ impl Llama {
                     .into(),
             ));
         };
-        let models = local_models(&self.models_dir);
+        let models = chat_models(&self.models_dir);
         let Some(chosen) = models
             .iter()
             .find(|m| m.name == model)
@@ -280,6 +298,7 @@ impl Llama {
             model: chosen.path.clone(),
             gpu_layers: (options.gpu_layers > 0).then_some(options.gpu_layers),
             context: (options.context > 0).then_some(options.context),
+            batch: None,
         };
         Ok((self.server.acquire(&launch)?, true))
     }
@@ -352,7 +371,7 @@ impl Backend for Llama {
     fn models(&self) -> Result<Vec<String>, BackendError> {
         let options = self.options();
         if options.server_url.is_empty() {
-            return Ok(local_models(&self.models_dir)
+            return Ok(chat_models(&self.models_dir)
                 .into_iter()
                 .map(|m| m.name)
                 .collect());
@@ -420,7 +439,10 @@ impl Backend for Llama {
 }
 
 /// The request with the server's key, when it has one.
-fn authorized<B>(request: ureq::RequestBuilder<B>, endpoint: &Endpoint) -> ureq::RequestBuilder<B> {
+pub(crate) fn authorized<B>(
+    request: ureq::RequestBuilder<B>,
+    endpoint: &Endpoint,
+) -> ureq::RequestBuilder<B> {
     if endpoint.api_key.is_empty() {
         request
     } else {
@@ -447,6 +469,10 @@ pub fn request_body(request: &Request) -> Value {
     });
     if !request.model.is_empty() {
         body["model"] = json!(request.model);
+    }
+    if let Some(s) = request.sampling {
+        body["temperature"] = json!(s.temperature);
+        body["top_p"] = json!(s.top_p);
     }
     body
 }
@@ -502,6 +528,7 @@ mod tests {
                 Message::assistant("Hello"),
                 Message::user("Again"),
             ],
+            sampling: None,
         }
     }
 
@@ -514,6 +541,15 @@ mod tests {
         assert_eq!(m.len(), 4);
         assert_eq!(m[0], json!({"role": "system", "content": "Be brief."}));
         assert_eq!(m[3], json!({"role": "user", "content": "Again"}));
+        assert!(body.get("temperature").is_none());
+        let mut story = request();
+        story.sampling = crate::modes::STORY.sampling;
+        let body = request_body(&story);
+        assert_eq!(body["temperature"], 1.0);
+        assert_eq!(
+            body["top_p"].as_f64().map(|p| (p * 100.0).round()),
+            Some(95.0)
+        );
         let mut no_prompt = request();
         no_prompt.system_prompt = "  ".into();
         assert_eq!(
@@ -585,6 +621,21 @@ mod tests {
         assert_eq!(names, vec!["A-model", "b-model"]);
         assert_eq!(models[0].size, 8);
         assert!(local_models(&dir.join("missing")).is_empty());
+        // A decision model is in the folder, but not one to chat with.
+        let mut laya = b"GGUF".to_vec();
+        laya.extend(3u32.to_le_bytes());
+        laya.extend(0u64.to_le_bytes());
+        laya.extend(1u64.to_le_bytes());
+        let key = "modern-bert.decision.type";
+        laya.extend((key.len() as u64).to_le_bytes());
+        laya.extend(key.as_bytes());
+        laya.extend(8u32.to_le_bytes());
+        laya.extend(4u64.to_le_bytes());
+        laya.extend(b"laya");
+        std::fs::write(dir.join("Laya-Q8_0.gguf"), laya).unwrap();
+        assert_eq!(local_models(&dir).len(), 3);
+        let chat: Vec<String> = chat_models(&dir).into_iter().map(|m| m.name).collect();
+        assert_eq!(chat, vec!["A-model", "b-model"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

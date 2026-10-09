@@ -8,7 +8,9 @@ pub mod conversation;
 pub mod gguf;
 pub mod hub;
 pub mod markdown;
+pub mod modes;
 pub mod store;
+pub mod systemone;
 pub mod vram;
 
 pub use backend::{Backend, BackendError, Event, Options, Request};

@@ -27,11 +27,16 @@ its place, and the ones left out are listed with the reason.
      Each question gets a test set before it acts on anything. A low-confidence
      answer falls back to the default (Chat, no tool), and the user can
      always override.
+   - **Built:** picking the mode, with its test set. Laya is 89% right as
+     used; Kev is 94% right in 47 ms on the RX 7900 (`docs/BACKEND.md`).
 2. **Modes.** Chat, Story and Code ship by default. Each is a system prompt
    plus sampling settings: temperature, top-p and max tokens. Story runs warmer
    and longer; Code runs cooler. Modes can be edited and you can add your own;
    that is the prompt library. SystemOne picks one per message, or you pin a
    mode for a conversation.
+   - **Built:** the three modes, with their temperature and top-p, and Auto
+     or a pinned mode per conversation.
+   - **Not yet:** editing modes and adding your own.
 3. **Edit and Branch.** Edit a sent message, or "Branch From Here" on any
    message, to get a new conversation up to that point. This lets you try a
    story another way without losing the first. Export a conversation as
