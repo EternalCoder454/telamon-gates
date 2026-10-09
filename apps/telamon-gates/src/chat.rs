@@ -103,6 +103,28 @@ pub mod qobject {
         #[qproperty(QString, approval_title, cxx_name = "approvalTitle")]
         #[qproperty(QString, approval_detail, cxx_name = "approvalDetail")]
         #[qproperty(QString, approval_kind, cxx_name = "approvalKind")]
+        /// Web search (Settings → Web Search): on, the provider's id, a
+        /// SearXNG address, whether a key for the provider is in the system
+        /// keyring (never the key itself), whether a keyring answers and
+        /// why not, and whether replies can use it now (and a sentence on
+        /// what is missing when they can't).
+        #[qproperty(bool, web_search, cxx_name = "webSearch")]
+        #[qproperty(QString, web_provider, cxx_name = "webProvider")]
+        #[qproperty(QString, web_url, cxx_name = "webUrl")]
+        #[qproperty(bool, web_key_saved, cxx_name = "webKeySaved")]
+        #[qproperty(bool, keyring_available, cxx_name = "keyringAvailable")]
+        #[qproperty(QString, keyring_note, cxx_name = "keyringNote")]
+        #[qproperty(bool, web_ready, cxx_name = "webReady")]
+        #[qproperty(QString, web_note, cxx_name = "webNote")]
+        /// Why Deep Research can't be used now ("" when it can).
+        #[qproperty(QString, research_note, cxx_name = "researchNote")]
+        /// A key is being saved or a search tried; the outcome, in words.
+        #[qproperty(bool, web_testing, cxx_name = "webTesting")]
+        #[qproperty(QString, web_test_result, cxx_name = "webTestResult")]
+        #[qproperty(bool, web_test_ok, cxx_name = "webTestOk")]
+        /// What the reply under way is doing ("Searching: …"); "" when
+        /// nothing in particular.
+        #[qproperty(QString, status)]
         #[namespace = "telamon_gates"]
         type Chat = super::ChatRust;
     }
@@ -243,6 +265,34 @@ pub mod qobject {
         #[cxx_name = "setAgentAccess"]
         fn set_agent_access(self: Pin<&mut Chat>, network: bool, home: bool);
 
+        #[qinvokable]
+        #[cxx_name = "enableWebSearch"]
+        fn enable_web_search(self: Pin<&mut Chat>, on: bool);
+
+        /// "brave", "tavily" or "searxng".
+        #[qinvokable]
+        #[cxx_name = "pickWebProvider"]
+        fn pick_web_provider(self: Pin<&mut Chat>, id: &QString);
+
+        #[qinvokable]
+        #[cxx_name = "saveWebUrl"]
+        fn save_web_url(self: Pin<&mut Chat>, url: &QString);
+
+        /// Keeps the provider's API key in the system keyring (nowhere
+        /// else); says so in `webTestResult` when there is none.
+        #[qinvokable]
+        #[cxx_name = "saveWebKey"]
+        fn save_web_key(self: Pin<&mut Chat>, key: &QString);
+
+        #[qinvokable]
+        #[cxx_name = "removeWebKey"]
+        fn remove_web_key(self: Pin<&mut Chat>);
+
+        /// Tries one search with the provider as set.
+        #[qinvokable]
+        #[cxx_name = "testWebSearch"]
+        fn test_web_search(self: Pin<&mut Chat>);
+
         /// The answer to the change the agent waits on: 0 deny, 1 allow,
         /// 2 allow it and the rest of this reply's edits.
         #[qinvokable]
@@ -317,11 +367,12 @@ use gates_core::modes::{self, Active, Library, Preset};
 use gates_core::preflight;
 use gates_core::systemone::{self, SystemOne};
 use gates_core::tools::Workspace;
+use gates_core::web::{self, KeyStore, Provider, Setup};
 use gates_core::{Backend, Conversation, Event, Message, Request, Role};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How often streamed text is handed to the window: often enough to look
@@ -425,6 +476,19 @@ pub struct ChatRust {
     approval_title: QString,
     approval_detail: QString,
     approval_kind: QString,
+    web_search: bool,
+    web_provider: QString,
+    web_url: QString,
+    web_key_saved: bool,
+    keyring_available: bool,
+    keyring_note: QString,
+    web_ready: bool,
+    web_note: QString,
+    research_note: QString,
+    web_testing: bool,
+    web_test_result: QString,
+    web_test_ok: bool,
+    status: QString,
 
     conversation: Option<Conversation>,
     /// Where the agent waits for the user's answer.
@@ -463,6 +527,13 @@ pub struct ChatRust {
     prepick: Option<(String, Active, bool)>,
     /// Bumped by each `prepare`: an older pick drops.
     preparing: u64,
+    /// Where web search keys are kept: the system keyring.
+    pub web_keys: Option<Arc<dyn KeyStore>>,
+    /// The key of the provider in use, once read from the keyring.
+    web_cache: Arc<Mutex<Option<String>>>,
+    /// Which providers have a key in the keyring (`Provider::ALL`'s order),
+    /// as the settings file says.
+    key_saved: [bool; 3],
     pub io: Option<Io>,
     // Boxed: a thread handle is not Unpin, and the struct must be.
     pub library: Option<Box<CxxQtThread<library::qobject::Library>>>,
@@ -507,6 +578,9 @@ struct Stream {
     sent: Instant,
     rate: Rate,
     cancel: Arc<AtomicBool>,
+    /// The mode of the reply, for the turns after the first.
+    mode: String,
+    picked: bool,
 }
 
 impl Stream {
@@ -572,8 +646,26 @@ impl agent::Host for Stream {
 
     fn next_turn(&mut self) {
         self.rate = Rate::default();
-        let generation = self.generation;
-        let _ = self.qt.queue(move |chat| chat.agent_next(generation));
+        let (generation, mode, picked) = (self.generation, self.mode.clone(), self.picked);
+        let _ = self
+            .qt
+            .queue(move |chat| chat.agent_next(generation, &mode, picked));
+    }
+
+    fn status(&mut self, line: &str) {
+        let (generation, line) = (self.generation, line.to_string());
+        let _ = self
+            .qt
+            .queue(move |chat| chat.show_status(generation, &line));
+    }
+
+    fn replace(&mut self, text: &str) {
+        // What came so far first, so the order of batches holds.
+        self.flush();
+        let (generation, text) = (self.generation, text.to_string());
+        let _ = self
+            .qt
+            .queue(move |chat| chat.replace_reply(generation, &text));
     }
 }
 
@@ -671,6 +763,7 @@ impl qobject::Chat {
             .set_agent_network(settings::get(settings::AGENT_NETWORK) == "true");
         self.as_mut()
             .set_agent_home(settings::get(settings::AGENT_HOME) == "true");
+        self.as_mut().start_web();
         // Assumed until Agent mode first shows (`check_sandbox`): trying
         // bubblewrap runs it twice, which a launch needn't pay for.
         self.as_mut().set_commands_available(true);
@@ -1002,6 +1095,7 @@ impl qobject::Chat {
         if let Some(io) = &self.rust().io {
             settings::set(io, settings::MODEL, name.to_string());
         }
+        self.update_web();
     }
 
     pub fn pick_code_model(mut self: Pin<&mut Self>, name: &QString) {
@@ -1061,6 +1155,7 @@ impl qobject::Chat {
             .set_context_size(i32::try_from(options.context).unwrap_or(0));
         self.as_mut()
             .set_server_url(QString::from(options.server_url.as_str()));
+        self.as_mut().update_web();
         if let Some(io) = &self.rust().io {
             let number = |n: u32| if n == 0 { String::new() } else { n.to_string() };
             settings::set(io, settings::GPU_LAYERS, number(options.gpu_layers));
@@ -1109,7 +1204,7 @@ impl qobject::Chat {
             .conversation
             .as_ref()
             .and_then(|c| c.messages.iter().rev().find_map(|m| m.mode.clone()))
-            .filter(|id| id != modes::AGENT.id)
+            .filter(|id| id != modes::AGENT.id && id != modes::DEEP_RESEARCH.id)
             .map(|id| library.resolve(&id))
             .unwrap_or_else(|| library.resolve(modes::CHAT.id));
         let preparing = {
@@ -1137,7 +1232,7 @@ impl qobject::Chat {
             settings::set(
                 io,
                 settings::SMALL_CACHE,
-                if on { "true".into() } else { String::new() },
+                if on { "true" } else { "false" }.into(),
             );
         }
         let (gpu, ctx, url) = (
@@ -1175,8 +1270,9 @@ impl qobject::Chat {
                     let picked = chat.model().to_string();
                     if !models.contains(&picked) {
                         let first = models.first().cloned().unwrap_or_default();
-                        chat.set_model(QString::from(first.as_str()));
+                        chat.as_mut().set_model(QString::from(first.as_str()));
                     }
+                    chat.update_web();
                 }
                 Err(e) => {
                     log::warn!("cannot list the models: {e}");
@@ -1456,15 +1552,49 @@ impl qobject::Chat {
         self.save();
     }
 
-    /// The agent's next turn: a new, empty reply that streams.
-    fn agent_next(self: Pin<&mut Self>, generation: u64) {
+    /// The next turn of a reply that uses tools: a new, empty reply that
+    /// streams, in the same mode.
+    fn agent_next(self: Pin<&mut Self>, generation: u64, mode: &str, picked: bool) {
         if self.rust().generation != generation {
             return;
         }
         self.push(Message {
-            mode: Some(modes::AGENT.id.to_string()),
+            mode: Some(mode.to_string()),
+            picked,
             ..Message::assistant("")
         });
+    }
+
+    /// The text of the reply under way becomes `text` (Deep Research's
+    /// finished report, its citations linked).
+    fn replace_reply(mut self: Pin<&mut Self>, generation: u64, text: &str) {
+        if self.rust().generation != generation {
+            return;
+        }
+        {
+            let mut rust = self.as_mut().rust_mut();
+            let Some(message) = rust
+                .conversation
+                .as_mut()
+                .and_then(|c| c.messages.last_mut())
+                .filter(|m| m.role == Role::Assistant)
+            else {
+                return;
+            };
+            message.text = text.to_string();
+            let row = Row::of(message);
+            if let Some(last) = rust.rows.last_mut() {
+                *last = row;
+            }
+        }
+        self.last_changed();
+    }
+
+    /// What the reply under way is doing now.
+    fn show_status(self: Pin<&mut Self>, generation: u64, line: &str) {
+        if self.rust().generation == generation {
+            self.set_status(QString::from(line));
+        }
     }
 
     /// Looks for decision models in the models folder (on a worker) and
@@ -1497,6 +1627,7 @@ impl qobject::Chat {
                         list.append(QString::from(name.as_str()));
                     }
                     chat.as_mut().set_tool_models(list);
+                    chat.as_mut().update_web();
                     chat.use_decision_models(found);
                 }
             });
@@ -1545,6 +1676,328 @@ impl qobject::Chat {
         }
         let ready = self.rust().system_one_model.is_some();
         self.set_system_one_ready(ready);
+    }
+
+    // ---- Web search
+
+    fn provider(&self) -> Provider {
+        Provider::from_id(&self.web_provider().to_string())
+    }
+
+    fn provider_slot(provider: Provider) -> usize {
+        Provider::ALL
+            .iter()
+            .position(|p| *p == provider)
+            .unwrap_or_default()
+    }
+
+    /// Whether a reply from `model` can call tools: its chat template takes
+    /// them (the Models page's Tools badge). A server elsewhere and the demo
+    /// can't be asked, so they count.
+    fn model_can_use_tools(&self, model: &str) -> bool {
+        *self.demo()
+            || !self.server_url().is_empty()
+            || self.tool_models().contains(
+                &QString::from(model),
+                cxx_qt_lib::CaseSensitivity::CaseSensitive,
+            )
+    }
+
+    /// How a reply reaches the web, as Settings have it now.
+    fn web_setup(&self) -> Option<Setup> {
+        Some(Setup {
+            provider: self.provider(),
+            url: self.web_url().to_string(),
+            keys: self.rust().web_keys.clone()?,
+            cache: self.rust().web_cache.clone(),
+            demo: *self.demo(),
+        })
+    }
+
+    /// Works out `webReady` and `webNote` from the settings, the keyring
+    /// and the model.
+    fn update_web(mut self: Pin<&mut Self>) {
+        let provider = self.provider();
+        let on = *self.web_search();
+        let (ready, note) = if !on {
+            (false, String::new())
+        } else if provider.needs_key() && !*self.keyring_available() {
+            (
+                false,
+                "Needs an API key, and no system keyring is available to keep it.".to_string(),
+            )
+        } else if provider.needs_key() && !*self.web_key_saved() {
+            (
+                false,
+                format!("Add your {} API key to search.", provider.name()),
+            )
+        } else if !provider.needs_key() && self.web_url().is_empty() {
+            (
+                false,
+                "Add the address of your SearXNG instance.".to_string(),
+            )
+        } else if !self.model_can_use_tools(&self.model().to_string()) {
+            (
+                true,
+                "The model in use can't call tools (see the Tools badge on the Models page), so its replies won't search."
+                    .to_string(),
+            )
+        } else {
+            (true, String::new())
+        };
+        // Deep Research needs the web on and ready, and a model with tools.
+        let research = if !on {
+            "Turn on Web Search in Settings.".to_string()
+        } else if !ready {
+            note.clone()
+        } else if !self.model_can_use_tools(&self.model().to_string()) {
+            "The model in use can't call tools (see the Tools badge on the Models page)."
+                .to_string()
+        } else {
+            String::new()
+        };
+        self.as_mut().set_web_ready(ready);
+        self.as_mut()
+            .set_research_note(QString::from(research.as_str()));
+        self.set_web_note(QString::from(note.as_str()));
+    }
+
+    pub fn enable_web_search(mut self: Pin<&mut Self>, on: bool) {
+        if *self.web_search() == on {
+            return;
+        }
+        self.as_mut().set_web_search(on);
+        if let Some(io) = &self.rust().io {
+            settings::set(
+                io,
+                settings::WEB_SEARCH,
+                if on { "true".into() } else { String::new() },
+            );
+        }
+        self.update_web();
+    }
+
+    pub fn pick_web_provider(mut self: Pin<&mut Self>, id: &QString) {
+        let provider = Provider::from_id(&id.to_string());
+        if self.provider() == provider && !self.web_provider().is_empty() {
+            return;
+        }
+        self.as_mut().set_web_provider(QString::from(provider.id()));
+        if let Some(io) = &self.rust().io {
+            settings::set(io, settings::WEB_PROVIDER, provider.id().to_string());
+        }
+        // The key read was another service's.
+        if let Ok(mut cache) = self.rust().web_cache.lock() {
+            *cache = None;
+        }
+        let saved = self.rust().key_saved[Self::provider_slot(provider)];
+        self.as_mut().set_web_key_saved(saved);
+        self.as_mut().set_web_test_result(QString::default());
+        self.as_mut().update_web();
+    }
+
+    pub fn save_web_url(mut self: Pin<&mut Self>, url: &QString) {
+        let url = url.to_string().trim().trim_end_matches('/').to_string();
+        if !url.is_empty()
+            && let Err(e) = web::providers::instance(&url)
+        {
+            self.as_mut().set_web_test_ok(false);
+            self.set_web_test_result(QString::from(e.to_string().as_str()));
+            return;
+        }
+        self.as_mut().set_web_url(QString::from(url.as_str()));
+        self.as_mut().set_web_test_result(QString::default());
+        if let Some(io) = &self.rust().io {
+            settings::set(io, settings::WEB_URL, url);
+        }
+        self.update_web();
+    }
+
+    pub fn save_web_key(mut self: Pin<&mut Self>, key: &QString) {
+        let key = key.to_string().trim().to_string();
+        let provider = self.provider();
+        if key.is_empty() || !provider.needs_key() || *self.web_testing() {
+            return;
+        }
+        let keys = match self.rust().web_keys.clone() {
+            Some(keys) if *self.keyring_available() => keys,
+            // No keyring: the key is kept nowhere, and the user is told.
+            _ => {
+                let note = format!(
+                    "The key wasn't saved. {} Start one such as KWallet, then add the key.",
+                    self.keyring_note()
+                );
+                self.as_mut().set_web_test_ok(false);
+                self.set_web_test_result(QString::from(note.as_str()));
+                return;
+            }
+        };
+        self.as_mut().set_web_testing(true);
+        self.as_mut().set_web_test_result(QString::default());
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let result = keys.set(&provider.key_name(), &key);
+            let _ = qt.queue(move |mut chat| {
+                chat.as_mut().set_web_testing(false);
+                match result {
+                    Ok(()) if chat.provider() == provider => {
+                        if let Ok(mut cache) = chat.rust().web_cache.lock() {
+                            *cache = Some(key);
+                        }
+                        chat.as_mut().remember_key(provider, true);
+                        chat.as_mut().set_web_test_ok(true);
+                        chat.as_mut().set_web_test_result(QString::from(
+                            "The key is saved in the system keyring.",
+                        ));
+                    }
+                    Ok(()) => chat.as_mut().remember_key(provider, true),
+                    Err(e) => {
+                        log::warn!("cannot save the web search key: {e}");
+                        chat.as_mut().set_web_test_ok(false);
+                        chat.as_mut().set_web_test_result(QString::from(
+                            format!("The key wasn't saved. {e}").as_str(),
+                        ));
+                    }
+                }
+            });
+        });
+    }
+
+    /// Notes that `provider` has (or hasn't) a key in the keyring.
+    fn remember_key(mut self: Pin<&mut Self>, provider: Provider, saved: bool) {
+        self.as_mut().rust_mut().key_saved[Self::provider_slot(provider)] = saved;
+        if let Some(io) = &self.rust().io {
+            settings::set(
+                io,
+                settings::web_key_flag(provider),
+                if saved { "true".into() } else { String::new() },
+            );
+        }
+        if self.provider() == provider {
+            self.as_mut().set_web_key_saved(saved);
+        }
+        self.update_web();
+    }
+
+    pub fn remove_web_key(mut self: Pin<&mut Self>) {
+        let provider = self.provider();
+        if !provider.needs_key() || *self.web_testing() {
+            return;
+        }
+        let keys = match self.rust().web_keys.clone() {
+            Some(keys) if *self.keyring_available() => keys,
+            _ => {
+                // The key may still be in the keyring: it stays "saved".
+                self.as_mut().set_web_test_ok(false);
+                self.set_web_test_result(QString::from(
+                    "The key can't be removed while the system keyring isn't running. Start it and try again.",
+                ));
+                return;
+            }
+        };
+        // Busy while the keyring deletes, so a Save can't race it.
+        self.as_mut().set_web_testing(true);
+        self.as_mut().set_web_test_result(QString::default());
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let result = keys.remove(&provider.key_name());
+            let _ = qt.queue(move |mut chat| {
+                chat.as_mut().set_web_testing(false);
+                match result {
+                    Ok(()) => {
+                        if chat.provider() == provider
+                            && let Ok(mut cache) = chat.rust().web_cache.lock()
+                        {
+                            *cache = None;
+                        }
+                        chat.remember_key(provider, false);
+                    }
+                    Err(e) => {
+                        // Still in the keyring, so still shown as saved.
+                        log::warn!("cannot remove the web search key: {e}");
+                        chat.as_mut().set_web_test_ok(false);
+                        chat.set_web_test_result(QString::from(
+                            format!("The key wasn't removed. {e}").as_str(),
+                        ));
+                    }
+                }
+            });
+        });
+    }
+
+    pub fn test_web_search(mut self: Pin<&mut Self>) {
+        if *self.web_testing() {
+            return;
+        }
+        let Some(setup) = self.web_setup() else {
+            return;
+        };
+        self.as_mut().set_web_testing(true);
+        self.as_mut().set_web_test_result(QString::default());
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let name = setup.provider.name();
+            // The real service, even when the demo backend answers replies.
+            let result = setup
+                .live(&AtomicBool::new(false))
+                .and_then(|live| web::Web::search(&live, "telamon", 1, &AtomicBool::new(false)));
+            let _ = qt.queue(move |mut chat| {
+                chat.as_mut().set_web_testing(false);
+                match result {
+                    Ok(found) => {
+                        chat.as_mut().set_web_test_ok(true);
+                        chat.set_web_test_result(QString::from(
+                            format!(
+                                "Connected: {name} answered with {} result{}.",
+                                found.len(),
+                                if found.len() == 1 { "" } else { "s" }
+                            )
+                            .as_str(),
+                        ));
+                    }
+                    Err(e) => {
+                        chat.as_mut().set_web_test_ok(false);
+                        chat.set_web_test_result(QString::from(e.to_string().as_str()));
+                    }
+                }
+            });
+        });
+    }
+
+    /// Reads the web settings and asks (on a worker) whether a keyring
+    /// answers. Opening it, which may ask the user for a password, waits for
+    /// the first use.
+    fn start_web(mut self: Pin<&mut Self>) {
+        let provider = Provider::from_id(&settings::get(settings::WEB_PROVIDER));
+        let mut saved = [false; 3];
+        for p in Provider::ALL {
+            saved[Self::provider_slot(p)] = settings::get(settings::web_key_flag(p)) == "true";
+        }
+        self.as_mut().rust_mut().key_saved = saved;
+        self.as_mut().set_web_provider(QString::from(provider.id()));
+        self.as_mut()
+            .set_web_search(settings::get(settings::WEB_SEARCH) == "true");
+        self.as_mut()
+            .set_web_url(QString::from(settings::get(settings::WEB_URL).trim()));
+        self.as_mut()
+            .set_web_key_saved(saved[Self::provider_slot(provider)]);
+        let Some(keys) = self.rust().web_keys.clone() else {
+            return;
+        };
+        // Assumed until the check answers, so Settings doesn't flash a
+        // complaint while it runs.
+        self.as_mut().set_keyring_available(true);
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let checked = keys.check();
+            let _ = qt.queue(move |mut chat| {
+                chat.as_mut().set_keyring_available(checked.is_ok());
+                chat.as_mut()
+                    .set_keyring_note(QString::from(checked.err().unwrap_or_default().as_str()));
+                chat.update_web();
+            });
+        });
+        self.update_web();
     }
 
     /// What a fleet takes from the chat: the model picked, and SystemOne
@@ -1829,7 +2282,7 @@ impl qobject::Chat {
             .iter()
             .rev()
             .find_map(|m| m.mode.as_deref())
-            .filter(|id| *id != modes::AGENT.id)
+            .filter(|id| *id != modes::AGENT.id && *id != modes::DEEP_RESEARCH.id)
             .map(|id| library.resolve(id))
             .unwrap_or_else(|| library.resolve(modes::CHAT.id));
         let user_prompt = self.system_prompt().to_string();
@@ -1859,6 +2312,25 @@ impl qobject::Chat {
             network: *self.agent_network(),
             home: *self.agent_home(),
         };
+        // Deep Research needs the web, and a model that can call tools.
+        if pinned
+            .as_ref()
+            .is_some_and(|m| m.id == modes::DEEP_RESEARCH.id)
+            && !self.research_note().is_empty()
+        {
+            let note = format!("Deep Research can't run. {}", self.research_note());
+            self.as_mut().set_error(QString::from(note.as_str()));
+            return;
+        }
+        // The web, when Settings turn it on: which models can use it is
+        // known once the mode (so the model) is.
+        let web_setup = if *self.web_ready() {
+            self.web_setup()
+        } else {
+            None
+        };
+        let tool_models: Vec<String> = self.tool_models().iter().map(|m| m.to_string()).collect();
+        let tools_unknown = *self.demo() || !self.server_url().is_empty();
         let mut request = Request {
             model: self.model().to_string(),
             system_prompt: String::new(),
@@ -1899,6 +2371,39 @@ impl qobject::Chat {
             request.system_prompt = modes::system_prompt_for(&mode, &user_prompt);
             request.sampling = mode.sampling;
             request.brief = mode.brief;
+            // The web tools: not in Story, and only for a model that can
+            // call tools.
+            let web: Option<Box<dyn web::Web>> = match &web_setup {
+                Some(setup)
+                    if mode.id != modes::STORY.id
+                        && (tools_unknown || tool_models.contains(&request.model)) =>
+                {
+                    match setup.connect(&cancel) {
+                        Ok(connection) => Some(connection),
+                        Err(e) => {
+                            log::warn!("web search: {e}");
+                            let note =
+                                format!("Web Search is on, but this answer didn't use it. {e}");
+                            let _ = qt.queue(move |chat| {
+                                if chat.rust().generation == generation {
+                                    chat.set_error(QString::from(note.as_str()));
+                                }
+                            });
+                            None
+                        }
+                    }
+                }
+                _ => None,
+            };
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            if web.is_some() && mode.id != modes::DEEP_RESEARCH.id {
+                if !request.system_prompt.is_empty() {
+                    request.system_prompt.push_str("\n\n");
+                }
+                request.system_prompt.push_str(web::PROMPT);
+            }
             let mut stream = Stream {
                 qt: qt.clone(),
                 generation,
@@ -1906,8 +2411,29 @@ impl qobject::Chat {
                 sent: Instant::now(),
                 rate: Rate::default(),
                 cancel: cancel.clone(),
+                mode: mode.id.clone(),
+                picked,
             };
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // What the web may open in this reply: what it is shown.
+                let session = web
+                    .as_deref()
+                    .map(|connection| web::Session::new(connection, &request.messages));
+                if mode.id == modes::DEEP_RESEARCH.id {
+                    let Some(connection) = web.as_deref() else {
+                        return Err(gates_core::BackendError::Other(
+                            "Deep Research needs Web Search. Check it in Settings.".into(),
+                        ));
+                    };
+                    return gates_core::research::run(
+                        backend.as_ref(),
+                        connection,
+                        request,
+                        gates_core::research::Limits::default(),
+                        &cancel,
+                        &mut stream,
+                    );
+                }
                 match &workspace {
                     Some(folder) => {
                         if folder.starts_with(gates_core::store::data_dir().join("workspaces")) {
@@ -1923,7 +2449,21 @@ impl qobject::Chat {
                             .system_prompt
                             .push_str(&format!("\n\nThe workspace is {}.", ws.root().display()));
                         let ws = ws.with_access(access);
-                        agent::run(backend.as_ref(), request, &ws, &cancel, &mut stream)
+                        let tools = agent::Tools {
+                            workspace: Some(&ws),
+                            web: session.as_ref(),
+                            max_steps: agent::MAX_STEPS,
+                        };
+                        agent::run_tools(backend.as_ref(), request, &tools, &cancel, &mut stream)
+                    }
+                    // Chat, Code and the rest: the web tools alone, in a few steps.
+                    None if session.is_some() => {
+                        let tools = agent::Tools {
+                            workspace: None,
+                            web: session.as_ref(),
+                            max_steps: agent::WEB_STEPS,
+                        };
+                        agent::run_tools(backend.as_ref(), request, &tools, &cancel, &mut stream)
                     }
                     None => backend.complete(&request, &cancel, &mut |event| match event {
                         Event::Text(piece) => agent::Host::text(&mut stream, piece),
@@ -2036,6 +2576,7 @@ impl qobject::Chat {
         }
         self.as_mut().set_generating(false);
         self.as_mut().set_approving(false);
+        self.as_mut().set_status(QString::default());
         if let Some(c) = self.as_mut().rust_mut().conversation.as_mut() {
             c.touch();
         }

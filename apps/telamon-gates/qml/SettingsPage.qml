@@ -201,7 +201,7 @@ TelamonPage {
                 id: modeRow
                 required property int index
                 required property string modelData
-                readonly property bool own: index >= 4
+                readonly property bool own: index >= 5
                 readonly property real temperature: page.chat.modeTemps[index] ?? -1
                 readonly property string prompt: page.chat.modePrompts[index] ?? ""
 
@@ -211,7 +211,7 @@ TelamonPage {
                 subtitle: (modeRow.prompt.length === 0 ? qsTr("No prompt of its own") : modeRow.gist.length > 70 ? modeRow.gist.slice(0, 70).trim() + "…" : modeRow.gist) + " · " + (modeRow.temperature < 0 ? qsTr("the model's temperature") : qsTr("temperature %1").arg(Number(modeRow.temperature).toLocaleString(Qt.locale(), "f", 2)))
                 leading: [
                     Symbol {
-                        icon: modeRow.modelData === "story" ? Symbols.AutoStories : modeRow.modelData === "code" ? Symbols.Code : modeRow.modelData === "agent" ? Symbols.SmartToy : modeRow.own ? Symbols.EditNote : Symbols.Chat
+                        icon: modeRow.modelData === "story" ? Symbols.AutoStories : modeRow.modelData === "code" ? Symbols.Code : modeRow.modelData === "agent" ? Symbols.SmartToy : modeRow.modelData === "research" ? Symbols.TravelExplore : modeRow.own ? Symbols.EditNote : Symbols.Chat
                         color: TelamonStyle.accent
                     }
                 ]
@@ -371,6 +371,132 @@ TelamonPage {
             showSwitch: true
             switchChecked: page.chat.agentHome
             onSwitchToggled: checked => page.chat.setAgentAccess(page.chat.agentNetwork, checked)
+        }
+    }
+
+    Section {
+        id: webSection
+        title: qsTr("Web Search")
+        footer: qsTr("Lets Chat, Code and Agent replies search the web and read pages, when the model can call tools. What the model asks for is sent to the search service. Pages are opened over https only, never on this computer or your network, and everything that comes back is treated as text to read, not orders to follow.")
+
+        readonly property var providers: ["brave", "tavily", "searxng"]
+        readonly property bool keyed: page.chat.webProvider !== "searxng"
+        // Enough is set up to try a search.
+        readonly property bool configured: keyed ? page.chat.webKeySaved && page.chat.keyringAvailable : page.chat.webUrl.length > 0
+
+        SectionRow {
+            title: qsTr("Web Search")
+            subtitle: page.chat.webSearch && page.chat.webNote.length > 0 ? page.chat.webNote : qsTr("Let local models search the web and read pages")
+            leading: [
+                Symbol {
+                    icon: Symbols.TravelExplore
+                    color: TelamonStyle.accent
+                }
+            ]
+            showSwitch: true
+            switchChecked: page.chat.webSearch
+            onSwitchToggled: checked => page.chat.enableWebSearch(checked)
+        }
+        SectionRow {
+            visible: page.chat.webSearch
+            title: qsTr("Search Service")
+            subtitle: webSection.keyed ? qsTr("Needs an API key from the service") : qsTr("Your own SearXNG instance: no key")
+            leading: [
+                Symbol {
+                    icon: Symbols.Search
+                    color: TelamonStyle.accent
+                }
+            ]
+
+            TelamonComboBox {
+                model: [qsTr("Brave Search"), qsTr("Tavily"), qsTr("SearXNG")]
+                currentIndex: Math.max(0, webSection.providers.indexOf(page.chat.webProvider))
+                onActivated: index => page.chat.pickWebProvider(webSection.providers[index])
+                Accessible.name: qsTr("Search Service")
+            }
+        }
+        SectionRow {
+            visible: page.chat.webSearch && webSection.keyed
+            title: qsTr("API Key")
+            subtitle: !page.chat.keyringAvailable ? qsTr("%1 The key can't be saved without it.").arg(page.chat.keyringNote) : page.chat.webKeySaved ? qsTr("Saved in the system keyring") : qsTr("Kept in the system keyring, never in a file")
+            leading: [
+                Symbol {
+                    icon: page.chat.keyringAvailable ? Symbols.Key : Symbols.Lock
+                    color: page.chat.keyringAvailable ? TelamonStyle.accent : TelamonStyle.error
+                }
+            ]
+
+            TelamonPasswordField {
+                id: keyField
+                implicitWidth: Kirigami.Units.gridUnit * 12
+                enabled: page.chat.keyringAvailable && !page.chat.webTesting
+                placeholderText: page.chat.webKeySaved ? qsTr("Saved") : qsTr("Paste the key")
+                onAccepted: {
+                    page.chat.saveWebKey(keyField.text);
+                    keyField.text = "";
+                }
+                Accessible.name: qsTr("API Key")
+            }
+            SecondaryButton {
+                text: qsTr("Save")
+                enabled: page.chat.keyringAvailable && !page.chat.webTesting && keyField.text.trim().length > 0
+                onClicked: {
+                    page.chat.saveWebKey(keyField.text);
+                    keyField.text = "";
+                }
+            }
+            SecondaryButton {
+                visible: page.chat.webKeySaved
+                text: qsTr("Remove")
+                enabled: !page.chat.webTesting
+                onClicked: page.chat.removeWebKey()
+            }
+        }
+        SectionRow {
+            visible: page.chat.webSearch && !webSection.keyed
+            title: qsTr("Instance Address")
+            subtitle: qsTr("Such as http://localhost:8080. The instance has to allow json under search.formats in its settings.yml.")
+            leading: [
+                Symbol {
+                    icon: Symbols.Dns
+                    color: TelamonStyle.accent
+                }
+            ]
+
+            TelamonTextField {
+                id: instanceField
+                implicitWidth: Kirigami.Units.gridUnit * 14
+                text: page.chat.webUrl
+                placeholderText: qsTr("http://localhost:8080")
+                inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
+                readonly property bool valid: text.trim().length === 0 || /^https?:\/\/[^\s\/@]+(:\d+)?(\/[^\s?#]*)?$/.test(text.trim())
+                errorText: valid ? "" : qsTr("Use an address like http://localhost:8080")
+                onEditingFinished: {
+                    if (valid && text.trim() !== page.chat.webUrl) {
+                        page.chat.saveWebUrl(text.trim());
+                    }
+                }
+                Accessible.name: qsTr("Instance Address")
+            }
+        }
+        SectionRow {
+            visible: page.chat.webSearch
+            title: qsTr("Test Connection")
+            subtitle: page.chat.webTestResult.length > 0 ? page.chat.webTestResult : qsTr("Tries one search with these settings")
+            busy: page.chat.webTesting
+            leading: [
+                Symbol {
+                    icon: page.chat.webTestResult.length === 0 ? Symbols.NetworkCheck : page.chat.webTestOk ? Symbols.CheckCircle : Symbols.Error
+                    color: page.chat.webTestResult.length === 0 ? TelamonStyle.accent : page.chat.webTestOk ? TelamonStyle.success : TelamonStyle.error
+                }
+            ]
+
+            SecondaryButton {
+                visible: !page.chat.webTesting
+                text: qsTr("Test Connection")
+                enabled: webSection.configured
+                onClicked: page.chat.testWebSearch()
+            }
         }
     }
 

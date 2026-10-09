@@ -27,6 +27,24 @@ pub const SYSTEM_ONE: &str = "SystemOne";
 /// picks one.
 pub const DECISION_MODEL: &str = "DecisionModel";
 
+/// "true" lets Chat, Code and Agent replies search the web (off by default).
+pub const WEB_SEARCH: &str = "WebSearch";
+/// "brave", "tavily" or "searxng".
+pub const WEB_PROVIDER: &str = "WebProvider";
+/// A SearXNG instance's address. Not a secret.
+pub const WEB_URL: &str = "WebSearxUrl";
+
+/// "true": a key for `provider` is in the system keyring. The key is never
+/// in this file; this only says there is one, so that starting the app
+/// doesn't open the keyring.
+pub fn web_key_flag(provider: gates_core::web::Provider) -> &'static str {
+    match provider {
+        gates_core::web::Provider::Brave => "WebKeyBrave",
+        gates_core::web::Provider::Tavily => "WebKeyTavily",
+        gates_core::web::Provider::Searxng => "WebKeySearxng",
+    }
+}
+
 fn file() -> Settings {
     Settings::for_app(telamon_framework_ui::app_info())
 }
@@ -47,7 +65,9 @@ pub fn backend_options() -> gates_core::Options {
         gpu_layers: get_u32(GPU_LAYERS),
         context: get_u32(CONTEXT),
         server_url: get(SERVER_URL).trim().to_string(),
-        small_cache: get(SMALL_CACHE) == "true",
+        // On unless turned off: the coding test scores the same with it
+        // (BACKEND.md → Performance).
+        small_cache: get(SMALL_CACHE) != "false",
     }
 }
 

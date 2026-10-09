@@ -20,6 +20,18 @@ When in doubt, do what it does.
   sandbox's small tmpfs otherwise).
 - **Never run the GUI on the user's display.** `scripts/smoke.sh` runs it
   under Xvfb and a private bus with every XDG dir under `out/smoke`.
+- **Check for running AI models and stop them before any GPU or model work.**
+  This covers llama-server, a model eval, a smoke run with a model, and
+  anything with `--device /dev/dri`. First run
+  `pgrep -af 'llama-server|ollama|whisper|vllm|koboldcpp|text-generation'`
+  and `podman ps`, and read `/sys/class/drm/card*/device/mem_info_vram_used`.
+  Stop every model server found, including one Telamon Gates started, and any
+  of our containers still running.
+- **One heavy job at a time.** That means one container build, test suite or
+  GPU job at once, never several in parallel. This PC is also the user's
+  desktop: six parallel builds plus models crashed it. Cap builds with
+  `CARGO_BUILD_JOBS=8`, and podman with `--memory=12g --cpus=12`. Stop
+  whatever model you started when done.
 - **Telamon.Ui is the installed `telamon-ui` package** (the Telamon framework,
   github.com/EternalCoder454/atlas-framework). Never copy its components here;
   ask the framework's owner for new ones.
