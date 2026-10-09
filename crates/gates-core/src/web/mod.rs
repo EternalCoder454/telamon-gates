@@ -339,6 +339,17 @@ impl Canned {
     }
 }
 
+/// "Demo page 2 on what is known about heat pumps" for a demo address.
+fn demo_title(url: &str) -> String {
+    let parts: Vec<&str> = url.rsplit('/').take(2).collect();
+    match parts.as_slice() {
+        [n, slug] if n.chars().all(|c| c.is_ascii_digit()) && !slug.is_empty() => {
+            format!("Demo page {n} on {}", slug.replace('-', " "))
+        }
+        _ => "A demo page".to_string(),
+    }
+}
+
 impl Web for Canned {
     fn search(
         &self,
@@ -348,6 +359,16 @@ impl Web for Canned {
     ) -> Result<Vec<SearchResult>, WebError> {
         self.pause(cancel)?;
         let topic: String = query.chars().take(60).collect();
+        // A page of its own for each question, so a research run has several.
+        let slug: String = query
+            .to_lowercase()
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join("-")
+            .chars()
+            .take(30)
+            .collect();
         let results = [
             (
                 "Overview",
@@ -371,7 +392,7 @@ impl Web for Canned {
             .take(count)
             .map(|(i, (title, host, snippet))| SearchResult {
                 title: format!("{title}: {topic}"),
-                url: format!("https://{host}/demo/{}", i + 1),
+                url: format!("https://{host}/demo/{slug}/{}", i + 1),
                 snippet: snippet.to_string(),
             })
             .collect())
@@ -381,7 +402,7 @@ impl Web for Canned {
         self.pause(cancel)?;
         Ok(Page {
             url: url.to_string(),
-            title: "A demo page".into(),
+            title: demo_title(url),
             text: "# A demo page\n\nThis page is made up by the demo backend: nothing was fetched \
                    from the internet.\n\nIt has a heading, a paragraph and a link: \
                    [example](https://example.org/demo/1)."

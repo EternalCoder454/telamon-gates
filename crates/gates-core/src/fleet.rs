@@ -173,7 +173,7 @@ pub fn parse_plan(text: &str) -> Result<Vec<Task>, String> {
 
 /// The JSON object in `text`: all of it, or from its first `{` to its last
 /// `}` (a model may wrap it in a code fence or a sentence).
-fn json_in(text: &str) -> Option<Value> {
+pub(crate) fn json_in(text: &str) -> Option<Value> {
     let text = text.trim();
     if let Ok(value) = serde_json::from_str(text) {
         return Some(value);
@@ -186,7 +186,7 @@ fn json_in(text: &str) -> Option<Value> {
 }
 
 /// The first `max` characters of `text`.
-fn clip(text: &str, max: usize) -> &str {
+pub(crate) fn clip(text: &str, max: usize) -> &str {
     match text.char_indices().nth(max) {
         Some((i, _)) => &text[..i],
         None => text,
@@ -194,7 +194,7 @@ fn clip(text: &str, max: usize) -> &str {
 }
 
 /// `text` on one line, cut to `max` characters (with "…" when it was).
-fn one_line(text: &str, max: usize) -> String {
+pub(crate) fn one_line(text: &str, max: usize) -> String {
     let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let joined: String = joined.chars().filter(|c| !c.is_control()).collect();
     if joined.chars().count() > max {
@@ -206,7 +206,7 @@ fn one_line(text: &str, max: usize) -> String {
 
 /// `text` without control characters (but with its line breaks and tabs),
 /// trimmed, cut to `max` characters.
-fn clean(text: &str, max: usize) -> String {
+pub(crate) fn clean(text: &str, max: usize) -> String {
     let kept: String = text
         .chars()
         .filter(|c| matches!(c, '\n' | '\t') || !c.is_control())

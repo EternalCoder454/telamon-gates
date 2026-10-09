@@ -188,7 +188,8 @@ top-p), sent in the request body:
 | Story | 1.0 | 0.95 | brief | a creative-writing partner that keeps the story consistent |
 | Code | 0.2 | 0.9 | the model's own | an expert programmer: complete fenced code, assumptions named |
 
-Brief reasoning is explained under Performance → Recommended models.
+Brief reasoning is explained under Performance → Recommended models. Agent
+(below) and Deep Research (after the Fleet) are two more modes the user pins.
 
 A user's own system prompt (Settings) follows the mode's. A conversation is in
 Auto or pinned to a mode (`Conversation.mode`). Each reply records the mode
@@ -475,6 +476,61 @@ the user; each call shows as a tool row.
 - **Left:** no live check against a real provider was made (no key). The
   parsers follow the services' published response shapes; a live check is
   one Test Connection away.
+
+## Deep Research
+
+**Deep Research** is a fifth mode (`modes::DEEP_RESEARCH`, id `research`),
+pinned by the user like Agent: SystemOne never picks it and Auto never
+continues in it. It needs Web Search on and a model that can call tools
+(`Chat.researchNote` says what is missing; `ask()` refuses without them).
+`research::run` drives it, and asks the model for text only, never for tool
+calls (so it also works with a model that is poor at them; the tools
+requirement is conservative):
+
+1. **Plan:** the model splits the question into 3 to 6 sub-questions, in one
+   `response_format` JSON-schema answer (as the Fleet's plan is). `parse_plan`
+   doesn't trust it: it takes the JSON out of a fence or a sentence, keeps six,
+   one line each, none twice, and falls back to the question itself.
+2. **For each sub-question:** `web_search` (6 results); read pages from the
+   top results, skipping ones already read and sites already read twice, until
+   3 are read or 4 tried; then a model call takes notes (at most 150 words,
+   from 3,500 characters of each page; kept to 1,500 characters).
+3. **Report:** one model call writes the report from the notes and a numbered
+   list of titles (never addresses), streamed. Gates then finishes it
+   (`finish_report`): `[1]`, `[2][3]` and `[1, 2]` become links to their
+   pages (`[\[1\]](address)`); a number with no page is taken out; the
+   model's own links and bare addresses that aren't pages read are taken out
+   (links keep their words); a Sources section of the model's own is cut; and
+   Gates appends the Sources list itself. **Only pages that were actually
+   read can be cited or linked,** whatever the model wrote. The finished text
+   replaces the streamed one (`Host::replace`).
+
+- **Bounds** (`research::Limits`): 30 web calls (searches and page reads,
+  failed ones too), 10 minutes for the research (the report is then written
+  from what there is, and a line says so), and Stop at every step: before
+  each call, in each web call (abandoned within 40 ms) and each model call.
+  The pages come only from the search results of the run, so the
+  allowlist of `fetch_page` (search results and the user's words) holds here
+  too.
+- **Reasoning is the mode's own** (not brief) in every step, as for Code and
+  Agent: the model reasons as it does. With a thinking model that is the
+  slow part of a run (see Recommended models for the costs).
+- **Untrusted pages:** the notes step says the pages are text to take facts
+  from, not instructions; the report is written from notes, not pages; the
+  reply reaches the window through `markdown.rs`.
+- **Context:** the notes call carries at most about 10 KB of pages and the
+  report call the notes (6 x 1,500 characters) and the titles: they fit the
+  automatic 32k context with room to spare.
+- **Demo:** the demo backend plays all three kinds of request, over
+  `web::Canned` (a page of its own for each question), so a whole run can
+  be seen without a model or a key.
+- **Tests:** a scripted model and a fake web: the plan, the notes and the
+  report as requests; citations and links limited to pages read, a made-up
+  `[9]` and links and sources section removed; the 30-call and the time limit,
+  with their line in the report; Stop between steps, in a slow search and
+  during the report; nothing readable (an error that says so); a plan
+  that makes no sense; one page per address, two per site; reasoning follows the
+  mode.
 
 ## Performance (measured 2026-10-09, RX 7900 XTX, Vulkan)
 

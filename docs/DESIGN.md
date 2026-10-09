@@ -42,8 +42,11 @@ beside it.
   is nothing to send; Stop while a reply comes in), and at its leading end
   the paperclip, Attach Files…. Under it, on the leading side, one mode
   button showing the conversation's mode and its symbol (Auto, Chat, Story,
-  Code, Agent, or one of the user's own); its menu lists them all, the
-  user's own after a separator. On the trailing side, the keys in small
+  Code, Agent, Deep Research, or one of the user's own); its menu lists them
+  all, the user's own after a separator. Deep Research is greyed out while it
+  can't run, with a line under it saying why ("Turn on Web Search in
+  Settings.", Web Search's own missing piece, or "The model in use can't call
+  tools…"). On the trailing side, the keys in small
   boxes (Enter Send, Shift+Enter New Line) and "Always double-check the
   answer.", each hidden whole when there's no room. Escape
   stops a reply; Ctrl+N starts a new chat.
@@ -114,8 +117,8 @@ beside it.
   "Your Modes" list beside the mode switch; SystemOne picks only Chat, Story
   and Code, as changed.
   Chat and Story (and edits of them) ask the model for brief reasoning:
-  gpt-oss at low effort, Qwen3 with thinking off. Code, Agent and the user's
-  own modes leave reasoning to the model (`docs/BACKEND.md` → Recommended
+  gpt-oss at low effort, Qwen3 with thinking off. Code, Agent, Deep Research
+  and the user's own modes leave reasoning to the model (`docs/BACKEND.md` → Recommended
   models has the costs).
 - **Edit, Branch, Export**:
   - **Your messages:** with the pointer on one, Edit and Branch From Here
@@ -143,6 +146,20 @@ beside it.
   "Read src/greet.py (lines 1–5 of 5)"), which opens to the output. A turn
   that only asked for tools shows nothing of its own, and Copy and
   Regenerate come only under the final answer.
+- **Deep Research**: Deep Research in the mode menu, never picked by
+  SystemOne (and Auto never continues in it). It needs Web Search on and set
+  up, and a model that can call tools; the menu says what is missing. One
+  question becomes a report (`docs/BACKEND.md` → Deep Research):
+  - **While it works,** the progress line over the message field says what it
+    is doing: "Planning the research", "Searching: …", "Reading: …", "Taking
+    notes: …", "Writing the report". Stop works at every step.
+  - **The reply** is the report: a summary first, then headings, with numbered
+    citations ([1]) that link to the page they came from, and a Sources list of
+    exactly the pages that were read, written by Gates (a source the model made
+    up can't appear). When a limit stopped the research early, a line under
+    the list says how far it got.
+  - **No tool rows:** a run makes 20 to 30 calls, which would bury the report.
+    The reply is saved as text, and a follow-up question researches again.
 - **Fleet** (above Models in the sidebar): several agents on one goal, and a
   page to watch and steer them. Top to bottom:
   - **Goal:** the title row has Start Fleet (Stop All while a run is under

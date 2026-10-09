@@ -116,6 +116,8 @@ pub mod qobject {
         #[qproperty(QString, keyring_note, cxx_name = "keyringNote")]
         #[qproperty(bool, web_ready, cxx_name = "webReady")]
         #[qproperty(QString, web_note, cxx_name = "webNote")]
+        /// Why Deep Research can't be used now ("" when it can).
+        #[qproperty(QString, research_note, cxx_name = "researchNote")]
         /// A key is being saved or a search tried; the outcome, in words.
         #[qproperty(bool, web_testing, cxx_name = "webTesting")]
         #[qproperty(QString, web_test_result, cxx_name = "webTestResult")]
@@ -482,6 +484,7 @@ pub struct ChatRust {
     keyring_note: QString,
     web_ready: bool,
     web_note: QString,
+    research_note: QString,
     web_testing: bool,
     web_test_result: QString,
     web_test_ok: bool,
@@ -654,6 +657,15 @@ impl agent::Host for Stream {
         let _ = self
             .qt
             .queue(move |chat| chat.show_status(generation, &line));
+    }
+
+    fn replace(&mut self, text: &str) {
+        // What came so far first, so the order of batches holds.
+        self.flush();
+        let (generation, text) = (self.generation, text.to_string());
+        let _ = self
+            .qt
+            .queue(move |chat| chat.replace_reply(generation, &text));
     }
 }
 
@@ -1185,7 +1197,7 @@ impl qobject::Chat {
             .conversation
             .as_ref()
             .and_then(|c| c.messages.iter().rev().find_map(|m| m.mode.clone()))
-            .filter(|id| id != modes::AGENT.id)
+            .filter(|id| id != modes::AGENT.id && id != modes::DEEP_RESEARCH.id)
             .map(|id| library.resolve(&id))
             .unwrap_or_else(|| library.resolve(modes::CHAT.id));
         let preparing = {
@@ -1546,6 +1558,31 @@ impl qobject::Chat {
         });
     }
 
+    /// The text of the reply under way becomes `text` (Deep Research's
+    /// finished report, its citations linked).
+    fn replace_reply(mut self: Pin<&mut Self>, generation: u64, text: &str) {
+        if self.rust().generation != generation {
+            return;
+        }
+        {
+            let mut rust = self.as_mut().rust_mut();
+            let Some(message) = rust
+                .conversation
+                .as_mut()
+                .and_then(|c| c.messages.last_mut())
+                .filter(|m| m.role == Role::Assistant)
+            else {
+                return;
+            };
+            message.text = text.to_string();
+            let row = Row::of(message);
+            if let Some(last) = rust.rows.last_mut() {
+                *last = row;
+            }
+        }
+        self.last_changed();
+    }
+
     /// What the reply under way is doing now.
     fn show_status(self: Pin<&mut Self>, generation: u64, line: &str) {
         if self.rust().generation == generation {
@@ -1701,7 +1738,20 @@ impl qobject::Chat {
         } else {
             (true, String::new())
         };
+        // Deep Research needs the web on and ready, and a model with tools.
+        let research = if !on {
+            "Turn on Web Search in Settings.".to_string()
+        } else if !ready {
+            note.clone()
+        } else if !self.model_can_use_tools(&self.model().to_string()) {
+            "The model in use can't call tools (see the Tools badge on the Models page)."
+                .to_string()
+        } else {
+            String::new()
+        };
         self.as_mut().set_web_ready(ready);
+        self.as_mut()
+            .set_research_note(QString::from(research.as_str()));
         self.set_web_note(QString::from(note.as_str()));
     }
 
@@ -2225,7 +2275,7 @@ impl qobject::Chat {
             .iter()
             .rev()
             .find_map(|m| m.mode.as_deref())
-            .filter(|id| *id != modes::AGENT.id)
+            .filter(|id| *id != modes::AGENT.id && *id != modes::DEEP_RESEARCH.id)
             .map(|id| library.resolve(id))
             .unwrap_or_else(|| library.resolve(modes::CHAT.id));
         let user_prompt = self.system_prompt().to_string();
@@ -2255,6 +2305,16 @@ impl qobject::Chat {
             network: *self.agent_network(),
             home: *self.agent_home(),
         };
+        // Deep Research needs the web, and a model that can call tools.
+        if pinned
+            .as_ref()
+            .is_some_and(|m| m.id == modes::DEEP_RESEARCH.id)
+            && !self.research_note().is_empty()
+        {
+            let note = format!("Deep Research can't run. {}", self.research_note());
+            self.as_mut().set_error(QString::from(note.as_str()));
+            return;
+        }
         // The web, when Settings turn it on: which models can use it is
         // known once the mode (so the model) is.
         let web_setup = if *self.web_ready() {
@@ -2331,7 +2391,7 @@ impl qobject::Chat {
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
-            if web.is_some() {
+            if web.is_some() && mode.id != modes::DEEP_RESEARCH.id {
                 if !request.system_prompt.is_empty() {
                     request.system_prompt.push_str("\n\n");
                 }
@@ -2352,6 +2412,21 @@ impl qobject::Chat {
                 let session = web
                     .as_deref()
                     .map(|connection| web::Session::new(connection, &request.messages));
+                if mode.id == modes::DEEP_RESEARCH.id {
+                    let Some(connection) = web.as_deref() else {
+                        return Err(gates_core::BackendError::Other(
+                            "Deep Research needs Web Search. Check it in Settings.".into(),
+                        ));
+                    };
+                    return gates_core::research::run(
+                        backend.as_ref(),
+                        connection,
+                        request,
+                        gates_core::research::Limits::default(),
+                        &cancel,
+                        &mut stream,
+                    );
+                }
                 match &workspace {
                     Some(folder) => {
                         if folder.starts_with(gates_core::store::data_dir().join("workspaces")) {
