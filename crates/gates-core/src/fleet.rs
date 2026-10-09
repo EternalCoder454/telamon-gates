@@ -313,6 +313,10 @@ pub trait FleetHost {
     fn approve(&mut self, agent: usize, call: &ToolCall, title: &str, detail: &str) -> Approval;
     /// SystemOne's belief that the agent finished (0 to 1).
     fn judged(&mut self, agent: usize, confidence: f64);
+    /// The backend has something to tell the user that isn't a failure
+    /// (`Event::Notice`: the model loaded with a smaller context). Plain
+    /// text. Ignored unless the host shows it.
+    fn notice(&mut self, _text: &str) {}
 }
 
 /// How an agent ended.
@@ -418,6 +422,10 @@ impl agent::Host for AgentHost<'_> {
         self.rate = Rate::default();
         self.reply.clear();
     }
+
+    fn notice(&mut self, text: &str) {
+        self.host.notice(text);
+    }
 }
 
 /// The request for agent `index` of `tasks`: the agent mode's prompt, the
@@ -481,8 +489,12 @@ pub fn run(
     // The coordinator, asked once.
     let mut answer = String::new();
     let asked = backend.complete(&plan_request(model, goal), control.whole(), &mut |event| {
-        if let Event::Text(piece) = event {
-            answer.push_str(piece);
+        match event {
+            Event::Text(piece) => answer.push_str(piece),
+            // The coordinator is often the first to ask: the model loads
+            // for it, and the user is told what changed.
+            Event::Notice(text) => host.notice(text),
+            _ => {}
         }
     });
     if let Err(e) = asked {
@@ -788,6 +800,33 @@ mod tests {
         fn judged(&mut self, agent: usize, confidence: f64) {
             self.events.push(format!("{agent} judged {confidence:.2}"));
         }
+        fn notice(&mut self, text: &str) {
+            self.events.push(format!("notice {text}"));
+        }
+    }
+
+    /// A backend that tells its first caller something (as a server that
+    /// loaded with less than asked does), then behaves as `Team`.
+    struct Noisy(Team);
+
+    impl Backend for Noisy {
+        fn name(&self) -> String {
+            self.0.name()
+        }
+        fn models(&self) -> Result<Vec<String>, BackendError> {
+            self.0.models()
+        }
+        fn complete(
+            &self,
+            request: &Request,
+            cancel: &AtomicBool,
+            emit: &mut dyn FnMut(Event<'_>),
+        ) -> Result<(), BackendError> {
+            if self.0.seen.lock().unwrap().is_empty() {
+                emit(Event::Notice("Loaded with a smaller context."));
+            }
+            self.0.complete(request, cancel, emit)
+        }
     }
 
     /// Says 0.9 for a task whose reply says "All done", else it can't tell.
@@ -866,6 +905,26 @@ mod tests {
             "{}",
             last.system_prompt
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_notice_from_the_first_reply_reaches_the_host() {
+        // The coordinator's reply is the first: the model loads for it.
+        let (dir, ws) = workspace("notice");
+        let backend = Noisy(Team::new(TWO, vec![Turn::Say("All done.", vec![])]));
+        let control = Control::new();
+        let mut host = Log::new(&control);
+        let done = run(&backend, None, "", "g", &ws, &control, &mut host);
+        assert_eq!(done.error, None);
+        let notices: Vec<&String> = host
+            .events
+            .iter()
+            .filter(|e| e.starts_with("notice"))
+            .collect();
+        assert_eq!(notices, ["notice Loaded with a smaller context."]);
+        // Before the plan, so the page can show it while it plans.
+        assert_eq!(host.events[0], "notice Loaded with a smaller context.");
         let _ = std::fs::remove_dir_all(dir);
     }
 

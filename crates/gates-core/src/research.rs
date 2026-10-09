@@ -479,7 +479,12 @@ pub fn run(
         backend,
         &plan_request(&request, &asked),
         cancel,
-        &mut |_| {},
+        &mut |event| {
+            // The model loads for this first reply: say what changed.
+            if let Event::Notice(n) = event {
+                host.notice(n);
+            }
+        },
     )?;
     if stopped() {
         return Ok(());
@@ -624,6 +629,7 @@ pub fn run(
     let text = ask(backend, &report, cancel, &mut |event| match event {
         Event::Text(piece) => host.text(piece),
         Event::Speed(s) => host.speed(s),
+        Event::Notice(n) => host.notice(n),
         Event::ToolCalls(_) => {}
     })?;
     if stopped() {

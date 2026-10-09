@@ -59,6 +59,7 @@ fn main() {
         }
         Event::Speed(s) => println!("\n[speed: {s:.1} tokens/s]"),
         Event::ToolCalls(calls) => println!("\n[tool calls: {calls:?}]"),
+        Event::Notice(n) => println!("[notice: {n}]"),
     });
     println!(
         "\n[result: {result:?}; context: {:?} tokens; {:.1} s]",

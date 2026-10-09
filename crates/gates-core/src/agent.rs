@@ -41,6 +41,9 @@ pub trait Host {
     fn result(&mut self, message: Message);
     /// The model starts its next turn, after the results.
     fn next_turn(&mut self);
+    /// The backend has something to tell the user that isn't the reply
+    /// (`Event::Notice`). Plain text. Ignored unless the host shows it.
+    fn notice(&mut self, _text: &str) {}
     /// What is being done now, for a progress line ("Searching: rust
     /// async"); "" when nothing is.
     fn status(&mut self, _line: &str) {}
@@ -150,6 +153,7 @@ pub fn run_tools(
             }
             Event::Speed(s) => host.speed(s),
             Event::ToolCalls(c) => calls = c.to_vec(),
+            Event::Notice(n) => host.notice(n),
         })?;
         // No calls, or the turn that had no tools to ask for: the answer.
         if cancel.load(Ordering::Relaxed) || calls.is_empty() || request.tools.is_empty() {
