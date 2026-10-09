@@ -47,7 +47,9 @@ pub fn backend_options() -> gates_core::Options {
         gpu_layers: get_u32(GPU_LAYERS),
         context: get_u32(CONTEXT),
         server_url: get(SERVER_URL).trim().to_string(),
-        small_cache: get(SMALL_CACHE) == "true",
+        // On unless turned off: the coding test scores the same with it
+        // (BACKEND.md → Performance).
+        small_cache: get(SMALL_CACHE) != "false",
     }
 }
 

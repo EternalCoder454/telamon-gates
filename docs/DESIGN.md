@@ -179,7 +179,8 @@ beside it.
 - **Settings**: the backend, the model, the Model for Code (shown when
   there are two or more models: Code and Agent replies, and the warm-up while
   typing in those modes, use it; "Same as Model", or a model that is gone,
-  means the chat model), the system prompt (saved as you
+  means the chat model), Smaller Context Cache (a q8_0 context cache, on
+  by default; off is saved as `false`), the system prompt (saved as you
   type), the shared transparency switch, and the folder the conversations are
   in, with Open Folder.
 
