@@ -27,6 +27,189 @@ pub struct Info {
     /// The context it was trained for, in tokens (`<arch>.context_length`);
     /// 0 when it doesn't say.
     pub context_length: u32,
+    /// `general.architecture` ("llama", "qwen3", "gemma4"); "" when it
+    /// doesn't say.
+    pub architecture: String,
+    /// The number of layers (`<arch>.block_count`); 0 when it doesn't say.
+    /// A failed load steps the layers on the graphics card down from it.
+    pub block_count: u32,
+}
+
+/// llama.cpp tag the packaged `llama-server` is built from (`packaging/
+/// telamon-llama/telamon-llama.spec` `Version`); `SUPPORTED_ARCHITECTURES` is
+/// its `src/llama-arch.cpp` `LLM_ARCH_NAMES`, less the `clip` projector
+/// and `(unknown)`. Update both with the package.
+pub const LLAMA_CPP_TAG: &str = "v0.6.0";
+
+/// The `general.architecture` values telamon-llama's build loads.
+pub const SUPPORTED_ARCHITECTURES: &[&str] = &[
+    "llama",
+    "llama4",
+    "deci",
+    "falcon",
+    "grok",
+    "gpt2",
+    "gptj",
+    "gptneox",
+    "mpt",
+    "baichuan",
+    "starcoder",
+    "refact",
+    "bert",
+    "modern-bert",
+    "nomic-bert",
+    "nomic-bert-moe",
+    "neo-bert",
+    "jina-bert-v2",
+    "jina-bert-v3",
+    "eurobert",
+    "bloom",
+    "stablelm",
+    "qwen",
+    "qwen2",
+    "qwen2moe",
+    "qwen2vl",
+    "qwen3",
+    "qwen3moe",
+    "qwen3next",
+    "qwen3vl",
+    "qwen3vlmoe",
+    "qwen35",
+    "qwen35moe",
+    "clef",
+    "qwen4exp",
+    "phi2",
+    "phi3",
+    "phimoe",
+    "plamo",
+    "plamo2",
+    "plamo3",
+    "codeshell",
+    "orion",
+    "internlm2",
+    "minicpm",
+    "minicpm3",
+    "gemma",
+    "gemma2",
+    "gemma3",
+    "gemma3n",
+    "gemma4",
+    "gemma4-assistant",
+    "gemma-embedding",
+    "starcoder2",
+    "mamba",
+    "mamba2",
+    "maple",
+    "jamba",
+    "falcon-h1",
+    "xverse",
+    "command-r",
+    "cohere2",
+    "cohere2moe",
+    "dbrx",
+    "olmo",
+    "olmo2",
+    "olmoe",
+    "muse-glimmer",
+    "openelm",
+    "arctic",
+    "deepseek",
+    "deepseek2",
+    "deepseek2-ocr",
+    "deepseek32",
+    "deepseek4",
+    "chatglm",
+    "glm4",
+    "glm4moe",
+    "glm-dsa",
+    "bitnet",
+    "t5",
+    "t5encoder",
+    "jais",
+    "jais2",
+    "nemotron",
+    "nemotron_h",
+    "nemotron_h_moe",
+    "exaone",
+    "exaone4",
+    "exaone-moe",
+    "rwkv6",
+    "rwkv6qwen2",
+    "rwkv7",
+    "arwkv7",
+    "granite",
+    "granitemoe",
+    "granitehybrid",
+    "graniteswitch",
+    "granite_swa",
+    "chameleon",
+    "wavtokenizer-dec",
+    "plm",
+    "bailingmoe",
+    "bailingmoe2",
+    "bailingmoe3",
+    "dots1",
+    "dots3note",
+    "arcee",
+    "afmoe",
+    "laguna",
+    "ernie4_5",
+    "ernie4_5-moe",
+    "hunyuan-moe",
+    "hunyuan-dense",
+    "hunyuan_vl",
+    "hy_v3",
+    "hy_v4",
+    "smollm3",
+    "gpt-oss",
+    "lfm2",
+    "lfm2moe",
+    "dream",
+    "smallthinker",
+    "llada",
+    "llada-moe",
+    "seed_oss",
+    "grovemoe",
+    "apertus",
+    "minimax-01",
+    "hrm_text",
+    "minimax-m2",
+    "minimax-m3",
+    "cogvlm",
+    "rnd1",
+    "pangu-embedded",
+    "mistral3",
+    "eagle3",
+    "dflash",
+    "mistral4",
+    "paddleocr",
+    "mimo2",
+    "step35",
+    "spark2_5",
+    "llama-embed",
+    "maincoder",
+    "kimi-linear",
+    "kimi-k3",
+    "glm5-next",
+    "talkie",
+    "mellum",
+    "nanbeige",
+    "qwen3tts",
+    "pockettts",
+];
+
+/// Whether the packaged llama-server loads a model of architecture `arch`.
+/// An empty one (the header doesn't say, or it isn't GGUF) counts as
+/// supported: llama.cpp reports what is wrong with the file itself.
+pub fn is_supported(arch: &str) -> bool {
+    arch.is_empty() || SUPPORTED_ARCHITECTURES.contains(&arch)
+}
+
+impl Info {
+    /// Whether llama-server can load this model (see `is_supported`).
+    pub fn supported(&self) -> bool {
+        is_supported(&self.architecture)
+    }
 }
 
 /// The longest string read whole; longer ones are skipped.
@@ -57,8 +240,10 @@ pub fn read(path: &Path) -> io::Result<Info> {
     let keys = u64_le(&mut r)?.min(MAX_KEYS);
     let mut info = Info::default();
     let mut file_type = None;
-    // `<arch>.context_length`, once the architecture is known (it comes first).
+    // `<arch>.context_length` and `.block_count`, once the architecture is
+    // known (it comes first).
     let mut context_key: Option<String> = None;
+    let mut block_key: Option<String> = None;
     for _ in 0..keys {
         let Ok(key) = string(&mut r) else { break };
         let Ok(kind) = u32_le(&mut r) else { break };
@@ -74,6 +259,7 @@ pub fn read(path: &Path) -> io::Result<Info> {
             k.ends_with(".decision.type")
                 || k == "tokenizer.chat_template"
                 || k.ends_with(".context_length")
+                || k.ends_with(".block_count")
         });
         if !wanted {
             if skip_value(&mut r, kind, 0).is_err() {
@@ -90,6 +276,13 @@ pub fn read(path: &Path) -> io::Result<Info> {
                 info.context_length =
                     u64_le(&mut r).map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX));
             }
+            (Some(k), 4) if Some(k) == block_key.as_deref() => {
+                info.block_count = u32_le(&mut r).unwrap_or(0);
+            }
+            (Some(k), 10) if Some(k) == block_key.as_deref() => {
+                info.block_count =
+                    u64_le(&mut r).map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX));
+            }
             (Some(k), 8) => {
                 let Ok(value) = string(&mut r) else { break };
                 let value = value.unwrap_or_default();
@@ -99,6 +292,8 @@ pub fn read(path: &Path) -> io::Result<Info> {
                     info.size_label = value;
                 } else if k == "general.architecture" {
                     context_key = Some(format!("{value}.context_length"));
+                    block_key = Some(format!("{value}.block_count"));
+                    info.architecture = value;
                 } else if k.ends_with(".decision.type") {
                     info.decision = value;
                 } else if k == "tokenizer.chat_template" {
@@ -309,6 +504,7 @@ mod tests {
             ("general.architecture", 8, gguf_string("llama")),
             ("tokenizer.ggml.tokens", 9, vocab),
             ("llama.context_length", 4, 8192u32.to_le_bytes().to_vec()),
+            ("llama.block_count", 4, 32u32.to_le_bytes().to_vec()),
             ("general.name", 8, gguf_string("Tiny Model")),
             ("general.size_label", 8, gguf_string("135M")),
             ("general.file_type", 4, 15u32.to_le_bytes().to_vec()),
@@ -324,6 +520,8 @@ mod tests {
                 decision: String::new(),
                 tools: false,
                 context_length: 8192,
+                architecture: "llama".into(),
+                block_count: 32,
             }
         );
         let _ = std::fs::remove_file(path);
@@ -369,6 +567,57 @@ mod tests {
         for p in [not, path, path2] {
             let _ = std::fs::remove_file(p);
         }
+    }
+
+    #[test]
+    fn architectures_the_server_loads() {
+        // Read from the models Gates is tested with: Kev is qwen35, Laya
+        // modern-bert, a DSpark draft dflash.
+        for arch in [
+            "llama",
+            "qwen3",
+            "qwen3moe",
+            "qwen35",
+            "gemma4",
+            "gpt-oss",
+            "modern-bert",
+            "dflash",
+            "eagle3",
+        ] {
+            assert!(is_supported(arch), "{arch}");
+        }
+        for arch in ["clip", "(unknown)", "mamba3000", "Llama", "qwen 3", "x/y"] {
+            assert!(!is_supported(arch), "{arch}");
+        }
+        // The header doesn't say: llama.cpp explains the file.
+        assert!(is_supported(""));
+        assert!(Info::default().supported());
+        // Read from a file, and a made-up one is caught.
+        let path = write(
+            "future.gguf",
+            &header(&[("general.architecture", 8, gguf_string("future-arch"))]),
+        );
+        let info = read(&path).unwrap();
+        assert_eq!(info.architecture, "future-arch");
+        assert!(!info.supported());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn the_architecture_list_matches_the_packaged_server() {
+        // Bumping telamon-llama means checking `SUPPORTED_ARCHITECTURES`
+        // against the new tag's src/llama-arch.cpp.
+        let spec = include_str!("../../../packaging/telamon-llama/telamon-llama.spec");
+        let version = spec
+            .lines()
+            .find_map(|l| l.strip_prefix("Version:"))
+            .expect("a Version line")
+            .trim();
+        assert_eq!(format!("v{version}"), LLAMA_CPP_TAG);
+        let mut sorted = SUPPORTED_ARCHITECTURES.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), SUPPORTED_ARCHITECTURES.len(), "duplicates");
     }
 
     #[test]

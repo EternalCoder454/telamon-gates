@@ -57,6 +57,11 @@ beside it.
   session: the check runs again at the next start); an info banner with Open
   Folder while the models folder is empty; an error banner with Try Again when
   a reply fails. The first two come from the first-run check (see Startup).
+  A warning banner with a close button (not part of that check) says when the
+  model server had to load the model with less than was set because the
+  graphics card's memory was short ("… so it loaded with a context of 16384
+  tokens instead of 32768."); it goes when the next reply starts. All banner
+  text is plain text.
   A warning banner with Open Folder and a dismiss cross, above those, when
   reading the conversations put something right (see Data). It is short, with
   no path (Open Folder opens the `damaged` folder, else the conversations):
@@ -74,7 +79,13 @@ beside it.
   its trained context ("32K context", from the header) in the subtitle and,
   beside the fit badge, an Images badge (a matching `mmproj` file is in the
   folder) and a Tools badge (its chat template takes tools). A decision model
-  shows none of these. Vision projectors
+  shows none of these. A model whose architecture the model server
+  doesn't know (the GGUF's `general.architecture` against the packaged
+  llama.cpp's list, see `docs/BACKEND.md` → Server failures) shows an error
+  badge, Unsupported, instead of those, and "Architecture “x” isn't
+  supported" in its subtitle (only while the server is telamon-llama's: one
+  from the path may load more, so nothing is marked then); choosing it in the chat gives an error that
+  says so, and the server is not started. Vision projectors
   (`mmproj-…`) and the later parts of a split model are not listed. *Get
   Models* searches Hugging Face for GGUF repositories (`hub.rs`), opens one to
   its single-file models, and downloads one at a time with a progress bar and
@@ -175,7 +186,9 @@ beside it.
     way). The goal card holds a text box and the folder the agents work in,
     with Choose Folder… (the portal's dialog; the folder is checked like an
     agent's workspace). While a run is under way the goal is only read,
-    two or three lines.
+    two or three lines. Above it, banners: an error one, and a warning one
+    (`notice`, plain text, closable) when the model server loaded the model
+    with less than was set because memory was short.
   - **Question:** when an agent wants to change something, a card with the
     agent's name, the text or command as plain text, and Deny, Allow All
     Edits by This Agent (for edits), and Allow (Run for a command). The
@@ -244,10 +257,11 @@ beside it.
   - `Chat` (a `QAbstractListModel` of the open conversation's messages, roles
     `role`, `text`, `kinds`, `contents`, `langs`, `streaming`, `failed`):
     `newChat`, `open`, `send`, `stop`, `regenerate`, `pickModel`, `pickCodeModel`,
-    `saveSystemPrompt`, `refreshModels`, `dismissError`, `enableWebSearch`,
+    `saveSystemPrompt`, `refreshModels`, `dismissError`, `dismissNotice`, `enableWebSearch`,
     `pickWebProvider`, `saveWebUrl`, `saveWebKey`, `removeWebKey`,
     `testWebSearch`; properties
-    `conversationId`, `title`, `generating`, `loading`, `error`, `demo`, `status`
+    `conversationId`, `title`, `generating`, `loading`, `error`, `notice`
+    (plain text from the backend that isn't an error; `dismissNotice`), `demo`, `status`
     (what the reply is doing), `webSearch`, `webProvider`, `webUrl`,
     `webKeySaved`, `keyringAvailable`, `keyringNote`, `webReady`, `webNote`,
     `webTesting`, `webTestResult`, `webTestOk`, `serverMissing`, `noGpu`,
@@ -419,6 +433,15 @@ serde; one that doesn't parse is set aside in `damaged/` and logged.
   empty replies are not sent back to the model.
 - A reply ends with no text and no error: shown as "The model sent an empty
   reply.", with Try Again.
+- The model server runs out of graphics memory loading: it is started again
+  with half the context (not below 4096), then half the layers on the card,
+  and the chat says what changed; if that fails, the error says so and what
+  was tried.
+- The model server keeps stopping (3 times in 5 minutes for one model): it
+  isn't started again; the error names the model and the last line of its
+  log. A changed setting, or another model, tries again.
+- A server address set in Settings that answers 400 to the brief-reasoning
+  fields is asked again without them.
 - A conversation file can't be read: it is set aside in `damaged/` (or
   replaced by its `.bak`), logged, and the warning banner says so; opening one
   that vanished shows an error and a new chat.

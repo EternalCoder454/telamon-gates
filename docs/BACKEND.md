@@ -23,8 +23,10 @@ pub trait Backend: Send + Sync {
 }
 
 pub enum Event<'a> {
-    Text(&'a str),  // the next piece of the reply: one per token
-    Speed(f64),     // the server's tokens per second, if it measures it
+    Text(&'a str),    // the next piece of the reply: one per token
+    Speed(f64),       // the server's tokens per second, if it measures it
+    ToolCalls(&'a [ToolCall]), // Agent mode: the tools the reply asks for
+    Notice(&'a str),  // a sentence for the user that isn't the reply
 }
 ```
 
@@ -38,6 +40,10 @@ pub enum Event<'a> {
 - `complete` returns when the reply is done, on an error, or soon after
   `cancel` turns true (then `Ok`: what was emitted stays as the reply).
   Check `cancel` between chunks.
+- `Notice` is for what the user should know that isn't the reply and isn't
+  a failure (the model loaded with a smaller context). It is one plain
+  sentence, sent before the reply's text; the chat shows it in a banner.
+  A backend with nothing like that never sends it.
 - `models()` returns the choices for the model pickers (the chat header shows
   one when there are two or more, Settings whenever there is one). Return an
   empty list when the server has one model and nothing to pick.
@@ -93,6 +99,7 @@ the demo otherwise.
     off.
   - Its output goes to `$XDG_STATE_HOME/telamon-gates/llama-server.log`; a
     failed start quotes the log's last line.
+  - When it fails, see **Server failures** below.
 - **A reply** is `POST /v1/chat/completions` with `"stream": true` (the
   system prompt first). `backend/sse.rs` reads the server-sent events:
   - `choices[0].delta.content` becomes `Event::Text`;
@@ -106,6 +113,73 @@ the demo otherwise.
   address on the LAN (Settings checks the address is `http://`). It ignores
   `HTTP_PROXY` and the like, which would send the server's key to the proxy.
   Only `hub.rs` uses TLS (rustls, https only) to reach Hugging Face.
+
+### Server failures
+
+What Gates does when the model server it runs (`server.rs`) fails. None of
+it applies to a server address set in Settings, except the last item.
+
+- **Out of memory on load.** When the server ends while the model loads
+  and the end of its log (64 KiB) says memory ran out (`out_of_memory`:
+  "failed to allocate", "out of memory", "ErrorOutOfDeviceMemory",
+  "Device memory allocation … failed", "bad_alloc"), Gates starts it again
+  with something lighter (`lighter`), at most twice. Only lines that look
+  like a failing allocation count: they start with what produced them
+  (`ggml_…`, `alloc_…`, `llama_…`, `load_tensors`, `terminate called`,
+  `vk::`, `error`). The metadata and chat template the server dumps while
+  it loads (`llama_model_loader: - kv …`, `print_info: …`, `srv …`) can say
+  anything and are skipped, and so are pinned-memory warnings, which don't
+  stop a load. A log that is about the computer's own memory
+  (`cannot allocate memory`, `bad_alloc`, a CPU buffer) is told from the
+  card's (`Memory::Host`, `Memory::Graphics`):
+  1. the context halved, but not below 4096 tokens (skipped when it is
+     there already);
+  2. for the card's memory only, half the layers on the card (fewer on the
+     card means more in the computer's memory, so a host failure only gets
+     step 1): `--n-gpu-layers` is half of what was set
+     (or of the model's layers, when the setting is above them: 99 means
+     all) or, when it was left to llama.cpp, half the model's layers
+     (`<arch>.block_count`, `gguf::Info::block_count`, `Launch::layers`).
+
+  Any other reason for a failed start (a bad file, a timeout, Stop) is not
+  retried. If the retry loads, the first reply gets one notice, as
+  `Event::Notice` ("There wasn't enough graphics memory to load “X” as set,
+  so it loaded with a context of 16384 tokens instead of 32768."; "memory"
+  alone for the computer's), shown
+  in a warning banner above the messages (`Chat.notice`, plain text, gone
+  when the next reply starts; the Fleet page has the same banner,
+  `FleetHost::notice`, fed by the coordinator's reply and the agents').
+  A server asked for the same options later is
+  not restarted for being lighter. If the last try fails too, the error says
+  there isn't enough memory, what was tried, and the log's last line. Each
+  start tries what was asked first; nothing is remembered between starts.
+  Only a load is retried: a server that runs out of memory while it answers
+  just fails that reply.
+- **Crash loops.** A server found dead since the last reply, or a start
+  that ends on its own, is a death of that model's server. After 3 within 5
+  minutes (`Deaths`, `CRASH_LIMIT`, `CRASH_WINDOW`) Gates stops starting it:
+  the error names the model and quotes the last line its log held. Other
+  models are not held back; a changed setting (`retire`) forgets the deaths,
+  and the oldest drops out of the window after 5 minutes.
+- **Unsupported architectures.** `gguf.rs` reads `general.architecture`, and
+  `SUPPORTED_ARCHITECTURES` is the list of `LLM_ARCH_NAMES` in the packaged
+  llama.cpp's `src/llama-arch.cpp` (v0.6.0, less `clip`; a test checks the
+  tag against `telamon-llama.spec`, so bumping the package means checking
+  the list). With telamon-llama's `llama-server` (`PACKAGED_SERVER`) the
+  Models page marks other files Unsupported and the chat refuses to load
+  one: "“X” can't be loaded: it is a “foo” model, and the model server
+  (llama.cpp v0.6.0) doesn't support that architecture." Another
+  `llama-server` found on `$PATH` may be newer than the list: with it
+  nothing is marked or refused, and the model is let try
+  (`knows_architectures`, `unsupported_architecture`). A file whose header
+  gives no architecture is let through for llama.cpp to explain.
+- **Strict OpenAI-style servers** (a server address set in Settings). The
+  brief-reasoning fields (`reasoning_effort`, `chat_template_kwargs`, added
+  by `request_body` when `Request::brief`) can make such a server answer 400.
+  On a 400 to a request that carried them, Gates asks once more without
+  them. If that works, the server's address is remembered for the session
+  and they are left out from the first request on. Any other 400 is shown
+  as the refusal it is.
 
 ### Tuning, and what was left at llama.cpp's defaults
 
@@ -175,7 +249,8 @@ model is the only one in the folder. Of several precisions, F16 wins, then
 BF16. Images are shown but not yet sent: attachments are not built.
 
 `ModelLibrary` has them as lists beside `names`: `contexts` (tokens, 0 when
-the header doesn't say), `toolCapable` and `vision` (1 or 0).
+the header doesn't say), `toolCapable` and `vision` (1 or 0), and
+`unsupported` (the architecture of a model the server can't load, else "").
 
 ## Modes and SystemOne
 
