@@ -5,6 +5,13 @@ name: Telamon bundle
 # Telamon Store finds it. The framework's reusable workflow is pinned by the
 # commit of a release; move both lines below together. The tag must equal the
 # CMake project version.
+#
+# The Store offers only a signed release: the sign job signs
+# telamon-bundle.json with the repository secrets minisign-key (the secret key
+# file, both lines) and minisign-password, and checks the signature against
+# the public key the Store's catalog pins for Gates. Without the secrets the
+# run fails rather than publish an unsigned release; sign by hand instead with
+# `minisign -Sm telamon-bundle.json` and upload the .minisig.
 on:
   push:
     tags: ['v*']
@@ -17,6 +24,10 @@ jobs:
   bundle:
     permissions:
       contents: write
-    uses: EternalCoder454/atlas-framework/.github/workflows/bundle.yml@3ed2ad20c1038c9d29b8e18149d68c156f1ecdea # v2.0.7
+    uses: EternalCoder454/atlas-framework/.github/workflows/bundle.yml@e4c988e7e1cc81198e1979f3f6ae8eb711d962c8 # v2.0.10
     with:
-      framework-ref: 3ed2ad20c1038c9d29b8e18149d68c156f1ecdea
+      framework-ref: e4c988e7e1cc81198e1979f3f6ae8eb711d962c8
+      minisign-public-key: RWR7yabRcxtBSnPoKofwv/t9g09aKRnZ32dWSi0kt2wbt4SeDp5QAzcf
+    secrets:
+      minisign-key: ${{ secrets.MINISIGN_KEY }}
+      minisign-password: ${{ secrets.MINISIGN_PASSWORD }}
