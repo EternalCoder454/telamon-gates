@@ -17,13 +17,6 @@ TelamonPage {
 
     title: qsTr("Models")
 
-    // Deletes partial downloads older than 30 days, then lists the rest and
-    // reads the free space (on a worker thread).
-    Component.onCompleted: page.models.refreshPartials()
-
-    // The leftovers worth showing: not the file being downloaded now.
-    readonly property var leftovers: page.models.partials.map((name, i) => i).filter(i => page.models.partials[i] !== page.models.downloading)
-
     // A size in bytes, in the sidebar's VRAM units.
     function size(bytes) {
         if (bytes >= 1024 * 1024 * 1024) {
@@ -71,19 +64,6 @@ TelamonPage {
         });
     }
 
-    function confirmDeletePartial(name, bytes) {
-        page.confirm({
-            title: qsTr("Delete Partial Download?"),
-            text: qsTr("The %1 of “%2” downloaded so far will be deleted from this computer.").arg(page.size(bytes)).arg(name),
-            acceptText: qsTr("Delete"),
-            destructive: true
-        }, ok => {
-            if (ok) {
-                page.models.removePartial(name);
-            }
-        });
-    }
-
     TextMetrics {
         id: downloadWidth
         text: qsTr("Download")
@@ -104,24 +84,12 @@ TelamonPage {
     }
 
     InfoBanner {
-        id: errorBanner
         Layout.fillWidth: true
         type: "error"
         text: page.models.error
         shown: page.models.error.length > 0
         closable: true
         onClosed: page.models.dismissError()
-    }
-
-    // A download refused or stopped (no room, say) from a row far down the
-    // page: bring the banner that says why into view.
-    Connections {
-        target: page.models
-        function onErrorChanged() {
-            if (page.models.error.length > 0) {
-                Qt.callLater(() => page.ensureVisible(errorBanner));
-            }
-        }
     }
 
     InfoBanner {
@@ -206,7 +174,7 @@ TelamonPage {
 
         SectionRow {
             title: qsTr("Models Folder")
-            subtitle: page.models.free >= 0 ? qsTr("%1 · %2 free").arg(page.models.folder).arg(page.size(page.models.free)) : page.models.folder
+            subtitle: page.models.folder
             leading: [
                 Symbol {
                     icon: Symbols.FolderOpen
@@ -218,52 +186,6 @@ TelamonPage {
                 text: qsTr("Open Folder")
                 symbol: Symbols.FolderOpen
                 onClicked: Qt.openUrlExternally(page.folderUrl(page.models.folder))
-            }
-        }
-    }
-
-    // What cancelled or failed downloads left. Resume needs the repository,
-    // which the download noted next to its file.
-    Section {
-        visible: page.leftovers.length > 0
-        title: qsTr("Partial Downloads")
-        footer: qsTr("Left by downloads that were cancelled or didn't finish. Resume carries on where one stopped. Partial downloads untouched for 30 days are deleted.")
-
-        Repeater {
-            model: page.leftovers
-
-            SectionRow {
-                id: partial
-                required property int modelData
-                readonly property string name: page.models.partials[modelData] ?? ""
-                readonly property real bytes: page.models.partialSizes[modelData] ?? 0
-                readonly property real total: page.models.partialTotals[modelData] ?? 0
-                readonly property string repo: page.models.partialRepos[modelData] ?? ""
-
-                title: name
-                subtitle: [total > 0 ? qsTr("%1 of %2").arg(page.size(bytes)).arg(page.size(total)) : page.size(bytes), repo.length > 0 ? repo : qsTr("Can't resume: its repository isn't known")].join(" · ")
-                leading: [
-                    Symbol {
-                        icon: Symbols.Download
-                        color: TelamonStyle.accent
-                    }
-                ]
-
-                SecondaryButton {
-                    visible: partial.repo.length > 0
-                    text: qsTr("Resume")
-                    symbol: Symbols.PlayArrow
-                    enabled: page.models.downloading.length === 0
-                    onClicked: page.models.resumePartial(partial.name)
-                }
-                ToolbarButton {
-                    y: parent ? Math.round((parent.height - height) / 2) : 0
-                    symbol: Symbols.Delete
-                    text: qsTr("Delete Partial Download of %1").arg(partial.name)
-                    toolTipText: qsTr("Delete")
-                    focusable: true
-                    onClicked: page.confirmDeletePartial(partial.name, partial.bytes)
-                }
             }
         }
     }

@@ -20,6 +20,7 @@ pub mod store;
 pub mod systemone;
 pub mod tools;
 pub mod vram;
+pub mod web;
 
 pub use backend::{Backend, BackendError, Event, Options, Request};
 pub use conversation::{Conversation, Message, Role, Summary};

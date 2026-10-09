@@ -32,16 +32,6 @@ pub mod qobject {
         #[qproperty(QList_f64, tool_capable, cxx_name = "toolCapable")]
         #[qproperty(QList_f64, vision)]
         #[qproperty(QString, folder)]
-        /// The free space on the models folder's disk in bytes; -1 when not
-        /// known (yet).
-        #[qproperty(f64, free)]
-        /// Partial downloads left in the folder: the file each would become,
-        /// bytes so far, the whole size (0 when not known), and the
-        /// repository it comes from ("" when not known: no Resume).
-        #[qproperty(QStringList, partials)]
-        #[qproperty(QList_f64, partial_sizes, cxx_name = "partialSizes")]
-        #[qproperty(QList_f64, partial_totals, cxx_name = "partialTotals")]
-        #[qproperty(QStringList, partial_repos, cxx_name = "partialRepos")]
         /// Hugging Face repositories found, and their downloads.
         #[qproperty(QStringList, results)]
         #[qproperty(QList_f64, downloads)]
@@ -89,23 +79,6 @@ pub mod qobject {
         #[cxx_name = "downloadFrom"]
         fn download_from(self: Pin<&mut ModelLibrary>, repo: &QString, file: &QString);
 
-        /// Deletes partial downloads older than 30 days, then lists the rest
-        /// and the free space (on a worker). The Models page calls it when it
-        /// opens.
-        #[qinvokable]
-        #[cxx_name = "refreshPartials"]
-        fn refresh_partials(self: Pin<&mut ModelLibrary>);
-
-        /// Deletes the partial download of `name` (one the list shows).
-        #[qinvokable]
-        #[cxx_name = "removePartial"]
-        fn remove_partial(self: Pin<&mut ModelLibrary>, name: &QString);
-
-        /// Carries on with the partial download of `name`, from its repository.
-        #[qinvokable]
-        #[cxx_name = "resumePartial"]
-        fn resume_partial(self: Pin<&mut ModelLibrary>, name: &QString);
-
         #[qinvokable]
         #[cxx_name = "cancelDownload"]
         fn cancel_download(self: Pin<&mut ModelLibrary>);
@@ -139,7 +112,7 @@ use gates_core::hub::{self, ModelFile};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 #[derive(Default)]
 pub struct ModelLibraryRust {
@@ -152,11 +125,6 @@ pub struct ModelLibraryRust {
     tool_capable: QList<f64>,
     vision: QList<f64>,
     folder: QString,
-    free: f64,
-    partials: QStringList,
-    partial_sizes: QList<f64>,
-    partial_totals: QList<f64>,
-    partial_repos: QStringList,
     results: QStringList,
     downloads: QList<f64>,
     searching: bool,
@@ -172,8 +140,6 @@ pub struct ModelLibraryRust {
     pub dir: PathBuf,
     /// The open repository's files, with their checksums.
     open_files: Vec<ModelFile>,
-    /// The partial downloads the properties show, for Resume.
-    partial_list: Vec<hub::Partial>,
     /// Bumped by each search and each repository opened: older answers drop.
     asked: u64,
     cancel: Option<Arc<AtomicBool>>,
@@ -449,9 +415,6 @@ impl qobject::ModelLibrary {
                 lib.as_mut().set_downloading(QString::default());
                 lib.as_mut().set_download_repo(QString::default());
                 lib.as_mut().set_progress(0.0);
-                // A cancelled or failed download leaves a part; a finished
-                // one frees it, and the disk has less room either way.
-                lib.as_mut().refresh_partials();
                 match result {
                     Ok(_) => {
                         lib.as_mut().refresh();
@@ -462,70 +425,6 @@ impl qobject::ModelLibrary {
                 }
             });
         });
-    }
-
-    pub fn refresh_partials(self: Pin<&mut Self>) {
-        let dir = self.rust().dir.clone();
-        // A download under way is not stale, whatever its part's age.
-        let keep = self.downloading().to_string();
-        let qt = self.qt_thread();
-        std::thread::spawn(move || {
-            for name in hub::remove_stale(&dir, hub::STALE_AFTER, SystemTime::now(), &keep) {
-                log::info!("deleted the partial download of {name}: untouched for 30 days");
-            }
-            let parts = hub::partials(&dir);
-            let free = hub::free_space(&dir).map_or(-1.0, |bytes| bytes as f64);
-            let _ = qt.queue(move |mut lib| {
-                lib.as_mut()
-                    .set_partials(strings(parts.iter().map(|p| p.name.as_str())));
-                lib.as_mut()
-                    .set_partial_sizes(numbers(parts.iter().map(|p| p.bytes as f64)));
-                lib.as_mut()
-                    .set_partial_totals(numbers(parts.iter().map(|p| p.total as f64)));
-                lib.as_mut().set_partial_repos(strings(
-                    parts.iter().map(|p| p.repo.as_deref().unwrap_or("")),
-                ));
-                lib.as_mut().rust_mut().partial_list = parts;
-                lib.set_free(free);
-            });
-        });
-    }
-
-    pub fn remove_partial(mut self: Pin<&mut Self>, name: &QString) {
-        let name = name.to_string();
-        // Only a leftover the list shows, and not the one being downloaded.
-        if self.downloading().to_string() == name
-            || !self.rust().partial_list.iter().any(|p| p.name == name)
-        {
-            return;
-        }
-        self.as_mut().set_error(QString::default());
-        let dir = self.rust().dir.clone();
-        let qt = self.qt_thread();
-        std::thread::spawn(move || {
-            let result = hub::remove_partial(&dir, &name);
-            let _ = qt.queue(move |mut lib| {
-                if let Err(e) = result {
-                    lib.as_mut().set_error(QString::from(
-                        format!("Couldn't delete the partial download of {name}: {e}.").as_str(),
-                    ));
-                }
-                lib.refresh_partials();
-            });
-        });
-    }
-
-    pub fn resume_partial(self: Pin<&mut Self>, name: &QString) {
-        let name = name.to_string();
-        let repo = self
-            .rust()
-            .partial_list
-            .iter()
-            .find(|p| p.name == name)
-            .and_then(|p| p.repo.clone());
-        if let Some(repo) = repo {
-            self.download_from(&QString::from(repo.as_str()), &QString::from(name.as_str()));
-        }
     }
 
     pub fn cancel_download(self: Pin<&mut Self>) {

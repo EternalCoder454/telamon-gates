@@ -392,6 +392,74 @@ Qwen3-4B-Instruct-2507 Q4_K_M on the RX 7900, about 170 tokens/s:
 | exact `edit_file` | 11 | 4 | 10.0 s | yes |
 | forgiving `edit_file` (3 runs) | 6 | 0 | 5.5 s (median) | 3 of 3 |
 
+## Web search
+
+Settings → Web Search turns on two more tools, `web_search(query, count ≤ 8)`
+and `fetch_page(url)`. Both only read, so they run at once, with no question to
+the user; each call shows as a tool row.
+
+- **Who gets them:** Chat, Code and the user's own modes, when the model's
+  chat template takes tools (`gguf::Info.tools`, the Models page's Tools
+  badge; a server elsewhere and the demo backend can't be asked and count),
+  through `agent::run_tools` with the web tools alone and `WEB_STEPS` (6)
+  model turns, the last one asked for without tools so the answer comes. Agent
+  mode has them beside its own (`MAX_STEPS`). Story never. Decision: a model
+  without the Tools badge simply doesn't search; Settings says so.
+- **Providers** (`web/providers.rs`; request building and parsing are pure,
+  tested from captured sample responses):
+
+  | Service | Request | Key |
+  |---|---|---|
+  | Brave Search | `GET api.search.brave.com/res/v1/web/search?q=…&count=…` | header `X-Subscription-Token` |
+  | Tavily | `POST api.tavily.com/search` (JSON `query`, `max_results`) | header `Authorization: Bearer` |
+  | SearXNG | `GET <instance>/search?q=…&format=json` | none; the instance must list `json` under `search.formats` |
+
+  Titles and snippets are reduced to plain text, links kept only when http(s),
+  duplicates dropped. The key is never in an address, so it can't reach an
+  error message. HTTP (`ureq`, native-tls) ignores proxies.
+- **The key** is kept by `web::keys::KeyStore`: the system keyring through
+  `oo7` (Secret Service; KWallet answers it on Plasma) for the app, `Memory`
+  for tests, `Missing` for "no keyring". Without a keyring Settings says so and
+  nothing is saved. Starting the app only checks that the service answers (no
+  wallet is opened or unlocked); the key is read on the first reply that needs
+  it, which may ask the user to unlock the wallet, and then kept in memory.
+  Keys are kept per provider.
+- **`fetch_page`** (`web/fetch.rs`, `web/html.rs`): https only, no sign-in in
+  the address; redirects followed here, 5 at most, each checked again; a
+  resolver that drops non-public addresses (`public_ip`: loopback, private,
+  link-local, CGNAT, documentation, multicast, reserved, and IPv6 forms that
+  carry an IPv4 address: mapped, NAT64, 6to4); 15 s in all, 1.5 MB read, 20 KB
+  of text kept. HTML becomes text: scripts, styles, menus and footers dropped,
+  `<main>` preferred, headings as `#` lines, links as `[text](url)` with
+  absolute http(s) targets, invisible and direction-changing characters
+  removed. Plain text and JSON are read as they are; other types are refused.
+- **What the model may open** (`web/session.rs`): addresses shown in a search
+  result or a page it read, written in the user's messages or earlier tool
+  results, or on a site the user named. Anything else is refused ("Search for
+  it first"), which stops an injected page from sending the conversation out
+  in an address.
+- **Stop:** each call runs on a thread of its own that the reply waits on, so
+  Stop returns within 40 ms; the thread ends by its time limits.
+- **The prompt** (`web::PROMPT`) tells the model the results are data, not
+  instructions, not to put anything private in a search, and to cite what it
+  used as Markdown links. Results carry the same warning.
+- **Demo:** the demo backend plays a model that uses the tools (a search, the
+  first page, an answer with its sources) over `web::Canned`, made-up results
+  at example.org, .net and .com, so the rows and progress can be seen without a
+  model or a key.
+- **Cost:** the keyring (`oo7`, with `zbus` and a one-thread `tokio`) and
+  `url` took the lockfile from 119 to 225 packages and the minimum Rust to
+  1.92 (oo7's). A lighter way to reach the Secret Service is a Performant-phase
+  question.
+- **Checked live** (2026-10-09, `examples/web-check`): `fetch` of
+  https://example.com and of a Wikipedia article (whose 90-language list is
+  cut to a few lines and a count, so the article fits the 20 KB), and the
+  refusals of `http://`, 169.254.169.254 and loopback. A search against a
+  real provider was not made (no key).
+- **Left:** no live check against a real provider was made (no key). The
+  parsers follow the services' published response shapes; a live check is
+  one Test Connection away.
+
 ## Performance (measured 2026-10-09, RX 7900 XTX, Vulkan)
 
 Qwen3-4B-Instruct-2507 Q4_K_M unless said; temperature 0; scripts in

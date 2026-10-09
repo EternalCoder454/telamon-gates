@@ -68,21 +68,7 @@ beside it.
   its single-file models, and downloads one at a time with a progress bar and
   Cancel. A download goes to a hidden `.name.part`, resumes from it, is
   checked against the sha256 Hugging Face publishes, and only then is renamed
-  into place; the chat's model list follows. A download checks the free space
-  first (`hub::download`): what is still to fetch (the size minus a `.part`
-  that resumes) plus a margin of 5 %, at least 1 GiB, must fit on the models
-  folder's disk (`statvfs`), or it doesn't start: "Not enough space: this
-  model needs 16.5 GiB and the models folder's disk has 9.2 GiB free." A disk
-  that fills up mid-way (ENOSPC, also a quota) gives the same message and
-  keeps the `.part`. Beside each `.part` is a `.name.part.json` with the
-  repository (and size), removed once the file is in place or the part is
-  deleted. The *Models Folder* row's subtitle adds the free space ("120.0 GiB
-  free"). *Partial Downloads* (shown only when there are some) lists each
-  `.part` not being downloaded now, with its size so far ("1.2 GiB of
-  11.3 GiB") and repository, Resume (when the note is there; the same checked
-  download carries on) and Delete, after a confirmation. Opening the page
-  deletes `.part` files untouched for 30 days (and notes with no part), on a
-  worker thread. *Recommended* (hidden when a
+  into place; the chat's model list follows. *Recommended* (hidden when a
   model server URL is set) offers three tested models, one per use, from
   `docs/BACKEND.md` → Recommended models: For Coding, For Chat and Stories,
   and Small and Fast. Each shows a fit badge (never Too Big for a mixture of
@@ -176,6 +162,28 @@ beside it.
   use (a picker when there are several); one-click Get Laya / Get Kev when
   there's none, with the download's progress. On the Models page, a decision
   model shows "Decision model" and a SystemOne badge instead of a fit badge.
+- **Web Search** (in Settings, off by default): lets a model search the web
+  and read pages (`docs/BACKEND.md` → Web search). Rows, when it is on:
+  - **Search Service:** Brave Search, Tavily (each needs an API key) or SearXNG
+    (the address of the user's own instance, no key).
+  - **API Key:** a password field with Save and Remove. The key is kept in the
+    system keyring (Secret Service: KWallet on Plasma) and nowhere else, never
+    in the settings file. Without a keyring (the dev container, CI) the row
+    says "No system keyring is running…", and nothing is saved.
+  - **Instance Address** (SearXNG only), checked as an http or https address
+    with no sign-in in it.
+  - **Test Connection:** one search with these settings; the row says
+    "Connected: Brave Search answered with 1 result." or what failed.
+  - The switch row's subtitle says what is missing (a key, an address, a
+    keyring) or that the model in use can't call tools (no Tools badge).
+- **Web search in replies**: with Web Search on and a model that can call
+  tools, Chat, Code and the user's own modes may use `web_search` and
+  `fetch_page` (Agent mode has them beside its own tools; Story never). Each
+  call is a tool row under the reply, as in Agent mode ("Searched for "rust
+  async" (5 results)", "Read docs.rs/tokio (12 KB)"), opening to what the
+  model was given. While a call runs, a progress line over the message field
+  says what it is doing ("Searching: …", "Reading: …"), as plain text. The
+  model cites its sources as Markdown links, which go through `markdown.rs`.
 - **Settings**: the backend, the model, the Model for Code (shown when
   there are two or more models: Code and Agent replies, and the warm-up while
   typing in those modes, use it; "Same as Model", or a model that is gone,
@@ -192,8 +200,13 @@ beside it.
   - `Chat` (a `QAbstractListModel` of the open conversation's messages, roles
     `role`, `text`, `kinds`, `contents`, `langs`, `streaming`, `failed`):
     `newChat`, `open`, `send`, `stop`, `regenerate`, `pickModel`, `pickCodeModel`,
-    `saveSystemPrompt`, `refreshModels`, `dismissError`; properties
-    `conversationId`, `title`, `generating`, `loading`, `error`, `demo`, `serverMissing`, `noGpu`,
+    `saveSystemPrompt`, `refreshModels`, `dismissError`, `enableWebSearch`,
+    `pickWebProvider`, `saveWebUrl`, `saveWebKey`, `removeWebKey`,
+    `testWebSearch`; properties
+    `conversationId`, `title`, `generating`, `loading`, `error`, `demo`, `status`
+    (what the reply is doing), `webSearch`, `webProvider`, `webUrl`,
+    `webKeySaved`, `keyringAvailable`, `keyringNote`, `webReady`, `webNote`,
+    `webTesting`, `webTestResult`, `webTestOk`, `serverMissing`, `noGpu`,
     `backendName`, `models`, `model`, `codeModel`, `systemPrompt`, `count`, `retryable`
     (the last reply failed or never came: Try Again and Regenerate ask for
     one; a good reply is never discarded from the banner).
@@ -241,6 +254,24 @@ beside it.
   server's own output is `llama-server.log` beside it. Not every `log`
   record reaches the file: the framework installs its journal logger first.
 
+## Web search
+
+Everything the web gives back is untrusted, as the model's replies are:
+
+- It goes to the model as data (every result says so, and the system prompt
+  of a reply that has the tools says so), and to the window only as plain text
+  (tool rows, the progress line) or through `markdown.rs` (the reply).
+- `fetch_page` opens https addresses only, and only public addresses: the
+  resolver drops loopback, private, link-local and the other special ranges,
+  and the connection goes to an address it kept, so a page can't make Gates
+  probe this computer, the local network or a metadata service, not even
+  through a redirect (each hop is checked) or a name that changes its answer.
+- The model may only open addresses it was shown (search results, pages it
+  read, the user's messages) or on a site the user named, so a page that tells
+  it to fetch `https://evil.example/?q=<the conversation>` gets nothing.
+- The search API key is in the system keyring, read once on a worker and kept
+  in memory, never written to a file, a log, or a conversation.
+
 ## Threading
 
 A fleet runs on one worker (`gates_core::fleet::run`); its events come back
@@ -264,7 +295,11 @@ arguments), `tool_call_id` and `summary`; the conversation's `mode` when it
 isn't Auto, and its `workspace`), written atomically (temporary file,
 then rename). Ids are hex and dashes only, so no id can name a path outside
 the folder. Settings are `~/.config/telamon-gatesrc`, group `[Chat]`
-(`Model`, `CodeModel`, `SystemPrompt`), plus the window's size from `TelamonWindow`.
+(`Model`, `CodeModel`, `SystemPrompt`, and for web search `WebSearch`,
+`WebProvider`, `WebSearxUrl` and `WebKeyBrave`/`WebKeyTavily`, which only say
+that a key is in the keyring), plus the window's size from `TelamonWindow`. The
+API keys themselves are in the system keyring under the application
+`net.eterneon.telamon.gates`.
 
 ## The model server
 
@@ -303,11 +338,6 @@ serde; one that doesn't parse is skipped and logged.
 - A conversation file can't be read: it is left out of the list (logged);
   opening one that vanished shows an error and a new chat.
 - A save fails: logged; the conversation stays in the window.
-- A model download can't fit, or the disk fills up part-way: an error banner
-  on the Models page (brought into view) says how much is needed and free;
-  the `.part` stays for Resume. Hugging Face unreachable, a cut connection and
-  a wrong checksum are errors in the same banner (a wrong checksum deletes
-  the part).
 
 ## Performance budget (Performant phase; not measured against yet)
 
