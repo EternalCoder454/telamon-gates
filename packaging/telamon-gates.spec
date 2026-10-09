@@ -5,7 +5,7 @@
 %global debug_package %{nil}
 
 Name:           telamon-gates
-Version:        1.1.0
+Version:        1.2.0
 Release:        1%{?dist}
 Summary:        Telamon Gates, the AI chat of Telamon OS
 License:        MIT
@@ -87,6 +87,14 @@ appstream-util validate-relax --nonet \
 %{_datadir}/metainfo/net.eterneon.telamon.gates.metainfo.xml
 
 %changelog
+* Fri Oct 09 2026 EternalHell <77252745+EternalCoder454@users.noreply.github.com> - 1.2.0-1
+- Web search (Brave, Tavily or SearXNG) for Chat, Code and Agent, with the key in the keyring
+- Deep Research mode: plans, searches, reads and writes a cited report
+- Model server: retries a load that runs out of memory, stops crash loops, refuses unsupported models
+- Downloads check free space and keep partial downloads to resume
+- Conversations: format version, damaged files set aside, one backup each
+- One window, a first-run check for the model server, and a log file
+
 * Fri Oct 09 2026 EternalHell <77252745+EternalCoder454@users.noreply.github.com> - 1.1.0-1
 - Recommended models for coding, chat and stories, and small cards
 - Model for Code: Code and Agent mode can use their own model
