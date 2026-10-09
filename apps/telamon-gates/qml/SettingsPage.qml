@@ -8,6 +8,7 @@ TelamonPage {
 
     required property var chat
     required property var library
+    required property var models
 
     title: qsTr("Settings")
 
@@ -150,6 +151,67 @@ TelamonPage {
                     }
                 }
                 Accessible.name: qsTr("Server Address")
+            }
+        }
+    }
+
+    Section {
+        title: qsTr("SystemOne")
+        footer: qsTr("In Auto, a small decision model reads each message and picks Chat, Story or Code before the chat model answers. When it isn't sure, Chat answers.")
+
+        SectionRow {
+            title: qsTr("SystemOne")
+            subtitle: page.chat.systemOneReady ? qsTr("Picking with %1").arg(page.chat.decisionModel) : page.chat.systemOne ? qsTr("On, once a decision model is here") : qsTr("Off: Auto answers in Chat")
+            leading: [
+                Symbol {
+                    icon: Symbols.Bolt
+                    color: TelamonStyle.accent
+                }
+            ]
+            showSwitch: true
+            switchChecked: page.chat.systemOne
+            onSwitchToggled: checked => page.chat.enableSystemOne(checked)
+        }
+        SectionRow {
+            visible: page.chat.systemOne && page.chat.decisionModels.length > 1
+            title: qsTr("Decision Model")
+            subtitle: qsTr("Laya runs on the processor; Kev on the graphics card, faster and more accurate")
+            leading: [
+                Symbol {
+                    icon: Symbols.Psychology
+                    color: TelamonStyle.accent
+                }
+            ]
+
+            TelamonComboBox {
+                model: page.chat.decisionModels
+                currentIndex: page.chat.decisionModels.indexOf(page.chat.decisionModel)
+                onActivated: index => page.chat.pickDecisionModel(page.chat.decisionModels[index])
+                Accessible.name: qsTr("Decision Model")
+            }
+        }
+        // None yet: one click gets one, from its maker's official build.
+        SectionRow {
+            visible: page.chat.systemOne && page.chat.decisionModels.length === 0
+            title: page.models.downloadRepo.length > 0 ? qsTr("Downloading %1…").arg(page.models.downloading) : qsTr("Get a Decision Model")
+            subtitle: page.models.downloadRepo.length > 0 ? qsTr("%1% done. The Models page shows it too.").arg(Math.floor(page.models.progress * 100)) : qsTr("Laya: 429 MiB, on the processor. Kev: 2.8 GiB, on the graphics card.")
+            busy: page.models.downloadRepo.length > 0
+            leading: [
+                Symbol {
+                    icon: Symbols.Download
+                    color: TelamonStyle.accent
+                }
+            ]
+
+            SecondaryButton {
+                visible: page.models.downloadRepo.length === 0
+                text: qsTr("Get Laya")
+                onClicked: page.models.downloadFrom("ggml-org/Laya-GGUF", "Laya-Q8_0.gguf")
+            }
+            SecondaryButton {
+                visible: page.models.downloadRepo.length === 0
+                text: qsTr("Get Kev")
+                onClicked: page.models.downloadFrom("ggml-org/Kev-4B-GGUF", "Kev-4B-Q4_K_M.gguf")
             }
         }
     }

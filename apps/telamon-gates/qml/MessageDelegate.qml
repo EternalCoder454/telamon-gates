@@ -22,6 +22,10 @@ Item {
     required property bool failed
     // Tokens per second, 0 when not known.
     required property real speed
+    // The mode that wrote a reply ("story"), "" when none; picked: by
+    // SystemOne.
+    required property string mode
+    required property bool picked
 
     required property var chat
     required property real columnWidth
@@ -45,6 +49,27 @@ Item {
     implicitHeight: column.implicitHeight
 
     // "38.2 tokens/s", small and muted.
+    // The mode that wrote the reply, with its symbol: shown when SystemOne
+    // picked it, or when it is not Chat.
+    component ModeLabel: RowLayout {
+        visible: message.mode.length > 0 && (message.picked || message.mode !== "chat")
+        spacing: Kirigami.Units.smallSpacing
+        Accessible.role: Accessible.StaticText
+        Accessible.name: modeText.text
+
+        Symbol {
+            icon: message.mode === "story" ? Symbols.AutoStories : message.mode === "code" ? Symbols.Code : Symbols.Chat
+            size: Math.round(Kirigami.Units.iconSizes.small * 1.2)
+            color: message.picked ? TelamonStyle.accent : Kirigami.Theme.disabledTextColor
+        }
+        TelamonLabel {
+            id: modeText
+            textStyle: TelamonLabel.Caption
+            readonly property string name: message.mode === "story" ? qsTr("Story") : message.mode === "code" ? qsTr("Code") : qsTr("Chat")
+            text: message.picked ? qsTr("%1, picked by SystemOne").arg(name) : name
+        }
+    }
+
     component SpeedLabel: RowLayout {
         spacing: Kirigami.Units.smallSpacing
         Accessible.role: Accessible.StaticText
@@ -180,9 +205,15 @@ Item {
                     }
                 }
 
-                // How fast it comes, while it comes.
-                SpeedLabel {
-                    visible: message.streaming && message.speed > 0
+                // How fast it comes, and in which mode, while it comes.
+                RowLayout {
+                    visible: message.streaming && message.kinds.length > 0
+                    spacing: Kirigami.Units.largeSpacing
+
+                    SpeedLabel {
+                        visible: message.speed > 0
+                    }
+                    ModeLabel {}
                 }
 
                 RowLayout {
@@ -197,6 +228,9 @@ Item {
                     QQC2.Label {
                         opacity: 0.7
                         text: qsTr("Thinking…")
+                    }
+                    ModeLabel {
+                        Layout.leftMargin: Kirigami.Units.smallSpacing
                     }
                 }
 
@@ -250,6 +284,9 @@ Item {
                     SpeedLabel {
                         Layout.leftMargin: Kirigami.Units.smallSpacing
                         visible: message.speed > 0
+                    }
+                    ModeLabel {
+                        Layout.leftMargin: Kirigami.Units.smallSpacing
                     }
                 }
             }

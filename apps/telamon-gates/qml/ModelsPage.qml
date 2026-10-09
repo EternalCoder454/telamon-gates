@@ -101,9 +101,11 @@ TelamonPage {
                 required property int index
                 required property string modelData
                 readonly property real bytes: page.models.sizes[index] ?? 0
+                // A decision model's kind ("laya"): it answers SystemOne, not chats.
+                readonly property string kind: page.models.kinds[index] ?? ""
 
                 title: modelData
-                subtitle: [page.models.quants[index], page.models.labels[index], page.size(bytes)].filter(s => s && s.length > 0).join(" · ")
+                subtitle: [row.kind.length > 0 ? qsTr("Decision model") : "", page.models.quants[index], page.models.labels[index], page.size(bytes)].filter(s => s && s.length > 0).join(" · ")
                 leading: [
                     Symbol {
                         icon: Symbols.Psychology
@@ -112,7 +114,14 @@ TelamonPage {
                 ]
 
                 FitBadge {
-                    fit: page.fit(row.bytes)
+                    fit: row.kind.length > 0 ? "" : page.fit(row.bytes)
+                }
+                TelamonBadge {
+                    y: parent ? Math.round((parent.height - height) / 2) : 0
+                    visible: row.kind.length > 0
+                    type: "accent"
+                    symbol: Symbols.Bolt
+                    text: qsTr("SystemOne")
                 }
                 ToolbarButton {
                     y: parent ? Math.round((parent.height - height) / 2) : 0

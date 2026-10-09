@@ -31,6 +31,12 @@ pub struct Message {
     /// How fast the reply came, in tokens per second.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed: Option<f64>,
+    /// The mode that wrote the reply (`modes.rs`), when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// SystemOne picked that mode (the conversation was in Auto).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub picked: bool,
 }
 
 impl Message {
@@ -40,6 +46,8 @@ impl Message {
             text: text.into(),
             failed: false,
             speed: None,
+            mode: None,
+            picked: false,
         }
     }
 
@@ -49,6 +57,8 @@ impl Message {
             text: text.into(),
             failed: false,
             speed: None,
+            mode: None,
+            picked: false,
         }
     }
 }
@@ -61,6 +71,17 @@ pub struct Conversation {
     pub created: i64,
     pub updated: i64,
     pub messages: Vec<Message>,
+    /// "auto" (SystemOne picks per message) or a mode the user pinned.
+    #[serde(default = "auto", skip_serializing_if = "is_auto")]
+    pub mode: String,
+}
+
+fn auto() -> String {
+    crate::modes::AUTO.to_string()
+}
+
+fn is_auto(mode: &String) -> bool {
+    mode == crate::modes::AUTO
 }
 
 /// What the conversation list shows of one conversation.
@@ -84,6 +105,7 @@ impl Conversation {
             created: now,
             updated: now,
             messages: Vec::new(),
+            mode: auto(),
         }
     }
 
@@ -173,7 +195,25 @@ mod tests {
         });
         let json = serde_json::to_string(&c).unwrap();
         assert!(json.contains(r#""role":"assistant""#));
+        // Auto and unset modes stay out of the file.
+        assert!(!json.contains("mode") && !json.contains("picked"));
         let back: Conversation = serde_json::from_str(&json).unwrap();
         assert_eq!(back, c);
+        c.mode = "story".into();
+        c.messages.push(Message {
+            mode: Some("story".into()),
+            picked: true,
+            ..Message::assistant("Once upon a time")
+        });
+        let back: Conversation = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn files_from_before_modes_open_in_auto() {
+        let old = r#"{"id":"1-0","title":"t","created":1,"updated":1,"messages":[{"role":"user","text":"hi"}]}"#;
+        let c: Conversation = serde_json::from_str(old).unwrap();
+        assert_eq!(c.mode, "auto");
+        assert_eq!(c.messages[0].mode, None);
     }
 }

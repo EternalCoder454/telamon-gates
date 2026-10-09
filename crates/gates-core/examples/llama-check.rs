@@ -46,6 +46,7 @@ fn main() {
         model: models.first().cloned().unwrap_or_default(),
         system_prompt: "Be brief.".into(),
         messages,
+        sampling: None,
     };
     let started = std::time::Instant::now();
     let result = llama.complete(&request, &AtomicBool::new(false), &mut |e| match e {

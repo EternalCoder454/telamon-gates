@@ -114,6 +114,7 @@ mod tests {
             model: "Demo".into(),
             system_prompt: String::new(),
             messages: vec![Message::user("What is Rust?")],
+            sampling: None,
         }
     }
 

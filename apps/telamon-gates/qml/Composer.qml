@@ -184,36 +184,64 @@ ColumnLayout {
         }
     }
 
-    // Asks for no width of its own, so a narrow window keeps the field (and
-    // its Send button) inside; the reminder goes first when there's no room.
-    Item {
+    RowLayout {
         Layout.fillWidth: true
-        implicitHeight: hints.implicitHeight
-        clip: true
+        spacing: TelamonStyle.spacing
 
-        RowLayout {
-            id: hints
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: TelamonStyle.spacing
+        // How the reply is written: Auto (SystemOne picks per message; without
+        // it, as the last reply) or a mode pinned for the conversation.
+        TelamonSegmentedControl {
+            id: modes
 
-            KeyHint {
-                id: sendHint
-                //: The Enter key, as printed on it
-                keys: qsTr("Enter")
-                action: qsTr("Send")
-            }
-            KeyHint {
-                id: lineHint
-                //: The keys Shift and Enter together
-                keys: qsTr("Shift+Enter")
-                action: qsTr("New Line")
-            }
-            TelamonLabel {
-                id: reminder
-                Layout.leftMargin: TelamonStyle.spacingSmall
-                visible: hints.parent.width >= sendHint.implicitWidth + lineHint.implicitWidth + reminder.implicitWidth + hints.spacing * 2 + TelamonStyle.spacingSmall
-                textStyle: TelamonLabel.Caption
-                text: qsTr("Always double-check the answer.")
+            // [id, label, tooltip]
+            readonly property var choices: [
+                ["auto", qsTr("Auto"), composer.chat.systemOneReady ? qsTr("SystemOne picks Chat, Story or Code for each message") : qsTr("Chat, until SystemOne has a decision model (Settings)")],
+                ["chat", qsTr("Chat"), qsTr("Questions, advice and everyday talk")],
+                ["story", qsTr("Story"), qsTr("Creative writing: warmer, and keeps to your story")],
+                ["code", qsTr("Code"), qsTr("Programming: careful and precise")]
+            ]
+
+            model: modes.choices.map(c => ({
+                        text: c[1],
+                        toolTip: c[2]
+                    }))
+            currentIndex: Math.max(0, modes.choices.findIndex(c => c[0] === composer.chat.mode))
+            onActivated: index => composer.chat.chooseMode(modes.choices[index][0])
+            Accessible.name: qsTr("Mode")
+        }
+
+        // Asks for no width of its own, so a narrow window keeps the field (and
+        // its Send button) inside; the reminder goes first when there's no room.
+        Item {
+            Layout.fillWidth: true
+            implicitHeight: hints.implicitHeight
+            clip: true
+
+            RowLayout {
+                id: hints
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: TelamonStyle.spacing
+
+                KeyHint {
+                    id: sendHint
+                    //: The Enter key, as printed on it
+                    keys: qsTr("Enter")
+                    action: qsTr("Send")
+                }
+                KeyHint {
+                    id: lineHint
+                    //: The keys Shift and Enter together
+                    keys: qsTr("Shift+Enter")
+                    action: qsTr("New Line")
+                }
+                TelamonLabel {
+                    id: reminder
+                    Layout.leftMargin: TelamonStyle.spacingSmall
+                    visible: hints.parent.width >= sendHint.implicitWidth + lineHint.implicitWidth + reminder.implicitWidth + hints.spacing * 2 + TelamonStyle.spacingSmall
+                    textStyle: TelamonLabel.Caption
+                    text: qsTr("Always double-check the answer.")
+                }
             }
         }
     }

@@ -108,11 +108,16 @@ run_theme() {
         mkdir -p "$XDG_DATA_HOME/telamon-gates/models"
         cp "$SCREENS_MODEL" "$XDG_DATA_HOME/telamon-gates/models/"
     fi
+    # SCREENS_DECISION=<file.gguf>: a decision model, so SystemOne picks.
+    if [ -n "${SCREENS_DECISION:-}" ]; then
+        mkdir -p "$XDG_DATA_HOME/telamon-gates/models"
+        cp "$SCREENS_DECISION" "$XDG_DATA_HOME/telamon-gates/models/"
+    fi
     "$bin" >"$out/app.log" 2>&1 &
     app=$!
     sleep 4
     shot 02-new-chat
-    xdotool type --delay 10 "Write a haiku about"
+    xdotool type --delay 10 "Write a short story about"
     xdotool key shift+Return
     xdotool type --delay 10 "autumn in Lisbon"
     # The pointer on Send.

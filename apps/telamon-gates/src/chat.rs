@@ -55,6 +55,16 @@ pub mod qobject {
         #[qproperty(QString, models_folder, cxx_name = "modelsFolder")]
         /// The context the model ran with last, in tokens; 0 until known.
         #[qproperty(i32, active_context, cxx_name = "activeContext")]
+        /// The open conversation's mode choice: "auto" or a mode's id.
+        #[qproperty(QString, mode)]
+        /// SystemOne is on (Settings).
+        #[qproperty(bool, system_one, cxx_name = "systemOne")]
+        /// SystemOne can pick: it is on, a decision model is there and
+        /// llama-server is installed.
+        #[qproperty(bool, system_one_ready, cxx_name = "systemOneReady")]
+        /// The decision models in the models folder, and the one in use.
+        #[qproperty(QStringList, decision_models, cxx_name = "decisionModels")]
+        #[qproperty(QString, decision_model, cxx_name = "decisionModel")]
         #[namespace = "telamon_gates"]
         type Chat = super::ChatRust;
     }
@@ -110,6 +120,20 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "dismissError"]
         fn dismiss_error(self: Pin<&mut Chat>);
+
+        /// Pins the open conversation to a mode, or "auto" for SystemOne's
+        /// pick per message.
+        #[qinvokable]
+        #[cxx_name = "chooseMode"]
+        fn choose_mode(self: Pin<&mut Chat>, mode: &QString);
+
+        #[qinvokable]
+        #[cxx_name = "enableSystemOne"]
+        fn enable_system_one(self: Pin<&mut Chat>, on: bool);
+
+        #[qinvokable]
+        #[cxx_name = "pickDecisionModel"]
+        fn pick_decision_model(self: Pin<&mut Chat>, name: &QString);
 
         #[inherit]
         #[cxx_name = "beginInsertRows"]
@@ -170,8 +194,12 @@ use cxx_qt::{CxxQtThread, CxxQtType, Threading};
 use cxx_qt_lib::{
     QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex, QString, QStringList, QVariant,
 };
+use gates_core::backend::llama::{LocalModel, find_server, local_models};
 use gates_core::markdown::{self, Block};
+use gates_core::modes::{self, Mode};
+use gates_core::systemone::{self, SystemOne};
 use gates_core::{Backend, Conversation, Event, Message, Request, Role};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -181,7 +209,7 @@ use std::time::{Duration, Instant};
 const BATCH: Duration = Duration::from_millis(33);
 
 const FIRST_ROLE: i32 = 0x0100; // Qt::UserRole
-const ROLES: [&str; 8] = [
+const ROLES: [&str; 10] = [
     "role",      // "user" or "assistant"
     "text",      // the message as written (Markdown for a reply)
     "kinds",     // each block's kind: "prose" or "code"
@@ -190,6 +218,8 @@ const ROLES: [&str; 8] = [
     "streaming", // the reply is still coming in
     "failed",    // the reply stopped on an error
     "speed",     // tokens per second of a reply, 0 when not known
+    "mode",      // the mode that wrote a reply ("story"), "" when none
+    "picked",    // SystemOne picked that mode
 ];
 
 /// A message as the view shows it, made once per change.
@@ -244,6 +274,11 @@ pub struct ChatRust {
     server_url: QString,
     models_folder: QString,
     active_context: i32,
+    mode: QString,
+    system_one: bool,
+    system_one_ready: bool,
+    decision_models: QStringList,
+    decision_model: QString,
 
     conversation: Option<Conversation>,
     rows: Vec<Row>,
@@ -258,6 +293,15 @@ pub struct ChatRust {
     streaming: bool,
 
     pub backend: Option<Arc<dyn Backend>>,
+    /// The decision model in use, while SystemOne can pick.
+    system_one_model: Option<Arc<SystemOne>>,
+    /// llama-server, which runs the decision model too.
+    server_binary: Option<PathBuf>,
+    /// The decision model chosen in Settings ("" for none yet): read once,
+    /// then kept here as the file is written behind.
+    chosen_decision: String,
+    /// Bumped by each look for decision models: an older one drops.
+    looking: u64,
     pub io: Option<Io>,
     // Boxed: a thread handle is not Unpin, and the struct must be.
     pub library: Option<Box<CxxQtThread<library::qobject::Library>>>,
@@ -293,6 +337,44 @@ impl Rate {
     }
 }
 
+/// The mode for a reply: the one `pinned`, else what SystemOne (`picker`)
+/// is sure `asked` wants, else the `previous` reply's (Chat to begin with).
+/// True when SystemOne picked it.
+fn pick_mode(
+    pinned: Option<Mode>,
+    picker: Option<&SystemOne>,
+    asked: &str,
+    previous: Mode,
+) -> (Mode, bool) {
+    if let Some(mode) = pinned {
+        return (mode, false);
+    }
+    let Some(picker) = picker else {
+        return (previous, false);
+    };
+    let started = Instant::now();
+    match picker.pick_mode(asked) {
+        Ok(c) => {
+            log::info!(
+                "SystemOne: {} ({:.2}) in {} ms",
+                c.choice,
+                c.confidence,
+                started.elapsed().as_millis()
+            );
+            if c.confidence >= systemone::MIN_CONFIDENCE && modes::valid_choice(&c.choice) {
+                (modes::mode(&c.choice), true)
+            } else {
+                (previous, false)
+            }
+        }
+        // Never in the way: the reply comes as the last one did.
+        Err(e) => {
+            log::warn!("SystemOne: {e}");
+            (previous, false)
+        }
+    }
+}
+
 fn int(n: usize) -> i32 {
     i32::try_from(n).unwrap_or(i32::MAX)
 }
@@ -320,6 +402,14 @@ impl qobject::Chat {
             .set_context_size(i32::try_from(options.context).unwrap_or(0));
         self.as_mut()
             .set_server_url(QString::from(options.server_url.as_str()));
+        self.as_mut().set_mode(QString::from(modes::AUTO));
+        self.as_mut()
+            .set_system_one(settings::get(settings::SYSTEM_ONE) != "false");
+        {
+            let mut rust = self.as_mut().rust_mut();
+            rust.server_binary = find_server();
+            rust.chosen_decision = settings::get(settings::DECISION_MODEL);
+        }
         let folder = self.rust().backend.as_ref().and_then(|b| b.models_folder());
         if let Some(folder) = folder {
             self.as_mut()
@@ -384,7 +474,9 @@ impl qobject::Chat {
             return false;
         }
         if self.rust().conversation.is_none() {
-            let c = Conversation::new(text);
+            let mut c = Conversation::new(text);
+            // The mode chosen before the first message.
+            c.mode = self.mode().to_string();
             self.as_mut()
                 .set_conversation_id(QString::from(c.id.as_str()));
             self.as_mut().set_title(QString::from(c.title.as_str()));
@@ -490,7 +582,8 @@ impl qobject::Chat {
         self.refresh_models();
     }
 
-    pub fn refresh_models(self: Pin<&mut Self>) {
+    pub fn refresh_models(mut self: Pin<&mut Self>) {
+        self.as_mut().refresh_decision_models();
         let Some(backend) = self.rust().backend.clone() else {
             return;
         };
@@ -525,6 +618,140 @@ impl qobject::Chat {
 
     pub fn dismiss_error(self: Pin<&mut Self>) {
         self.set_error(QString::default());
+    }
+
+    pub fn choose_mode(mut self: Pin<&mut Self>, mode: &QString) {
+        let mode = mode.to_string();
+        if !modes::valid_choice(&mode) || *self.mode() == QString::from(mode.as_str()) {
+            return;
+        }
+        self.as_mut().set_mode(QString::from(mode.as_str()));
+        // A new chat keeps it until its first message makes the file.
+        let saved = match self.as_mut().rust_mut().conversation.as_mut() {
+            Some(c) => {
+                c.mode = mode;
+                true
+            }
+            None => false,
+        };
+        if saved {
+            self.save();
+        }
+    }
+
+    pub fn enable_system_one(mut self: Pin<&mut Self>, on: bool) {
+        if *self.system_one() == on {
+            return;
+        }
+        self.as_mut().set_system_one(on);
+        if let Some(io) = &self.rust().io {
+            settings::set(
+                io,
+                settings::SYSTEM_ONE,
+                if on { String::new() } else { "false".into() },
+            );
+        }
+        self.refresh_decision_models();
+    }
+
+    pub fn pick_decision_model(mut self: Pin<&mut Self>, name: &QString) {
+        if let Some(io) = &self.rust().io {
+            settings::set(io, settings::DECISION_MODEL, name.to_string());
+        }
+        self.as_mut().rust_mut().chosen_decision = name.to_string();
+        self.as_mut().set_decision_model(name.clone());
+        self.refresh_decision_models();
+    }
+
+    /// Looks for decision models in the models folder (on a worker) and
+    /// sets up SystemOne with the chosen one: the saved choice, else Laya,
+    /// which runs on the processor, else the first.
+    fn refresh_decision_models(mut self: Pin<&mut Self>) {
+        let Some(dir) = self.rust().backend.as_ref().and_then(|b| b.models_folder()) else {
+            return;
+        };
+        let looking = {
+            let mut rust = self.as_mut().rust_mut();
+            rust.looking += 1;
+            rust.looking
+        };
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let found: Vec<LocalModel> = local_models(&dir)
+                .into_iter()
+                .filter(|m| !m.info.decision.is_empty())
+                .collect();
+            let _ = qt.queue(move |chat| {
+                if chat.rust().looking == looking {
+                    chat.use_decision_models(found);
+                }
+            });
+        });
+    }
+
+    fn use_decision_models(mut self: Pin<&mut Self>, found: Vec<LocalModel>) {
+        let mut names = QStringList::default();
+        for m in &found {
+            names.append(QString::from(m.name.as_str()));
+        }
+        self.as_mut().set_decision_models(names);
+        let saved = self.rust().chosen_decision.clone();
+        let chosen = found
+            .iter()
+            .find(|m| m.name == saved)
+            .or_else(|| found.iter().find(|m| m.info.decision == "laya"))
+            .or_else(|| found.first());
+        self.as_mut()
+            .set_decision_model(QString::from(chosen.map(|m| m.name.as_str()).unwrap_or("")));
+        let binary = self.rust().server_binary.clone();
+        let wanted = match (chosen, binary, *self.system_one()) {
+            (Some(model), Some(binary), true) => Some((model.clone(), binary)),
+            _ => None,
+        };
+        let current = self
+            .rust()
+            .system_one_model
+            .as_ref()
+            .map(|s| s.name().to_string());
+        let old = match wanted {
+            Some((model, _)) if current.as_deref() == Some(model.name.as_str()) => None,
+            Some((model, binary)) => {
+                let log = gates_core::store::state_dir().join("systemone-server.log");
+                self.as_mut()
+                    .rust_mut()
+                    .system_one_model
+                    .replace(Arc::new(SystemOne::new(&binary, &model, log)))
+            }
+            None => self.as_mut().rust_mut().system_one_model.take(),
+        };
+        // Dropping the last one stops its server, which waits for it to
+        // quit: not on the GUI thread.
+        if let Some(old) = old {
+            std::thread::spawn(move || drop(old));
+        }
+        let ready = self.rust().system_one_model.is_some();
+        self.set_system_one_ready(ready);
+    }
+
+    /// The reply under way is written in `mode`, which SystemOne `picked`.
+    fn set_reply_mode(mut self: Pin<&mut Self>, generation: u64, mode: &str, picked: bool) {
+        if self.rust().generation != generation {
+            return;
+        }
+        {
+            let mut rust = self.as_mut().rust_mut();
+            let Some(message) = rust
+                .conversation
+                .as_mut()
+                .and_then(|c| c.messages.last_mut())
+                .filter(|m| m.role == Role::Assistant)
+            else {
+                return;
+            };
+            message.mode = Some(mode.to_string());
+            message.picked = picked;
+        }
+        self.last_changed();
     }
 
     /// The conversation `id` was deleted: leave it if it is open.
@@ -564,6 +791,8 @@ impl qobject::Chat {
             5 => QVariant::from(&(last && self.rust().streaming)),
             6 => QVariant::from(&message.failed),
             7 => QVariant::from(&message.speed.unwrap_or(0.0)),
+            8 => QVariant::from(&QString::from(message.mode.as_deref().unwrap_or(""))),
+            9 => QVariant::from(&message.picked),
             _ => QVariant::default(),
         }
     }
@@ -598,6 +827,12 @@ impl qobject::Chat {
             .as_ref()
             .map(|c| (c.id.clone(), c.title.clone()))
             .unwrap_or_default();
+        let mode = conversation
+            .as_ref()
+            .map(|c| c.mode.clone())
+            .filter(|m| modes::valid_choice(m))
+            .unwrap_or_else(|| modes::AUTO.to_string());
+        self.as_mut().set_mode(QString::from(mode.as_str()));
         self.as_mut().begin_reset_model();
         let rows: Vec<Row> = conversation
             .as_ref()
@@ -693,10 +928,34 @@ impl qobject::Chat {
         else {
             return;
         };
-        let request = Request {
+        // The mode: the one pinned, or in Auto SystemOne's pick (made on
+        // the worker), else Chat.
+        let choice = self.mode().to_string();
+        let pinned = (choice != modes::AUTO).then(|| modes::mode(&choice));
+        let picker = match pinned {
+            None => self.rust().system_one_model.clone(),
+            Some(_) => None,
+        };
+        let asked = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::User)
+            .map(|m| m.text.clone())
+            .unwrap_or_default();
+        // When SystemOne isn't sure ("continue", "make it darker"), the
+        // conversation stays in the mode its last reply had.
+        let previous = messages
+            .iter()
+            .rev()
+            .find_map(|m| m.mode.as_deref())
+            .map(modes::mode)
+            .unwrap_or(modes::CHAT);
+        let user_prompt = self.system_prompt().to_string();
+        let mut request = Request {
             model: self.model().to_string(),
-            system_prompt: self.system_prompt().to_string(),
+            system_prompt: String::new(),
             messages,
+            sampling: None,
         };
         // Saved with the user's message, before the reply's row (empty
         // until its text comes) is there.
@@ -714,6 +973,14 @@ impl qobject::Chat {
         self.as_mut().set_generating(true);
         let qt = self.qt_thread();
         std::thread::spawn(move || {
+            let (mode, picked) = pick_mode(pinned, picker.as_deref(), &asked, previous);
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let id = mode.id;
+            let _ = qt.queue(move |chat| chat.set_reply_mode(generation, id, picked));
+            request.system_prompt = modes::system_prompt(&mode, &user_prompt);
+            request.sampling = mode.sampling;
             let mut pending = String::new();
             let mut sent = Instant::now();
             let mut rate = Rate::default();

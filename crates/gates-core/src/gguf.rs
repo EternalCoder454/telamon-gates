@@ -18,6 +18,10 @@ pub struct Info {
     /// The quantisation ("Q4_K_M"), from `general.file_type`, else the file
     /// name.
     pub quant: String,
+    /// A decision model's kind (`<arch>.decision.type`: "laya", "kev", …),
+    /// which answers typed questions through `/v1/systemone` and writes no
+    /// text; "" for a model that chats.
+    pub decision: String,
 }
 
 /// The longest string read whole; longer ones are skipped.
@@ -54,7 +58,9 @@ pub fn read(path: &Path) -> io::Result<Info> {
         let wanted = matches!(
             key.as_deref(),
             Some("general.name" | "general.size_label" | "general.file_type")
-        );
+        ) || key
+            .as_deref()
+            .is_some_and(|k| k.ends_with(".decision.type"));
         if !wanted {
             if skip_value(&mut r, kind, 0).is_err() {
                 break;
@@ -70,6 +76,8 @@ pub fn read(path: &Path) -> io::Result<Info> {
                     info.name = value;
                 } else if k == "general.size_label" {
                     info.size_label = value;
+                } else if k.ends_with(".decision.type") {
+                    info.decision = value;
                 }
             }
             _ => {
@@ -287,9 +295,18 @@ mod tests {
             Info {
                 name: "Tiny Model".into(),
                 size_label: "135M".into(),
-                quant: "Q4_K_M".into()
+                quant: "Q4_K_M".into(),
+                decision: String::new(),
             }
         );
+        let _ = std::fs::remove_file(path);
+        // A decision model says so under its architecture's name.
+        let bytes = header(&[
+            ("general.architecture", 8, gguf_string("modern-bert")),
+            ("modern-bert.decision.type", 8, gguf_string("laya")),
+        ]);
+        let path = write("laya.gguf", &bytes);
+        assert_eq!(read(&path).unwrap().decision, "laya");
         let _ = std::fs::remove_file(path);
     }
 

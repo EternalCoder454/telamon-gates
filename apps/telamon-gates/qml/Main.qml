@@ -354,6 +354,7 @@ TelamonWindow {
                 sourceComponent: SettingsPage {
                     chat: root.chat
                     library: root.library
+                    models: root.models
                 }
             }
 

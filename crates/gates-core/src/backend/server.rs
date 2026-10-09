@@ -35,6 +35,10 @@ pub struct Launch {
     pub gpu_layers: Option<u32>,
     /// The context, in tokens; None lets llama.cpp choose.
     pub context: Option<u32>,
+    /// The batch and micro-batch, in tokens; None for llama.cpp's. A
+    /// decision model reads each prompt in one micro-batch, so it must hold
+    /// the longest.
+    pub batch: Option<u32>,
 }
 
 impl Launch {
@@ -64,6 +68,14 @@ impl Launch {
         }
         if let Some(n) = self.context {
             args.extend(["--ctx-size".into(), n.to_string()]);
+        }
+        if let Some(n) = self.batch {
+            args.extend([
+                "--batch-size".into(),
+                n.to_string(),
+                "--ubatch-size".into(),
+                n.to_string(),
+            ]);
         }
         args
     }
@@ -98,6 +110,8 @@ type Spawn = (Command, Sender<io::Result<Child>>);
 
 pub struct Server {
     state: Mutex<State>,
+    /// How long a start may take before it counts as failed.
+    load: Duration,
     /// Where the server's output goes; its last line explains a failed start.
     log: PathBuf,
     /// The thread that starts the server. PR_SET_PDEATHSIG fires when the
@@ -111,6 +125,12 @@ impl Server {
     /// A server that is not started yet, and the thread that stops it when
     /// idle (it ends with the server).
     pub fn new(log: PathBuf) -> Arc<Server> {
+        Server::with_load_limit(log, LOAD)
+    }
+
+    /// As `new`, giving up on a start after `load` (a small model that
+    /// isn't up quickly won't be).
+    pub fn with_load_limit(log: PathBuf, load: Duration) -> Arc<Server> {
         let (spawner, jobs) = mpsc::channel::<Spawn>();
         let _ = std::thread::Builder::new()
             .name("llama-spawn".into())
@@ -122,6 +142,7 @@ impl Server {
             });
         let server = Arc::new(Server {
             state: Mutex::new(State::default()),
+            load,
             log,
             spawner: Mutex::new(spawner),
         });
@@ -262,7 +283,7 @@ impl Server {
             base: format!("http://127.0.0.1:{port}"),
             api_key,
         };
-        match wait_ready(&mut child, &endpoint.base, LOAD) {
+        match wait_ready(&mut child, &endpoint.base, self.load) {
             Ok(()) => Ok(Running {
                 child,
                 launch: launch.clone(),
@@ -382,6 +403,7 @@ mod tests {
             model: PathBuf::from("/m/qwen.gguf"),
             gpu_layers: Some(30),
             context: Some(8192),
+            batch: None,
         }
     }
 
@@ -403,6 +425,14 @@ mod tests {
         // Context shift stays off (llama.cpp's default): with --keep 0 it
         // can drop the system prompt.
         assert!(!args.iter().any(|a| a == "--context-shift"));
+        assert!(!args.iter().any(|a| a == "--ubatch-size"));
+        let decision = Launch {
+            batch: Some(2048),
+            ..launch()
+        }
+        .args(1, "k");
+        let i = decision.iter().position(|a| a == "--ubatch-size").unwrap();
+        assert_eq!(decision[i + 1], "2048");
         // Automatic: neither is passed, so llama.cpp's fit chooses.
         let auto = Launch {
             gpu_layers: None,
