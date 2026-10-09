@@ -51,8 +51,28 @@ pub const CODE: Mode = Mode {
     }),
 };
 
+/// Works in a folder with tools (`agent.rs`, `tools.rs`). Only when the
+/// user pins it: SystemOne never picks it, so no tool runs unasked for.
+pub const AGENT: Mode = Mode {
+    id: "agent",
+    prompt: "You are an agent that gets things done in the user's workspace folder with \
+             tools. Look before you change anything: list, find, search and read the files \
+             that matter. Then make small, exact changes with edit_file (write_file for new \
+             files), and run commands to build or test when that helps. Paths are relative \
+             to the workspace. Edits and commands need the user's approval: if one is \
+             declined, ask what to do instead. When you are done, say briefly what you \
+             changed.",
+    sampling: Some(Sampling {
+        temperature: 0.3,
+        top_p: 0.9,
+    }),
+};
+
 /// Every mode, in the order the window offers them.
-pub const MODES: [Mode; 3] = [CHAT, STORY, CODE];
+pub const MODES: [Mode; 4] = [CHAT, STORY, CODE, AGENT];
+
+/// The modes SystemOne picks from.
+pub const PICKABLE: [Mode; 3] = [CHAT, STORY, CODE];
 
 /// The mode with `id`; Chat for one that isn't (an old or edited file).
 pub fn mode(id: &str) -> Mode {

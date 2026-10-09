@@ -8,7 +8,7 @@
 use super::server::{Endpoint, Launch, Server};
 use super::sse::{self, Line};
 use super::{Backend, BackendError, Event, Options, Request};
-use crate::conversation::Role;
+use crate::conversation::{Role, ToolCall};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -43,6 +43,24 @@ pub(crate) fn agent(connect: Option<Duration>) -> ureq::Agent {
         .proxy(None)
         .build()
         .into()
+}
+
+/// Automatic's context, in tokens: what llama.cpp's own fit would choose
+/// can fill a 24 GiB card with cache for one conversation (129,024 tokens
+/// for a 4B model), leaving no room for anything else. This is plenty for
+/// a long chat or an agent's files; Settings goes higher.
+pub const AUTO_CONTEXT: u32 = 32_768;
+
+/// The context to start a model with: the one set in Settings, else
+/// `AUTO_CONTEXT` or the model's own if smaller (`trained`, 0 if unknown).
+pub fn context_for(setting: u32, trained: u32) -> u32 {
+    if setting > 0 {
+        setting
+    } else if trained > 0 {
+        trained.min(AUTO_CONTEXT)
+    } else {
+        AUTO_CONTEXT
+    }
 }
 
 /// A model in the models folder: `name` is the file name without `.gguf`.
@@ -130,25 +148,48 @@ pub fn reply_room(n_ctx: u32) -> usize {
     (n_ctx as usize / 4).min(2048)
 }
 
-/// The conversation cut to fit `budget` tokens, as `count` measures it:
-/// the oldest turns go first; the system prompt (sent apart) and the last
-/// message stay. Unmeasurable (`count` gives None): as it is.
+/// What stands in for a tool's output that no longer fits.
+pub const TRIMMED_OUTPUT: &str =
+    "(This output was removed to fit the context. Run the tool again if it is needed.)";
+
+/// The conversation cut to fit `budget` tokens, as `count` measures it.
+/// Whole turns before the last user message go first, oldest first; then,
+/// within the task under way (an agent's steps), the oldest tools' output
+/// gives way to a short note. The last user message, and every call with
+/// its result, stay. Unmeasurable (`count` gives None): as it is.
 pub fn trim_to_budget(
     request: &Request,
     budget: usize,
     mut count: impl FnMut(&Request) -> Option<usize>,
 ) -> Request {
     let mut trimmed = request.clone();
-    // Bounded: each round drops at least one message.
-    while trimmed.messages.len() > 1 {
+    // Bounded: each round drops a message or shortens an output.
+    loop {
         match count(&trimmed) {
             Some(n) if n > budget => {}
             _ => break,
         }
-        trimmed.messages.remove(0);
-        // A conversation starts with the user's turn.
-        while trimmed.messages.len() > 1 && trimmed.messages[0].role == Role::Assistant {
+        let task = trimmed
+            .messages
+            .iter()
+            .rposition(|m| m.role == Role::User)
+            .unwrap_or(0);
+        if task > 0 {
             trimmed.messages.remove(0);
+            // A conversation starts with the user's turn (a tool result
+            // without its call means nothing either).
+            while trimmed.messages[0].role != Role::User {
+                trimmed.messages.remove(0);
+            }
+            continue;
+        }
+        let oldest = trimmed
+            .messages
+            .iter_mut()
+            .find(|m| m.role == Role::Tool && m.text != TRIMMED_OUTPUT);
+        match oldest {
+            Some(m) => m.text = TRIMMED_OUTPUT.to_string(),
+            None => break,
         }
     }
     trimmed
@@ -297,7 +338,7 @@ impl Llama {
             binary,
             model: chosen.path.clone(),
             gpu_layers: (options.gpu_layers > 0).then_some(options.gpu_layers),
-            context: (options.context > 0).then_some(options.context),
+            context: Some(context_for(options.context, chosen.info.context_length)),
             batch: None,
         };
         Ok((self.server.acquire(&launch)?, true))
@@ -329,6 +370,8 @@ impl Llama {
             )));
         }
         let reader = BufReader::new(body.into_reader());
+        // Tool calls come in pieces, by index; they go out whole at the end.
+        let mut calls: Vec<ToolCall> = Vec::new();
         // Until `[DONE]`: a stream that just ends was cut off (the server
         // crashed or the network went).
         for line in reader.lines() {
@@ -343,7 +386,44 @@ impl Llama {
                     Line::Text(t) => emit(Event::Text(&t)),
                     Line::Speed(s) => emit(Event::Speed(s)),
                     Line::Error(e) => return Err(BackendError::Refused(e)),
-                    Line::Done => return Ok(()),
+                    Line::ToolCall {
+                        index,
+                        id,
+                        name,
+                        arguments,
+                    } => {
+                        // A bounded list: no model asks for hundreds.
+                        if index >= 64 {
+                            continue;
+                        }
+                        while calls.len() <= index {
+                            calls.push(ToolCall {
+                                id: String::new(),
+                                name: String::new(),
+                                arguments: String::new(),
+                            });
+                        }
+                        let call = &mut calls[index];
+                        if let Some(id) = id {
+                            call.id = id;
+                        }
+                        if let Some(name) = name {
+                            call.name = name;
+                        }
+                        call.arguments.push_str(&arguments);
+                    }
+                    Line::Done => {
+                        calls.retain(|c| !c.name.is_empty());
+                        for (i, c) in calls.iter_mut().enumerate() {
+                            if c.id.is_empty() {
+                                c.id = format!("call_{i}");
+                            }
+                        }
+                        if !calls.is_empty() {
+                            emit(Event::ToolCalls(&calls));
+                        }
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -457,11 +537,21 @@ pub fn request_body(request: &Request) -> Value {
         messages.push(json!({"role": "system", "content": request.system_prompt}));
     }
     for m in &request.messages {
-        let role = match m.role {
-            Role::User => "user",
-            Role::Assistant => "assistant",
-        };
-        messages.push(json!({"role": role, "content": m.text}));
+        let mut message = json!({"role": m.role.as_str(), "content": m.text});
+        if !m.tool_calls.is_empty() {
+            message["tool_calls"] = m
+                .tool_calls
+                .iter()
+                .map(|c| {
+                    json!({"id": c.id, "type": "function",
+                           "function": {"name": c.name, "arguments": c.arguments}})
+                })
+                .collect();
+        }
+        if let Some(id) = &m.tool_call_id {
+            message["tool_call_id"] = json!(id);
+        }
+        messages.push(message);
     }
     let mut body = json!({
         "messages": messages,
@@ -473,6 +563,9 @@ pub fn request_body(request: &Request) -> Value {
     if let Some(s) = request.sampling {
         body["temperature"] = json!(s.temperature);
         body["top_p"] = json!(s.top_p);
+    }
+    if !request.tools.is_empty() {
+        body["tools"] = json!(request.tools);
     }
     body
 }
@@ -529,6 +622,7 @@ mod tests {
                 Message::user("Again"),
             ],
             sampling: None,
+            tools: Vec::new(),
         }
     }
 
@@ -542,6 +636,30 @@ mod tests {
         assert_eq!(m[0], json!({"role": "system", "content": "Be brief."}));
         assert_eq!(m[3], json!({"role": "user", "content": "Again"}));
         assert!(body.get("temperature").is_none());
+        assert!(body.get("tools").is_none());
+        // Agent mode: the tools, a call and its result.
+        let mut agent = request();
+        agent.tools = crate::tools::schema();
+        agent.messages.push(Message {
+            tool_calls: vec![ToolCall {
+                id: "c1".into(),
+                name: "list_dir".into(),
+                arguments: "{}".into(),
+            }],
+            ..Message::assistant("")
+        });
+        agent.messages.push(Message::tool("c1", "src/"));
+        let body = request_body(&agent);
+        assert_eq!(
+            body["tools"].as_array().unwrap().len(),
+            crate::tools::TOOLS.len()
+        );
+        let m = body["messages"].as_array().unwrap();
+        assert_eq!(m[4]["tool_calls"][0]["function"]["name"], "list_dir");
+        assert_eq!(
+            m[5],
+            json!({"role": "tool", "content": "src/", "tool_call_id": "c1"})
+        );
         let mut story = request();
         story.sampling = crate::modes::STORY.sampling;
         let body = request_body(&story);
@@ -605,6 +723,49 @@ mod tests {
             vec!["qwen3-8b", "gemma"]
         );
         assert!(model_ids("nope").is_empty());
+    }
+
+    #[test]
+    fn an_agents_task_stays_when_trimmed() {
+        let call = |id: &str| ToolCall {
+            id: id.into(),
+            name: "read_file".into(),
+            arguments: "{}".into(),
+        };
+        let mut agent = request();
+        agent.messages = vec![
+            Message::user("old question"),
+            Message::assistant("old answer"),
+            Message::user("Fix the bug"),
+            Message {
+                tool_calls: vec![call("a")],
+                ..Message::assistant("")
+            },
+            Message::tool("a", "x".repeat(1000)),
+            Message {
+                tool_calls: vec![call("b")],
+                ..Message::assistant("")
+            },
+            Message::tool("b", "y".repeat(1000)),
+        ];
+        // Characters as tokens: room for the task and one output.
+        let size = |r: &Request| Some(r.messages.iter().map(|m| m.text.len()).sum::<usize>());
+        let trimmed = trim_to_budget(&agent, 1200, size);
+        let texts: Vec<&str> = trimmed.messages.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts[0], "Fix the bug");
+        assert_eq!(trimmed.messages.len(), 5);
+        // The older output gave way; the newer stays; calls and results pair.
+        assert_eq!(trimmed.messages[2].text, TRIMMED_OUTPUT);
+        assert_eq!(trimmed.messages[4].text.len(), 1000);
+        assert_eq!(trimmed.messages[2].tool_call_id.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn automatic_context() {
+        assert_eq!(context_for(0, 262_144), AUTO_CONTEXT);
+        assert_eq!(context_for(0, 8192), 8192);
+        assert_eq!(context_for(0, 0), AUTO_CONTEXT);
+        assert_eq!(context_for(131_072, 262_144), 131_072);
     }
 
     #[test]
@@ -702,6 +863,40 @@ mod tests {
     }
 
     #[test]
+    fn tool_calls_stream_in_pieces() {
+        let (base, _server) = serve_once(
+            concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Let me look.\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"type\":\"function\",\"function\":{\"name\":\"read_file\"}}]}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"a.rs\\\"}\"}}]}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+                "data: [DONE]\n\n",
+            )
+            .to_string(),
+        );
+        let mut text = String::new();
+        let mut calls = Vec::new();
+        external(&base)
+            .complete(&request(), &AtomicBool::new(false), &mut |e| match e {
+                Event::Text(t) => text.push_str(t),
+                Event::ToolCalls(c) => calls = c.to_vec(),
+                Event::Speed(_) => {}
+            })
+            .unwrap();
+        assert_eq!(text, "Let me look.");
+        assert_eq!(
+            calls,
+            vec![ToolCall {
+                id: "a".into(),
+                name: "read_file".into(),
+                arguments: r#"{"path":"a.rs"}"#.into()
+            }]
+        );
+    }
+
+    #[test]
     fn a_stream_that_just_ends_was_cut_off() {
         let (base, _server) = serve_once(
             concat!(
@@ -751,6 +946,7 @@ mod tests {
             .complete(&request(), &AtomicBool::new(false), &mut |e| match e {
                 Event::Text(t) => text.push_str(t),
                 Event::Speed(s) => speed = Some(s),
+                Event::ToolCalls(_) => panic!("no tools asked for"),
             })
             .unwrap();
         assert_eq!(text, "Hello");

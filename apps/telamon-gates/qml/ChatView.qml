@@ -314,6 +314,14 @@ Item {
             }
         }
 
+        AgentPanel {
+            visible: view.chat.mode === "agent"
+            Layout.fillWidth: true
+            Layout.maximumWidth: view.columnWidth
+            Layout.alignment: Qt.AlignHCenter
+            chat: view.chat
+        }
+
         Composer {
             id: composer
             Layout.fillWidth: true

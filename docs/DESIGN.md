@@ -59,6 +59,18 @@ beside it.
   Cancel. A download goes to a hidden `.name.part`, resumes from it, is
   checked against the sha256 Hugging Face publishes, and only then is renamed
   into place; the chat's model list follows.
+- **Agent mode**: Agent in the mode switch. Above the composer:
+  - the conversation's folder, with Choose Folder… (the portal's folder
+    dialog);
+  - a warning when the model's template takes no tools;
+  - while the agent waits, a card with what it wants to do (a title, and
+    the new text or command as plain text), plus Deny, Allow All Edits in
+    This Reply (for edits) and Allow (Run for a command).
+
+  Each tool result is one line under the reply (✓ or ✗ and what it did:
+  "Read src/greet.py (lines 1–5 of 5)"), which opens to the output. A turn
+  that only asked for tools shows nothing of its own, and Copy and
+  Regenerate come only under the final answer.
 - **SystemOne** (in Settings): a switch, on by default; the decision model in
   use (a picker when there are several); one-click Get Laya / Get Kev when
   there's none, with the download's progress. On the Models page, a decision
@@ -102,8 +114,10 @@ and reported.
 
 `$XDG_DATA_HOME/telamon-gates/conversations/<id>.json`, one file per
 conversation (`id`, `title`, `created`, `updated` in ms since the epoch,
-`messages` of `role`/`text`/`failed`/`speed`/`mode`/`picked`, and the
-conversation's `mode` when it isn't Auto), written atomically (temporary file,
+`messages` of `role` (`user`, `assistant`, `tool`), `text`, `failed`,
+`speed`, `mode`, `picked`, and in Agent mode `tool_calls` (id, name,
+arguments), `tool_call_id` and `summary`; the conversation's `mode` when it
+isn't Auto, and its `workspace`), written atomically (temporary file,
 then rename). Ids are hex and dashes only, so no id can name a path outside
 the folder. Settings are `~/.config/telamon-gatesrc`, group `[Chat]`
 (`Model`, `SystemPrompt`), plus the window's size from `TelamonWindow`.
@@ -170,7 +184,9 @@ Functionable. From the PR #3 review, for their phases:
   it; a server that hangs mid-reply holds its worker for good; a panic in a
   reply skips `release()`, so the idle stop never comes; `stop()` can signal
   a PID already reaped.
-- Performant: the telamon-llama CI cache likely never hits (ccache hashes
+- Performant: the binary grew from 4.0 to 7.4 MB stripped (rustls, ring and
+  webpki-roots, for Hugging Face downloads; Fedora's OpenSSL through ureq's
+  native-tls would drop most of it). The telamon-llama CI cache likely never hits (ccache hashes
   the random build directory); the idle thread wakes every 15 s even with
   no server.
 - Thinking models stream their reasoning as `reasoning_content`, which isn't

@@ -200,7 +200,9 @@ mod tests {
         for id in &ids {
             assert!(crate::modes::valid_choice(id), "{id}");
         }
-        assert_eq!(ids.len(), crate::modes::MODES.len());
+        assert_eq!(ids.len(), crate::modes::PICKABLE.len());
+        // Never Agent: tools run only when the user asks for them.
+        assert!(!ids.contains(&"agent"));
         // A long message is cut on a character boundary.
         let long = "é".repeat(MAX_STATE + 10);
         let body = request_body(&long, json!({}));

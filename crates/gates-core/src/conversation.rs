@@ -10,6 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum Role {
     User,
     Assistant,
+    /// What a tool gave back (Agent mode), for the call `tool_call_id`.
+    Tool,
 }
 
 impl Role {
@@ -17,8 +19,19 @@ impl Role {
         match self {
             Role::User => "user",
             Role::Assistant => "assistant",
+            Role::Tool => "tool",
         }
     }
+}
+
+/// A tool the model asked to run (Agent mode).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// The server's id for the call; the result answers to it.
+    pub id: String,
+    pub name: String,
+    /// The arguments, as the JSON text the model wrote.
+    pub arguments: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -37,6 +50,16 @@ pub struct Message {
     /// SystemOne picked that mode (the conversation was in Auto).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub picked: bool,
+    /// The tools a reply asked to run, in order (Agent mode).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
+    /// A tool result's call (`Role::Tool`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// A tool result in one line, for the window ("Read src/main.rs (40
+    /// lines)"); `text` is what the model got. `failed` when it didn't work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 impl Message {
@@ -48,6 +71,9 @@ impl Message {
             speed: None,
             mode: None,
             picked: false,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            summary: None,
         }
     }
 
@@ -59,6 +85,18 @@ impl Message {
             speed: None,
             mode: None,
             picked: false,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            summary: None,
+        }
+    }
+
+    /// What tool call `id` gave back.
+    pub fn tool(id: impl Into<String>, text: impl Into<String>) -> Message {
+        Message {
+            role: Role::Tool,
+            tool_call_id: Some(id.into()),
+            ..Message::user(text)
         }
     }
 }
@@ -74,6 +112,9 @@ pub struct Conversation {
     /// "auto" (SystemOne picks per message) or a mode the user pinned.
     #[serde(default = "auto", skip_serializing_if = "is_auto")]
     pub mode: String,
+    /// The folder Agent mode's tools work in; None until one is chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 fn auto() -> String {
@@ -106,6 +147,7 @@ impl Conversation {
             updated: now,
             messages: Vec::new(),
             mode: auto(),
+            workspace: None,
         }
     }
 

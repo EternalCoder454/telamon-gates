@@ -26,6 +26,10 @@ Item {
     // SystemOne.
     required property string mode
     required property bool picked
+    // Agent mode: a tool result's line ("Read src/main.rs"), and a reply
+    // that asked for tools.
+    required property string summary
+    required property bool hasCalls
 
     required property var chat
     required property real columnWidth
@@ -33,6 +37,10 @@ Item {
     required property bool last
 
     readonly property bool mine: role === "user"
+    readonly property bool tool: role === "tool"
+    // An agent turn that only asked for tools: its results say it all.
+    readonly property bool quiet: role === "assistant" && hasCalls && text.length === 0 && !streaming
+    property bool open: false
     readonly property real pad: Kirigami.Units.largeSpacing
 
     // What gives a reply's rich text the Telamon look. The text itself is
@@ -58,14 +66,14 @@ Item {
         Accessible.name: modeText.text
 
         Symbol {
-            icon: message.mode === "story" ? Symbols.AutoStories : message.mode === "code" ? Symbols.Code : Symbols.Chat
+            icon: message.mode === "story" ? Symbols.AutoStories : message.mode === "code" ? Symbols.Code : message.mode === "agent" ? Symbols.SmartToy : Symbols.Chat
             size: Math.round(Kirigami.Units.iconSizes.small * 1.2)
             color: message.picked ? TelamonStyle.accent : Kirigami.Theme.disabledTextColor
         }
         TelamonLabel {
             id: modeText
             textStyle: TelamonLabel.Caption
-            readonly property string name: message.mode === "story" ? qsTr("Story") : message.mode === "code" ? qsTr("Code") : qsTr("Chat")
+            readonly property string name: message.mode === "story" ? qsTr("Story") : message.mode === "code" ? qsTr("Code") : message.mode === "agent" ? qsTr("Agent") : qsTr("Chat")
             text: message.picked ? qsTr("%1, picked by SystemOne").arg(name) : name
         }
     }
@@ -122,9 +130,51 @@ Item {
             }
         }
 
+        // A tool's result (Agent mode): one line under the reply's text,
+        // which opens to what the tool gave back. Plain text: it comes from
+        // files and commands.
+        ColumnLayout {
+            visible: message.tool
+            Layout.fillWidth: true
+            Layout.leftMargin: Kirigami.Units.gridUnit * 1.6 + Kirigami.Units.largeSpacing
+            spacing: TelamonStyle.spacingSmall
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: TelamonStyle.spacingSmall
+
+                Symbol {
+                    icon: message.failed ? Symbols.Error : Symbols.CheckCircle
+                    size: Math.round(Kirigami.Units.iconSizes.small * 1.2)
+                    color: message.failed ? TelamonStyle.error : TelamonStyle.success
+                }
+                TelamonLabel {
+                    Layout.fillWidth: true
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    opacity: 0.85
+                    text: message.summary
+                }
+                ToolbarButton {
+                    symbol: Symbols.ExpandMore
+                    iconRotation: message.open ? 180 : 0
+                    text: message.open ? qsTr("Hide Output") : qsTr("Show Output")
+                    focusable: true
+                    onClicked: message.open = !message.open
+                }
+            }
+            TelamonCodeView {
+                visible: message.open
+                Layout.fillWidth: true
+                text: message.tool ? message.text : ""
+                maximumHeight: Kirigami.Units.gridUnit * 14
+                Accessible.name: qsTr("Tool output")
+            }
+        }
+
         // A reply.
         RowLayout {
-            visible: !message.mine
+            visible: !message.mine && !message.tool && !message.quiet
             Layout.fillWidth: true
             spacing: Kirigami.Units.largeSpacing
 
@@ -263,8 +313,9 @@ Item {
                 }
 
                 RowLayout {
-                    // A failed reply with no text still offers Regenerate.
-                    visible: !message.streaming && (message.text.length > 0 || message.failed)
+                    // A failed reply with no text still offers Regenerate; an
+                    // agent's in-between turns have none.
+                    visible: !message.streaming && !message.hasCalls && (message.text.length > 0 || message.failed)
                     spacing: 2
                     // The buttons' symbols, not their padding, line up with
                     // the text above.

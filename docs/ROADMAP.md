@@ -52,6 +52,14 @@ its place, and the ones left out are listed with the reason.
      arithmetic.
    - **Tools that change things ask first.** Model output is untrusted, so
      the app asks you each time.
+   - **Built**, as Agent mode:
+     - **Reading:** list, read, search and find files in the conversation's
+       folder.
+     - **Changing:** write and edit files, and run commands, each after
+       you allow it.
+     - **Tested:** with Qwen3-4B it did a small coding task in 6 steps and
+       5.5 s (`docs/BACKEND.md`).
+     - **Not yet:** the date, arithmetic, and searching conversations.
 6. **Fleet.** A dashboard page in the Telamon style showing:
    - each subagent as a card: its model, its task, a live status from
      SystemOne, tokens/s and context used;
