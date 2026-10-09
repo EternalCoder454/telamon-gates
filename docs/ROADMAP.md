@@ -1,0 +1,69 @@
+# Telamon Gates: roadmap
+
+Gates is for story writing, everyday chat, coding and running a fleet of
+subagents. It aims to be simple and still powerful: each feature below earns
+its place, and the ones left out are listed with the reason.
+
+## Kept, in build order
+
+1. **SystemOne** (on by default, can be turned off in Settings). This is a
+   small decision model (System 1) that answers typed questions about each
+   message, and answers them fast. Gates acts on the answers before the chat
+   model (System 2) writes anything. It runs on its own llama-server,
+   through llama.cpp's `/v1/systemone` (TypeSafe-compatible, in
+   telamon-llama 0.6.0).
+   - **No Fleet:** Laya-421M (`ggml-org/Laya-GGUF`), on the processor, so it
+     takes no video memory. Its context is 512 tokens per question.
+   - **Fleet:** Kev-4B (`ggml-org/Kev-4B-GGUF`, Q4_K_M, 3 GB) on the graphics
+     card. Its context is 8,192 tokens.
+   - **First uses:**
+     - Pick the mode for a message (Chat, Story, Code), so the right preset
+       answers.
+     - Decide whether a message needs a tool, and which one.
+     - In Fleet, route a task to a subagent and judge an agent's state
+       (working, stuck, done, needs you).
+   - **Caveat (from Laya's own card):** Laya is a base to fine-tune, and it is
+     near chance zero-shot. Kev is built for typed decisions over documents.
+     Each question gets a test set before it acts on anything. A low-confidence
+     answer falls back to the default (Chat, no tool), and the user can
+     always override.
+2. **Modes.** Chat, Story and Code ship by default. Each is a system prompt
+   plus sampling settings: temperature, top-p and max tokens. Story runs warmer
+   and longer; Code runs cooler. Modes can be edited and you can add your own;
+   that is the prompt library. SystemOne picks one per message, or you pin a
+   mode for a conversation.
+3. **Edit and Branch.** Edit a sent message, or "Branch From Here" on any
+   message, to get a new conversation up to that point. This lets you try a
+   story another way without losing the first. Export a conversation as
+   Markdown or JSON.
+4. **Model facts.** Each model's context length, whether it reads images (a
+   matching `mmproj`) and whether its chat template takes tools. These come
+   from the GGUF header and show on the Models page and in the picker.
+5. **Tools, our own.** A Rust registry in gates-core: no MCP, no Python, and
+   nothing to spawn per call. Tools go through llama-server's OpenAI
+   `tools`/`tool_calls` with `--jinja`.
+   - **Read-only tools run at once:** read a file in a folder you allowed,
+     list a folder, search the conversations, the date and time, and
+     arithmetic.
+   - **Tools that change things ask first.** Model output is untrusted, so
+     the app asks you each time.
+6. **Fleet.** A dashboard page in the Telamon style showing:
+   - each subagent as a card: its model, its task, a live status from
+     SystemOne, tokens/s and context used;
+   - a timeline of what each agent did, with Stop, Pause and Talk To on each.
+   It runs on the same llama-server with `--parallel N` slots.
+7. **Attachments.** Text and code files go into the message. Retrieval with
+   embeddings over many documents comes later, if attachments prove too
+   small.
+8. **Images.** Attach an image for models with a projector (`--mmproj`).
+
+## Left out
+
+- **MLX and ONNX.** MLX is Apple-only; ONNX doesn't run in llama.cpp. GGUF
+  covers it.
+- **Encrypted sync and multi-user.** Gates is a desktop app; sync belongs
+  to Telamon OS.
+- **Tags.** Search and branches cover it with less to manage.
+- **Stop sequences in the UI.** The chat templates already end replies.
+- **LaTeX, voice input, web search.** Maybe later, as tools: each needs
+  another engine or the network.
