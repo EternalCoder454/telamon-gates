@@ -118,8 +118,9 @@ from advice on trust:
 - **KV cache** stays f16. q8_0 halves it at little quality cost, but a
   quantised V cache needs flash attention on. This is a Performant-phase
   option.
-- **Batch sizes** stay at the defaults (`-b 2048 -ub 512`). There is no
-  Vulkan/RDNA3 evidence for a larger `-ub`; benchmark before changing.
+- **Batch sizes** stay at the defaults (`-b 2048 -ub 512`): measured on the
+  RX 7900 with Qwen3-4B and a 13k-token prompt, `-ub 512` reads 3,060
+  tokens/s, `-ub 1024` 2,452 and `-ub 2048` 1,861.
 - **Context shift** stays off (the default). With `--keep 0` it can drop the
   system prompt. Gates trims long conversations instead (see below).
 - **Automatic context** is Gates' own choice, not llama.cpp's fit. Left to
@@ -333,4 +334,45 @@ Qwen3-4B-Instruct-2507 Q4_K_M on the RX 7900, about 170 tokens/s:
 |---|---|---|---|---|
 | exact `edit_file` | 11 | 4 | 10.0 s | yes |
 | forgiving `edit_file` (3 runs) | 6 | 0 | 5.5 s (median) | 3 of 3 |
+
+## Performance (measured 2026-10-09, RX 7900 XTX, Vulkan)
+
+Qwen3-4B-Instruct-2507 Q4_K_M unless said; temperature 0; scripts in
+`out/spec` (not in the repo).
+
+- **Speculative decoding, n-gram (on by default, `--spec-default`).** The
+  server guesses the next tokens from what is already in the conversation,
+  and the model checks them in one go. It costs about 16 MB and no extra
+  model.
+
+  | Prompt | Without | With |
+  |---|---|---|
+  | Rewrite a 6 KB Rust file (what an agent's edits are) | 178 tok/s, 9.0 s | **944 tok/s, 2.0 s** (99% accepted) |
+  | Explain heat pumps (chat) | 194 tok/s | 193 tok/s |
+  | A 400-word story | 192 tok/s | 193 tok/s |
+
+- **A small draft model** (Qwen3-0.6B Q8_0 for the 4B) is slower: only
+  27–36% of its tokens are accepted, and chat drops to 126 tok/s. It is not
+  used.
+- **Context cache precision** (Settings → Smaller Context Cache, off by
+  default). A 32k context costs 7,104 MiB at f16 against 4,954 MiB at q8_0
+  (−30%), and generation drops from 154 to 139 tok/s (−10%).
+- **Prompt cache.** Within a conversation, the next message reads only
+  what's new: 16 tokens in 0.16 s after a 13k-token prompt.
+- **Trimming with room to spare.** Once a conversation overflows the
+  context, it is trimmed to 75% of the budget, not just under it. Dropping
+  the oldest turn changes the start, and the server then reads everything
+  again: 16,027 tokens in 6.4 s here, minutes on the processor.
+  `--cache-reuse 256` didn't avoid that in testing, so with room to spare
+  the next several messages share their start and come from the cache.
+- **Warm-up while typing.** The composer calls `prepare()` 400 ms into a
+  pause: the model server starts loading (once a minute at most), and in
+  Auto SystemOne picks the mode for the text then. Send then waits for
+  neither the load nor the pick.
+- **SystemOne on the processor.** Laya runs with half the logical CPUs (up
+  to 16): 307 ms a message against 606 ms with llama.cpp's 8 threads, at
+  the same accuracy.
+- **The binary.** HTTPS through the system's OpenSSL instead of a bundled
+  rustls/ring: 8.48 → 7.14 MB stripped for the same release build
+  (−1.34 MB, −16%).
 

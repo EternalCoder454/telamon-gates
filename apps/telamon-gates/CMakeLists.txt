@@ -16,6 +16,8 @@ qt_policy(SET QTP0004 NEW)
 find_package(KF6DBusAddons REQUIRED)
 find_package(KF6WindowSystem REQUIRED)
 find_package(Corrosion REQUIRED)
+# Hugging Face downloads use the system's TLS (gates-core, through ureq).
+find_package(OpenSSL REQUIRED)
 
 set(WORKSPACE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
@@ -55,7 +57,8 @@ qt_add_qml_module(telamon-gates-app
 target_link_libraries(telamon-gates-app PRIVATE
     telamon_gates
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Widgets
-    KF6::DBusAddons KF6::WindowSystem)
+    KF6::DBusAddons KF6::WindowSystem
+    OpenSSL::SSL OpenSSL::Crypto)
 
 install(TARGETS telamon-gates-app RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES data/net.eterneon.telamon.gates.desktop

@@ -124,6 +124,14 @@ impl SystemOne {
             context: Some(CONTEXT),
             batch: Some(CONTEXT),
             projector: None,
+            small_cache: false,
+            // On the processor, half the logical CPUs (up to 16): 321 ms a
+            // question for Laya on the i9, against 416 ms with llama.cpp's 8.
+            threads: (self.kind == "laya").then(|| {
+                let cpus = std::thread::available_parallelism().map_or(8, |n| n.get());
+                (cpus / 2).clamp(1, 16) as u32
+            }),
+            speculative: false,
         }
     }
 

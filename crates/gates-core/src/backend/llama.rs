@@ -249,18 +249,26 @@ pub const TRIMMED_OUTPUT: &str =
 /// The conversation cut to fit `budget` tokens, as `count` measures it.
 /// Whole turns before the last user message go first, oldest first; then,
 /// within the task under way (an agent's steps), the oldest tools' output
-/// gives way to a short note. The last user message, and every call with
-/// its result, stay. Unmeasurable (`count` gives None): as it is.
+/// gives way to a short note. The last user message, the newest tool
+/// output, and every call with its result, stay. Unmeasurable (`count`
+/// gives None): as it is.
+///
+/// Once over, it trims to three quarters of `budget`, not just under it:
+/// the server keeps what it read of the conversation and reads only what
+/// changed, but a cut at the start changes everything after it. With room
+/// to spare, the next messages keep the same start and come from the cache
+/// instead of the whole conversation being read again for each.
 pub fn trim_to_budget(
     request: &Request,
     budget: usize,
     mut count: impl FnMut(&Request) -> Option<usize>,
 ) -> Request {
     let mut trimmed = request.clone();
+    let mut limit = budget;
     // Bounded: each round drops a message or shortens an output.
     loop {
         match count(&trimmed) {
-            Some(n) if n > budget => {}
+            Some(n) if n > limit => limit = budget * 3 / 4,
             _ => break,
         }
         let task = trimmed
@@ -277,10 +285,13 @@ pub fn trim_to_budget(
             }
             continue;
         }
+        let newest = trimmed.messages.iter().rposition(|m| m.role == Role::Tool);
         let oldest = trimmed
             .messages
             .iter_mut()
-            .find(|m| m.role == Role::Tool && m.text != TRIMMED_OUTPUT);
+            .enumerate()
+            .find(|(i, m)| m.role == Role::Tool && m.text != TRIMMED_OUTPUT && Some(*i) != newest)
+            .map(|(_, m)| m);
         match oldest {
             Some(m) => m.text = TRIMMED_OUTPUT.to_string(),
             None => break,
@@ -437,6 +448,9 @@ impl Llama {
             context: Some(context_for(options.context, chosen.info.context_length)),
             batch: None,
             projector,
+            small_cache: options.small_cache,
+            threads: None,
+            speculative: true,
         };
         Ok((self.server.acquire_until(&launch, cancel)?, true))
     }
@@ -617,6 +631,14 @@ impl Backend for Llama {
         if changed {
             let server = self.server.clone();
             std::thread::spawn(move || server.retire());
+        }
+    }
+
+    fn warm(&self, model: &str) {
+        // The same server the reply will ask for, started now; released at
+        // once, so the idle stop still counts from here.
+        if let Ok((_, true)) = self.endpoint(model, &AtomicBool::new(false)) {
+            self.server.release();
         }
     }
 
@@ -871,6 +893,12 @@ mod tests {
             "the last message stays"
         );
         assert_eq!(fitted.system_prompt, long.system_prompt);
+        // Room to spare once trimmed: 11 messages at budget 100 trim to 7
+        // (70, under 75), not 9 (90, just under 100).
+        long.messages.insert(0, Message::assistant("a-1"));
+        long.messages.insert(0, Message::user("q-2"));
+        assert_eq!(trim_to_budget(&long, 100, count).messages.len(), 7);
+        long.messages.drain(..2);
         // Fits already, or can't be measured: as it is.
         assert_eq!(trim_to_budget(&long, 1000, count).messages.len(), 9);
         assert_eq!(trim_to_budget(&long, 1, |_| None).messages.len(), 9);

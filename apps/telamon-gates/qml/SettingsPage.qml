@@ -129,6 +129,20 @@ TelamonPage {
             }
         }
         SectionRow {
+            visible: !page.chat.demo && page.chat.serverUrl.length === 0
+            title: qsTr("Smaller Context Cache")
+            subtitle: qsTr("About 30% less video memory for the same context, about 10% slower replies")
+            leading: [
+                Symbol {
+                    icon: Symbols.Memory
+                    color: TelamonStyle.accent
+                }
+            ]
+            showSwitch: true
+            switchChecked: page.chat.smallCache
+            onSwitchToggled: checked => page.chat.useSmallCache(checked)
+        }
+        SectionRow {
             title: qsTr("Server Address")
             subtitle: page.chat.demo ? qsTr("A llama.cpp server elsewhere, such as http://192.168.1.20:8080. Restart Telamon Gates to use it.") : qsTr("A llama.cpp server elsewhere, such as http://192.168.1.20:8080. Leave empty to run the model here.")
             leading: [

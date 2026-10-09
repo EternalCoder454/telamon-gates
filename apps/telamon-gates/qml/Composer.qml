@@ -122,6 +122,8 @@ ColumnLayout {
                 wrapMode: TextEdit.Wrap
                 placeholderText: qsTr("Message Telamon Gates")
                 Accessible.name: qsTr("Message")
+                // A pause in the typing gets the model ready (see prepare).
+                onTextChanged: prepTimer.restart()
 
                 Keys.onPressed: event => {
                     if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !(event.modifiers & Qt.ShiftModifier)) {
@@ -354,5 +356,11 @@ ColumnLayout {
         fileMode: FileDialog.OpenFiles
         nameFilters: [qsTr("Text and pictures (*.txt *.md *.rs *.py *.js *.ts *.qml *.c *.cpp *.h *.json *.toml *.yaml *.yml *.csv *.log *.sh *.html *.css *.png *.jpg *.jpeg *.gif *.webp *.bmp)"), qsTr("All files (*)")]
         onAccepted: composer.chat.attachFiles(selectedFiles.map(u => decodeURIComponent(u.toString().replace(/^file:\/\//, ""))))
+    }
+
+    Timer {
+        id: prepTimer
+        interval: 400
+        onTriggered: composer.chat.prepare(input.text)
     }
 }

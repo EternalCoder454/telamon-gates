@@ -29,8 +29,11 @@ main() {
     fi
 
     # ccache for the C++ (the Vulkan shaders are most of the build).
+    # The build tree is a new random folder each time: paths relative to it,
+    # and no hashing of the working directory, so the cache can hit.
     if [ -n "${CCACHE_DIR:-}" ]; then
         export CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache
+        export CCACHE_BASEDIR="$top" CCACHE_NOHASHDIR=1
     fi
     rpmbuild -bb "$@" --define "_topdir $top" "$spec"
 

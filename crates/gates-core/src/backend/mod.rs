@@ -32,6 +32,9 @@ pub struct Options {
     /// A llama-server already running elsewhere (`http://host:port`); empty
     /// for the one Gates runs itself.
     pub server_url: String,
+    /// The context cache at 8 bits (q8_0) instead of 16: about 30% less
+    /// video memory for the same context, about 10% slower replies.
+    pub small_cache: bool,
 }
 
 /// What to answer: the conversation so far, ending with the user's message.
@@ -99,6 +102,10 @@ pub trait Backend: Send + Sync {
     /// The models the user can pick from, in the order to show them. Empty
     /// when the backend serves one model and there is nothing to pick.
     fn models(&self) -> Result<Vec<String>, BackendError>;
+
+    /// Gets `model` ready for a reply soon (the user is typing): loads it
+    /// if it isn't. Blocks: call it from a worker.
+    fn warm(&self, _model: &str) {}
 
     /// New choices from Settings; they apply from the next reply. Called on
     /// the GUI thread, in the order they were made: must not block.

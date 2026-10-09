@@ -52,6 +52,8 @@ pub mod qobject {
         #[qproperty(i32, context_size, cxx_name = "contextSize")]
         /// A llama-server elsewhere; "" runs one here.
         #[qproperty(QString, server_url, cxx_name = "serverUrl")]
+        /// The context cache at 8 bits (Settings).
+        #[qproperty(bool, small_cache, cxx_name = "smallCache")]
         /// Where the backend's model files go; "" when it has no folder.
         #[qproperty(QString, models_folder, cxx_name = "modelsFolder")]
         /// The context the model ran with last, in tokens; 0 until known.
@@ -156,6 +158,15 @@ pub mod qobject {
             context_size: i32,
             server_url: &QString,
         );
+
+        #[qinvokable]
+        #[cxx_name = "useSmallCache"]
+        fn set_small_cache_option(self: Pin<&mut Chat>, on: bool);
+
+        /// The user is writing `text`: gets the model ready, and in Auto has
+        /// SystemOne pick the mode now, so Send waits for neither.
+        #[qinvokable]
+        fn prepare(self: Pin<&mut Chat>, text: &QString);
 
         /// Asks the backend again for its models.
         #[qinvokable]
@@ -372,6 +383,7 @@ pub struct ChatRust {
     gpu_layers: i32,
     context_size: i32,
     server_url: QString,
+    small_cache: bool,
     models_folder: QString,
     active_context: i32,
     mode: QString,
@@ -426,6 +438,13 @@ pub struct ChatRust {
     looking: u64,
     /// The same for the backend's model list.
     listing: u64,
+    /// When the model was last warmed up (`prepare`).
+    warmed: Option<Instant>,
+    /// SystemOne's pick for the text being written: the text, the mode,
+    /// and whether SystemOne picked it.
+    prepick: Option<(String, Active, bool)>,
+    /// Bumped by each `prepare`: an older pick drops.
+    preparing: u64,
     pub io: Option<Io>,
     // Boxed: a thread handle is not Unpin, and the struct must be.
     pub library: Option<Box<CxxQtThread<library::qobject::Library>>>,
@@ -615,6 +634,7 @@ impl qobject::Chat {
             settings::get(settings::SYSTEM_PROMPT).as_str(),
         ));
         let options = settings::backend_options();
+        self.as_mut().set_small_cache(options.small_cache);
         self.as_mut()
             .set_gpu_layers(i32::try_from(options.gpu_layers).unwrap_or(0));
         self.as_mut()
@@ -955,6 +975,7 @@ impl qobject::Chat {
                 .trim()
                 .trim_end_matches('/')
                 .to_string(),
+            small_cache: *self.small_cache(),
         };
         self.as_mut()
             .set_gpu_layers(i32::try_from(options.gpu_layers).unwrap_or(0));
@@ -976,6 +997,75 @@ impl qobject::Chat {
         self.as_mut()
             .set_backend_name(QString::from(backend.name().as_str()));
         self.refresh_models();
+    }
+
+    pub fn prepare(mut self: Pin<&mut Self>, text: &QString) {
+        let text = text.to_string().trim().to_string();
+        if text.is_empty() || *self.generating() {
+            return;
+        }
+        // The model, loading while the user writes (once a minute at most:
+        // after that it is loaded, or idle-stopped minutes later).
+        let due = self
+            .rust()
+            .warmed
+            .is_none_or(|t| t.elapsed() > Duration::from_secs(60));
+        if due && let Some(backend) = self.rust().backend.clone() {
+            self.as_mut().rust_mut().warmed = Some(Instant::now());
+            let model = self.model().to_string();
+            std::thread::spawn(move || backend.warm(&model));
+        }
+        // SystemOne's pick, made now (Auto only).
+        let picker = match self.mode().to_string() == modes::AUTO {
+            true => self.rust().system_one_model.clone(),
+            false => None,
+        };
+        let Some(picker) = picker else {
+            return;
+        };
+        let library = self.rust().modes.clone();
+        let previous = self
+            .rust()
+            .conversation
+            .as_ref()
+            .and_then(|c| c.messages.iter().rev().find_map(|m| m.mode.clone()))
+            .filter(|id| id != modes::AGENT.id)
+            .map(|id| library.resolve(&id))
+            .unwrap_or_else(|| library.resolve(modes::CHAT.id));
+        let preparing = {
+            let mut rust = self.as_mut().rust_mut();
+            rust.preparing += 1;
+            rust.preparing
+        };
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            let (mode, picked) = pick_mode(None, Some(&picker), &text, previous, &library);
+            let _ = qt.queue(move |mut chat| {
+                if chat.rust().preparing == preparing {
+                    chat.as_mut().rust_mut().prepick = Some((text, mode, picked));
+                }
+            });
+        });
+    }
+
+    pub fn set_small_cache_option(mut self: Pin<&mut Self>, on: bool) {
+        if *self.small_cache() == on {
+            return;
+        }
+        self.as_mut().set_small_cache(on);
+        if let Some(io) = &self.rust().io {
+            settings::set(
+                io,
+                settings::SMALL_CACHE,
+                if on { "true".into() } else { String::new() },
+            );
+        }
+        let (gpu, ctx, url) = (
+            *self.gpu_layers(),
+            *self.context_size(),
+            self.server_url().clone(),
+        );
+        self.save_server_options(gpu, ctx, &url);
     }
 
     pub fn refresh_models(mut self: Pin<&mut Self>) {
@@ -1600,9 +1690,26 @@ impl qobject::Chat {
         let choice = self.mode().to_string();
         let library = self.rust().modes.clone();
         let pinned = (choice != modes::AUTO).then(|| library.resolve(&choice));
-        let picker = match pinned {
-            None => self.rust().system_one_model.clone(),
+        // A pick made while the message was written, for this very text.
+        let asked_now = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::User)
+            .map(|m| m.text.trim().to_string())
+            .unwrap_or_default();
+        let prepicked = match pinned {
+            None => self
+                .as_mut()
+                .rust_mut()
+                .prepick
+                .take()
+                .filter(|(text, _, _)| *text == asked_now)
+                .map(|(_, mode, picked)| (mode, picked)),
             Some(_) => None,
+        };
+        let picker = match (&pinned, &prepicked) {
+            (None, None) => self.rust().system_one_model.clone(),
+            _ => None,
         };
         let asked = messages
             .iter()
@@ -1661,7 +1768,10 @@ impl qobject::Chat {
         self.as_mut().set_generating(true);
         let qt = self.qt_thread();
         std::thread::spawn(move || {
-            let (mode, picked) = pick_mode(pinned, picker.as_deref(), &asked, previous, &library);
+            let (mode, picked) = match prepicked {
+                Some(ready) => ready,
+                None => pick_mode(pinned, picker.as_deref(), &asked, previous, &library),
+            };
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
