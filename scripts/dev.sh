@@ -97,7 +97,13 @@ tty=()
 # relabelling the mounts with :z or :Z, which would change the labels of the
 # repo on the host. --init: a real init as PID 1, which reaps and forwards
 # signals; GNU timeout, for one, exits 125 at once when it is PID 1.
+# Capped: this PC is also the user's desktop, and uncapped parallel builds
+# ran it out of memory (CLAUDE.md: one heavy job at a time). DEV_MEMORY and
+# DEV_CPUS override the caps; the build tools' own job counts follow them.
 exec podman run --rm --init "${tty[@]}" --security-opt label=disable \
+    --memory="${DEV_MEMORY:-12g}" --cpus="${DEV_CPUS:-12}" \
+    -e CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" \
+    -e CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-8}" \
     -v "$repo":/src -w /src \
     -v atlas-cargo:/root/.cargo/registry \
     -v atlas-cargo-git:/root/.cargo/git \
