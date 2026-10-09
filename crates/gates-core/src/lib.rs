@@ -5,6 +5,8 @@
 
 pub mod backend;
 pub mod conversation;
+pub mod gguf;
+pub mod hub;
 pub mod markdown;
 pub mod store;
 pub mod vram;

@@ -483,16 +483,11 @@ impl qobject::Chat {
         let Some(backend) = self.rust().backend.clone() else {
             return;
         };
-        // Stopping a running server waits for it: not on the GUI thread.
-        let qt = self.qt_thread();
-        std::thread::spawn(move || {
-            backend.set_options(&options);
-            let name = backend.name();
-            let _ = qt.queue(move |mut chat| {
-                chat.as_mut().set_backend_name(QString::from(name.as_str()));
-                chat.refresh_models();
-            });
-        });
+        // Here, not on a worker, so the backend gets them in the order made.
+        backend.set_options(&options);
+        self.as_mut()
+            .set_backend_name(QString::from(backend.name().as_str()));
+        self.refresh_models();
     }
 
     pub fn refresh_models(self: Pin<&mut Self>) {

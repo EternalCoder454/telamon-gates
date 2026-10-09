@@ -67,11 +67,17 @@ telamon-llama is installed (`/usr/libexec/telamon-llama/llama-server`, else a
 the demo otherwise.
 
 - **Models** are the `.gguf` files in `$XDG_DATA_HOME/telamon-gates/models`
-  (`local_models`); the picker's name is the file name without `.gguf`. With
+  (`local_models`); the picker's name is the file name without `.gguf`.
+  Vision projectors (`mmproj-…`) and the later parts of a split model
+  (`…-00002-of-00003`) are not models to pick. The Models page fills the
+  folder (see `docs/DESIGN.md`). With
   a server address, `GET /v1/models` lists them instead.
 - **The server Gates runs** (`backend/server.rs`): started on the first reply
   with the chosen model, stopped after 5 idle minutes (the model leaves the
   graphics card's memory), restarted when the model or an option changes.
+  New options don't cut a reply off: the server goes once the last reply on
+  it ends (`retire`), and Settings hands them over on the GUI thread, in the
+  order they were made.
   - It listens on 127.0.0.1 only, on a free port, and wants a fresh random
     `--api-key` each start, so no other program can use it.
   - It is started from one long-lived thread and dies with Gates
@@ -89,12 +95,15 @@ the demo otherwise.
   system prompt first). `backend/sse.rs` reads the server-sent events:
   - `choices[0].delta.content` becomes `Event::Text`;
   - the last chunk's `timings.predicted_per_second` becomes `Event::Speed`;
-  - `data: [DONE]` ends it;
+  - `data: [DONE]` ends it; a stream that ends without it was cut off, and
+    fails with what came kept;
   - an `error` object becomes a `BackendError` with its message.
 
   Stop drops the connection, and llama-server stops generating.
-- **The HTTP client** is `ureq` without TLS: plain http to 127.0.0.1, or to a
-  server address on the LAN (Settings checks the address is `http://`).
+- **The HTTP client** is `ureq`: plain http to 127.0.0.1, or to a server
+  address on the LAN (Settings checks the address is `http://`). It ignores
+  `HTTP_PROXY` and the like, which would send the server's key to the proxy.
+  Only `hub.rs` uses TLS (rustls, https only) to reach Hugging Face.
 
 ### Tuning, and what was left at llama.cpp's defaults
 

@@ -132,7 +132,7 @@ Item {
         Connections {
             target: Application
             function onStateChanged() {
-                if (Application.state === Qt.ApplicationActive && !view.chat.demo) {
+                if (Application.state === Qt.ApplicationActive && !view.chat.demo && view.chat.serverUrl.length === 0) {
                     view.chat.refreshModels();
                 }
             }

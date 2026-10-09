@@ -7,5 +7,6 @@ fn main() {
         .file("src/chat.rs")
         .file("src/library.rs")
         .file("src/vram.rs")
+        .file("src/models.rs")
         .build();
 }

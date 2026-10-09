@@ -6,6 +6,7 @@
 mod chat;
 mod io;
 mod library;
+mod models;
 mod settings;
 mod user;
 mod vram;
@@ -36,6 +37,7 @@ pub struct TelamonObjects {
     pub chat: *mut c_void,
     pub library: *mut c_void,
     pub vram: *mut c_void,
+    pub models: *mut c_void,
 }
 
 /// The backend replies come from: llama.cpp when telamon-llama (or a
@@ -92,10 +94,18 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
     chat.pin_mut().start();
     library.pin_mut().reload();
     let vram = vram::qobject::vram_make_unique();
+    let mut models = models::qobject::model_library_make_unique();
+    let models_dir = gates_core::store::data_dir().join("models");
+    models.pin_mut().set_folder(cxx_qt_lib::QString::from(
+        models_dir.to_string_lossy().as_ref(),
+    ));
+    models.pin_mut().rust_mut().dir = models_dir;
+    models.pin_mut().refresh();
 
     TelamonObjects {
         chat: chat.into_raw().cast(),
         library: library.into_raw().cast(),
         vram: vram.into_raw().cast(),
+        models: models.into_raw().cast(),
     }
 }

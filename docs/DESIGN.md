@@ -15,7 +15,7 @@ beside it.
 - **Sidebar**: New Chat on top, then the saved conversations, newest first,
   under Today, Yesterday and Previous 7 Days, then under their date
   ("September 30, 2026") up to 30 days back, then under their month
-  ("October 2025"). Above Settings and About, a VRAM meter: the graphics
+  ("October 2025"). Above Models, Settings and About, a VRAM meter: the graphics
   card's memory used and its size (amdgpu's sysfs files, read every 3 s while
   the window shows; hidden when no card reports it). The
   built-in filter searches titles. Right click (or the Menu key) offers
@@ -43,6 +43,17 @@ beside it.
 - **Banners**: an info banner while the demo backend is in use (no
   telamon-llama), one with Open Folder while the models folder is empty; an error
   banner with Try Again when a reply fails.
+- **Models**: *On This Computer* lists each model in the models folder
+  (`$XDG_DATA_HOME/telamon-gates/models`) with its quantisation and size label
+  from the file's GGUF header (`gguf.rs`, bounded reads), its size, a badge
+  against the card's VRAM (Fits: under 83 % of it, Tight: under all of it,
+  Too Big: more) and Delete, after a confirmation. Vision projectors
+  (`mmproj-…`) and the later parts of a split model are not listed. *Get
+  Models* searches Hugging Face for GGUF repositories (`hub.rs`), opens one to
+  its single-file models, and downloads one at a time with a progress bar and
+  Cancel. A download goes to a hidden `.name.part`, resumes from it, is
+  checked against the sha256 Hugging Face publishes, and only then is renamed
+  into place; the chat's model list follows.
 - **Settings**: the backend, the model, the system prompt (saved as you
   type), the shared transparency switch, and the folder the conversations are
   in, with Open Folder.
@@ -138,7 +149,25 @@ in Settings is used as given, over plain http.
 
 ## Phase
 
-Functionable. Known gaps for later phases: deleting a conversation while it
+Functionable. From the PR #3 review, for their phases:
+
+- Secure: the server's API key is on its command line (readable in
+  `/proc` by other local users); `LLAMA_API_KEY` in its environment would not
+  be. A local process could take the free port between the check and the
+  server's start.
+- Reliable: Stop doesn't close the connection while the server is still
+  reading the prompt or loading the model, so the next message waits behind
+  it; a server that hangs mid-reply holds its worker for good; a panic in a
+  reply skips `release()`, so the idle stop never comes; `stop()` can signal
+  a PID already reaped.
+- Performant: the telamon-llama CI cache likely never hits (ccache hashes
+  the random build directory); the idle thread wakes every 15 s even with
+  no server.
+- Thinking models stream their reasoning as `reasoning_content`, which isn't
+  shown: "Thinking…" stays until the answer starts. A remote server started
+  with `--api-key` can't be used yet (no field for its key).
+
+Earlier known gaps: deleting a conversation while it
 is still being opened can show it once more (rare); the file thread is not
 joined on quit, so a save queued in the last instant can be lost (writes are
 atomic, so never half a file). Not yet: a real backend (see `docs/BACKEND.md`), renaming a

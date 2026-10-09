@@ -85,12 +85,23 @@ TelamonPage {
             ]
 
             TelamonSpinBox {
+                id: gpuLayers
                 from: 0
                 to: 999
                 editable: true
                 value: page.chat.gpuLayers
                 textFromValue: (value, locale) => value === 0 ? qsTr("Automatic") : Number(value).toLocaleString(locale, "f", 0)
-                valueFromText: (text, locale) => text === qsTr("Automatic") ? 0 : Number.fromLocaleString(locale, text)
+                // A cleared or mistyped field keeps the value it had.
+                valueFromText: (text, locale) => {
+                    if (text === qsTr("Automatic")) {
+                        return 0;
+                    }
+                    try {
+                        return Number.fromLocaleString(locale, text);
+                    } catch (e) {
+                        return gpuLayers.value;
+                    }
+                }
                 onValueModified: page.chat.saveServerOptions(value, page.chat.contextSize, page.chat.serverUrl)
                 Accessible.name: qsTr("GPU Layers")
             }

@@ -38,6 +38,9 @@ pub(crate) fn agent(connect: Option<Duration>) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_connect(connect)
         .http_status_as_error(false)
+        // No HTTP_PROXY: the server is on this computer or the local
+        // network, and a proxy would also see its key.
+        .proxy(None)
         .build()
         .into()
 }
@@ -65,7 +68,9 @@ pub fn local_models(dir: &Path) -> Vec<LocalModel> {
                 .strip_suffix(".gguf")?
                 .to_string();
             let meta = e.metadata().ok()?;
-            (meta.is_file() && !name.is_empty() && !name.starts_with('.')).then_some(LocalModel {
+            let usable =
+                meta.is_file() && !name.is_empty() && !name.starts_with('.') && is_model(&name);
+            usable.then_some(LocalModel {
                 name,
                 size: meta.len(),
                 path,
@@ -74,6 +79,21 @@ pub fn local_models(dir: &Path) -> Vec<LocalModel> {
         .collect();
     models.sort_by_key(|m| m.name.to_lowercase());
     models
+}
+
+/// Whether a `.gguf` (by its name without `.gguf`) is a model to chat with:
+/// not a vision projector (`mmproj-…`), and of a model split in parts only
+/// the first (`…-00001-of-00003`), which llama.cpp loads the rest from.
+fn is_model(name: &str) -> bool {
+    if name.to_ascii_lowercase().starts_with("mmproj") {
+        return false;
+    }
+    match name.rsplit_once("-of-") {
+        Some((head, tail)) if tail.len() == 5 && tail.bytes().all(|b| b.is_ascii_digit()) => {
+            head.ends_with("-00001")
+        }
+        _ => true,
+    }
 }
 
 pub struct Llama {
@@ -290,6 +310,8 @@ impl Llama {
             )));
         }
         let reader = BufReader::new(body.into_reader());
+        // Until `[DONE]`: a stream that just ends was cut off (the server
+        // crashed or the network went).
         for line in reader.lines() {
             if cancel.load(Ordering::Relaxed) {
                 // Dropping the reader closes the connection: the server stops.
@@ -306,7 +328,12 @@ impl Llama {
                 }
             }
         }
-        Ok(())
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        Err(BackendError::Other(
+            "The reply was cut off: the model server stopped answering.".into(),
+        ))
     }
 }
 
@@ -357,9 +384,11 @@ impl Backend for Llama {
             changed
         };
         // The next reply starts the server with the new options (or uses the
-        // external one): the old one goes now, leaving the graphics card.
+        // external one). The old one goes once no reply uses it, leaving the
+        // graphics card; waiting for that is the server's thread's, not ours.
         if changed {
-            self.server.stop();
+            let server = self.server.clone();
+            std::thread::spawn(move || server.retire());
         }
     }
 
@@ -619,6 +648,37 @@ mod tests {
                 ..Options::default()
             },
         )
+    }
+
+    #[test]
+    fn a_stream_that_just_ends_was_cut_off() {
+        let (base, _server) = serve_once(
+            concat!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n",
+            )
+            .to_string(),
+        );
+        let mut text = String::new();
+        let err = external(&base)
+            .complete(&request(), &AtomicBool::new(false), &mut |e| {
+                if let Event::Text(t) = e {
+                    text.push_str(t);
+                }
+            })
+            .unwrap_err();
+        assert_eq!(text, "Hel");
+        assert!(err.to_string().contains("cut off"), "{err}");
+    }
+
+    #[test]
+    fn split_parts_and_projectors_are_not_models() {
+        assert!(is_model("Qwen3.5-9B-Q4_K_M"));
+        assert!(is_model("big-Q4_K_M-00001-of-00003"));
+        assert!(!is_model("big-Q4_K_M-00002-of-00003"));
+        assert!(!is_model("mmproj-gemma-4-F16"));
+        assert!(!is_model("MMPROJ-model"));
+        assert!(is_model("one-of-a-kind"));
     }
 
     #[test]

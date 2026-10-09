@@ -92,7 +92,8 @@ pub trait Backend: Send + Sync {
     /// when the backend serves one model and there is nothing to pick.
     fn models(&self) -> Result<Vec<String>, BackendError>;
 
-    /// New choices from Settings; they apply from the next reply.
+    /// New choices from Settings; they apply from the next reply. Called on
+    /// the GUI thread, in the order they were made: must not block.
     fn set_options(&self, _options: &Options) {}
 
     /// Where the backend's model files are, if it has a folder of them.

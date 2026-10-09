@@ -1,0 +1,274 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Controls as QQC2
+import QtQuick.Layouts
+import Telamon.Ui
+
+// The models on this computer, and Hugging Face to get more from.
+TelamonPage {
+    id: page
+
+    required property var models
+    required property var vram
+    required property var chat
+    // root.confirm, from the window: a ConfirmDialog.
+    required property var confirm
+
+    title: qsTr("Models")
+
+    // A size in bytes, in the sidebar's VRAM units.
+    function size(bytes) {
+        if (bytes >= 1024 * 1024 * 1024) {
+            return qsTr("%1 GiB").arg(Number(bytes / (1024 * 1024 * 1024)).toLocaleString(Qt.locale(), "f", 1));
+        }
+        return qsTr("%1 MiB").arg(Number(bytes / (1024 * 1024)).toLocaleString(Qt.locale(), "f", 0));
+    }
+
+    // How a model of `bytes` sits in the graphics card's memory, beside room
+    // for the conversation: "fits", "tight" (some layers may run on the
+    // processor) or "big" (most of it will). "" when the card is unknown.
+    function fit(bytes) {
+        if (!page.vram.available || page.vram.total <= 0) {
+            return "";
+        }
+        if (bytes * 1.2 <= page.vram.total) {
+            return "fits";
+        }
+        return bytes <= page.vram.total ? "tight" : "big";
+    }
+
+    function folderUrl(path) {
+        return "file://" + path.split("/").map(encodeURIComponent).join("/");
+    }
+
+    function confirmDelete(name) {
+        page.confirm({
+            title: qsTr("Delete Model?"),
+            text: qsTr("“%1” will be deleted from this computer.").arg(name),
+            acceptText: qsTr("Delete"),
+            destructive: true
+        }, ok => {
+            if (ok) {
+                page.models.remove(name);
+            }
+        });
+    }
+
+    TextMetrics {
+        id: downloadWidth
+        text: qsTr("Download")
+    }
+    TextMetrics {
+        id: downloadedWidth
+        text: qsTr("Downloaded")
+    }
+
+    // A SectionRow's trailing items sit in a Row, which tops them: these
+    // centre themselves beside a taller button.
+    component FitBadge: TelamonBadge {
+        required property string fit
+        y: parent ? Math.round((parent.height - height) / 2) : 0
+        visible: fit.length > 0
+        type: fit === "fits" ? "success" : fit === "tight" ? "warning" : "error"
+        text: fit === "fits" ? qsTr("Fits") : fit === "tight" ? qsTr("Tight") : qsTr("Too Big")
+    }
+
+    InfoBanner {
+        Layout.fillWidth: true
+        type: "error"
+        text: page.models.error
+        shown: page.models.error.length > 0
+        closable: true
+        onClosed: page.models.dismissError()
+    }
+
+    InfoBanner {
+        Layout.fillWidth: true
+        text: qsTr("Telamon Gates uses the model server at %1, so models here aren't used.").arg(page.chat.serverUrl)
+        shown: page.chat.serverUrl.length > 0
+    }
+
+    Section {
+        title: qsTr("On This Computer")
+        footer: page.vram.available ? qsTr("Fits: room to spare in the graphics card's %1 GiB. Tight: part may run on the processor, slower. Too Big: most of it will.").arg(Number(page.vram.total / (1024 * 1024 * 1024)).toLocaleString(Qt.locale(), "f", 0)) : ""
+
+        Repeater {
+            model: page.models.names
+
+            SectionRow {
+                id: row
+                required property int index
+                required property string modelData
+                readonly property real bytes: page.models.sizes[index] ?? 0
+
+                title: modelData
+                subtitle: [page.models.quants[index], page.models.labels[index], page.size(bytes)].filter(s => s && s.length > 0).join(" · ")
+                leading: [
+                    Symbol {
+                        icon: Symbols.Psychology
+                        color: TelamonStyle.accent
+                    }
+                ]
+
+                FitBadge {
+                    fit: page.fit(row.bytes)
+                }
+                ToolbarButton {
+                    y: parent ? Math.round((parent.height - height) / 2) : 0
+                    symbol: Symbols.Delete
+                    text: qsTr("Delete %1").arg(row.modelData)
+                    toolTipText: qsTr("Delete")
+                    focusable: true
+                    onClicked: page.confirmDelete(row.modelData)
+                }
+            }
+        }
+
+        SectionRow {
+            visible: page.models.names.length === 0
+            title: qsTr("No models yet")
+            subtitle: qsTr("Find one below, or put a .gguf file in the models folder.")
+            leading: [
+                Symbol {
+                    icon: Symbols.Inventory2
+                    color: TelamonStyle.accent
+                }
+            ]
+        }
+
+        SectionRow {
+            title: qsTr("Models Folder")
+            subtitle: page.models.folder
+            leading: [
+                Symbol {
+                    icon: Symbols.FolderOpen
+                    color: TelamonStyle.accent
+                }
+            ]
+
+            SecondaryButton {
+                text: qsTr("Open Folder")
+                symbol: Symbols.FolderOpen
+                onClicked: Qt.openUrlExternally(page.folderUrl(page.models.folder))
+            }
+        }
+    }
+
+    Section {
+        title: qsTr("Get Models")
+        footer: qsTr("From Hugging Face. Each download is checked against the hash Hugging Face publishes.")
+
+        // The download under way, whatever is open below.
+        SectionRow {
+            visible: page.models.downloading.length > 0
+            leading: [
+                Symbol {
+                    icon: Symbols.Download
+                    color: TelamonStyle.accent
+                }
+            ]
+            content: [
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: TelamonStyle.spacingSmall
+
+                    QQC2.Label {
+                        Layout.fillWidth: true
+                        text: page.models.downloading
+                        textFormat: Text.PlainText
+                        elide: Text.ElideMiddle
+                    }
+                    TelamonProgressBar {
+                        Layout.fillWidth: true
+                        value: page.models.progress
+                        text: qsTr("%1%").arg(Math.floor(page.models.progress * 100))
+                    }
+                }
+            ]
+
+            SecondaryButton {
+                text: qsTr("Cancel")
+                symbol: Symbols.Close
+                onClicked: page.models.cancelDownload()
+            }
+        }
+
+        SectionRow {
+            content: [
+                SearchField {
+                    id: search
+                    Layout.fillWidth: true
+                    placeholderText: qsTr("Search models, such as Qwen or Gemma")
+                    Accessible.name: qsTr("Search Hugging Face")
+                    onQueryChanged: page.models.search(query)
+                }
+            ]
+        }
+
+        SectionRow {
+            visible: page.models.searching
+            title: qsTr("Searching…")
+            busy: true
+        }
+
+        SectionRow {
+            visible: !page.models.searching && search.query.trim().length > 0 && page.models.results.length === 0 && page.models.error.length === 0
+            title: qsTr("No GGUF models match “%1”").arg(search.query.trim())
+        }
+
+        Repeater {
+            model: page.models.searching ? [] : page.models.results
+
+            ColumnLayout {
+                id: result
+                required property int index
+                required property string modelData
+                readonly property bool open: page.models.repo === modelData
+
+                Layout.fillWidth: true
+                spacing: 0
+
+                SectionRow {
+                    Layout.fillWidth: true
+                    title: result.modelData
+                    subtitle: qsTr("%1 downloads").arg(Number(page.models.downloads[result.index] ?? 0).toLocaleString(Qt.locale(), "f", 0))
+                    chevron: true
+                    disclosure: true
+                    expanded: result.open
+                    busy: result.open && page.models.listing
+                    onClicked: page.models.openRepo(result.open ? "" : result.modelData)
+                }
+
+                Repeater {
+                    model: result.open ? page.models.files : []
+
+                    SectionRow {
+                        id: file
+                        required property int index
+                        required property string modelData
+                        readonly property real bytes: page.models.fileSizes[index] ?? 0
+                        readonly property bool have: page.models.names.indexOf(modelData.replace(/\.gguf$/, "")) >= 0
+
+                        Layout.fillWidth: true
+                        Layout.leftMargin: TelamonStyle.spacingLarge * 2
+                        title: modelData
+                        subtitle: page.size(bytes)
+
+                        FitBadge {
+                            fit: page.fit(file.bytes)
+                        }
+                        SecondaryButton {
+                            // One width either way, so the badges line up.
+                            implicitWidth: Math.max(downloadWidth.width, downloadedWidth.width) + TelamonStyle.spacingLarge * 4
+                            text: file.have ? qsTr("Downloaded") : qsTr("Download")
+                            symbol: file.have ? Symbols.Check : Symbols.Download
+                            enabled: !file.have && page.models.downloading.length === 0
+                            onClicked: page.models.download(file.modelData)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

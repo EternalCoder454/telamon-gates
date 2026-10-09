@@ -32,7 +32,9 @@ fn main() {
     println!("models: {models:?}");
     let mut messages = Vec::new();
     for i in 0..40 {
-        messages.push(Message::user(format!("Message {i}: tell me about the number {i} in a few sentences.")));
+        messages.push(Message::user(format!(
+            "Message {i}: tell me about the number {i} in a few sentences."
+        )));
         messages.push(Message::assistant(format!(
             "The number {i} is a whole number. It comes after {} and before {}. People use it every day.",
             i.max(1) - 1,

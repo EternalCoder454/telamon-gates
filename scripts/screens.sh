@@ -167,6 +167,26 @@ run_theme() {
     xdotool mousemove 115 1039 click 1
     sleep 1.2
     shot 18-about
+    xdotool mousemove 115 919 click 1
+    sleep 1.5
+    shot 20-models
+    # SCREENS_HUB=1: search Hugging Face (needs the network) and open a result.
+    if [ -n "${SCREENS_HUB:-}" ]; then
+        xdotool mousemove 900 422 click 1
+        xdotool type --delay 10 "SmolLM2-135M-Instruct"
+        sleep 5
+        shot 21-models-search
+        xdotool mousemove 900 500 click 1
+        sleep 4
+        shot 22-models-files
+        # Download the first file, look, then cancel it.
+        xdotool mousemove 1357 569 click 1
+        sleep 2
+        shot 23-models-downloading
+        xdotool mousemove 1370 427 click 1
+        sleep 1
+        shot 24-models-cancelled
+    fi
     # Narrow, on a conversation: the sidebar folds to icons.
     open_chat "Show me"
     win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)

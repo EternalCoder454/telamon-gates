@@ -87,6 +87,9 @@ struct State {
     running: Option<Running>,
     /// Replies under way: the server is not idle while one is.
     busy: usize,
+    /// Started with options that changed since: it stops when the last
+    /// reply using it ends, and the next one starts a new one.
+    stale: bool,
     last_used: Option<Instant>,
 }
 
@@ -145,8 +148,9 @@ impl Server {
         let alive = match state.running.as_mut() {
             Some(r) => r.launch == *launch && matches!(r.child.try_wait(), Ok(None)),
             None => false,
-        };
+        } && !state.stale;
         if !alive {
+            state.stale = false;
             if let Some(old) = state.running.take() {
                 stop(old.child);
             }
@@ -167,6 +171,23 @@ impl Server {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.busy = state.busy.saturating_sub(1);
         state.last_used = Some(Instant::now());
+        if state.stale && state.busy == 0 {
+            state.stale = false;
+            if let Some(r) = state.running.take() {
+                stop(r.child);
+            }
+        }
+    }
+
+    /// The options changed: stops the server now when no reply uses it,
+    /// else when the last one ends. A reply under way finishes on it.
+    pub fn retire(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.busy > 0 {
+            state.stale = true;
+        } else if let Some(r) = state.running.take() {
+            stop(r.child);
+        }
     }
 
     /// Whether a server is running now.
@@ -442,6 +463,45 @@ mod tests {
         );
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn new_options_wait_for_the_reply_under_way() {
+        let server = Server::new(std::env::temp_dir().join("gates-retire.log"));
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let child = server.spawn(command).unwrap();
+        {
+            let mut state = server.state.lock().unwrap();
+            state.running = Some(Running {
+                child,
+                launch: launch(),
+                endpoint: Endpoint {
+                    base: "http://127.0.0.1:1".into(),
+                    api_key: String::new(),
+                },
+            });
+            state.busy = 1;
+        }
+        // A reply is under way: the server stays until it ends.
+        server.retire();
+        assert!(server.is_running());
+        server.release();
+        assert!(!server.is_running());
+        // Nothing under way: it goes at once.
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let child = server.spawn(command).unwrap();
+        server.state.lock().unwrap().running = Some(Running {
+            child,
+            launch: launch(),
+            endpoint: Endpoint {
+                base: "http://127.0.0.1:1".into(),
+                api_key: String::new(),
+            },
+        });
+        server.retire();
+        assert!(!server.is_running());
     }
 
     #[test]
