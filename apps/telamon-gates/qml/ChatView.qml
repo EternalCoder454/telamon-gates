@@ -76,6 +76,7 @@ Item {
     // The save dialog is made the first time it is needed (ExportDialog.qml).
     Loader {
         id: saverLoader
+        readonly property var dialog: saverLoader.item
     }
 
     function exportAs(format) {
@@ -84,8 +85,8 @@ Item {
                 chat: view.chat
             });
         }
-        saverLoader.item.format = format;
-        saverLoader.item.open();
+        saverLoader.dialog.format = format;
+        saverLoader.dialog.open();
     }
 
     ColumnLayout {
@@ -127,11 +128,12 @@ Item {
                 // Made the first time it is opened.
                 Loader {
                     id: exportMenu
+                    readonly property var menu: exportMenu.item
                     active: false
 
                     function show() {
                         exportMenu.active = true;
-                        exportMenu.item.popup();
+                        exportMenu.menu.popup();
                     }
 
                     sourceComponent: ContextMenu {

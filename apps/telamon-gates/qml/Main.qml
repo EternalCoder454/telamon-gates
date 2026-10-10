@@ -425,12 +425,13 @@ TelamonWindow {
         id: conversationMenu
         property string conversationId
         property string conversationTitle
+        readonly property var menu: conversationMenu.item
 
         active: false
 
         function show(parentItem, x, y) {
             conversationMenu.active = true;
-            conversationMenu.item.popup(parentItem, x, y);
+            conversationMenu.menu.popup(parentItem, x, y);
         }
 
         sourceComponent: ContextMenu {

@@ -254,11 +254,12 @@ ColumnLayout {
             // The menu is made the first time it is opened.
             Loader {
                 id: modeMenu
+                readonly property var menu: modeMenu.item
                 active: false
 
                 function show() {
                     modeMenu.active = true;
-                    modeMenu.item.popup(modeButton, 0, -modeMenu.item.implicitHeight - TelamonStyle.spacingSmall);
+                    modeMenu.menu.popup(modeButton, 0, -modeMenu.menu.implicitHeight - TelamonStyle.spacingSmall);
                 }
 
                 sourceComponent: ContextMenu {
@@ -380,6 +381,7 @@ ColumnLayout {
     // The file dialog is made the first time it is needed (AttachDialog.qml).
     Loader {
         id: pickerLoader
+        readonly property var dialog: pickerLoader.item
         visible: false
     }
 
@@ -389,7 +391,7 @@ ColumnLayout {
                 chat: composer.chat
             });
         }
-        pickerLoader.item.open();
+        pickerLoader.dialog.open();
     }
 
     Timer {

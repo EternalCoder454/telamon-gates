@@ -146,6 +146,7 @@ ColumnLayout {
     // (AgentFolderDialog.qml).
     Loader {
         id: pickerLoader
+        readonly property var dialog: pickerLoader.item
         visible: false
     }
 
@@ -155,6 +156,6 @@ ColumnLayout {
                 chat: panel.chat
             });
         }
-        pickerLoader.item.open();
+        pickerLoader.dialog.open();
     }
 }

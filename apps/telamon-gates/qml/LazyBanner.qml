@@ -22,6 +22,7 @@ Loader {
     // The banner exists (made when `shown` first turns true; it is kept, as
     // it holds a dismissal).
     property bool made: false
+    readonly property var banner: lazy.item
     // The banner may open. False for the turn it is made in, so it slides in
     // like every later one; true at once if it is up when the window is.
     property bool ready: false
@@ -29,7 +30,7 @@ Loader {
     active: lazy.made
     // Out of the layout (and its margins) while the banner is, as an
     // InfoBanner is.
-    visible: lazy.item !== null && lazy.item.implicitHeight > 0
+    visible: lazy.banner !== null && lazy.banner.implicitHeight > 0
 
     onShownChanged: {
         if (lazy.shown) {
