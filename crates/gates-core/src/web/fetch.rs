@@ -625,10 +625,7 @@ mod tests {
             assert!(url.as_str().is_ascii(), "{written}");
         }
         // And what is not a valid name at all does not parse.
-        for bad in [
-            "https://a\u{202e}b.example/",
-            "https://exa mple.com/",
-        ] {
+        for bad in ["https://a\u{202e}b.example/", "https://exa mple.com/"] {
             assert!(Url::parse(bad).is_err(), "{bad}");
         }
     }
