@@ -11,6 +11,7 @@ mod models;
 mod settings;
 mod user;
 mod vram;
+mod workbench;
 
 use cxx_qt::{CxxQtType, Threading};
 use gates_core::{Backend, Store};
@@ -40,6 +41,7 @@ pub struct TelamonObjects {
     pub vram: *mut c_void,
     pub models: *mut c_void,
     pub fleet: *mut c_void,
+    pub workbench: *mut c_void,
 }
 
 /// The backend replies come from: llama.cpp when telamon-llama (or a
@@ -146,7 +148,7 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
     ));
     {
         let mut rust = chat.pin_mut().rust_mut();
-        rust.io = Some(io);
+        rust.io = Some(io.clone());
         rust.backend = Some(backend.clone());
         // The web search key goes in the system keyring, nowhere else.
         rust.web_keys = Some(Arc::new(gates_core::web::SecretService::default()));
@@ -154,6 +156,20 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
     }
     chat.pin_mut().start();
     library.pin_mut().reload();
+    // The coding workspace beside the chat: the chat shows the agent's edits
+    // and commands in it, and asks it which files have unsaved changes.
+    let mut workbench = workbench::qobject::workbench_make_unique();
+    {
+        let mut rust = workbench.pin_mut().rust_mut();
+        rust.io = Some(io.clone());
+    }
+    {
+        let panel = workbench.pin_mut().qt_thread();
+        let edits = workbench.pin_mut().rust().edits.clone();
+        let mut rust = chat.pin_mut().rust_mut();
+        rust.workbench = Some(Box::new(panel));
+        rust.edits = Some(edits);
+    }
     let vram = vram::qobject::vram_make_unique();
     let mut models = models::qobject::model_library_make_unique();
     let models_dir = gates_core::store::data_dir().join("models");
@@ -185,5 +201,6 @@ pub extern "C" fn telamon_objects_new() -> TelamonObjects {
         vram: vram.into_raw().cast(),
         models: models.into_raw().cast(),
         fleet: fleet.into_raw().cast(),
+        workbench: workbench.into_raw().cast(),
     }
 }

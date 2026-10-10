@@ -13,6 +13,9 @@ Item {
     required property var chat
     required property var library
 
+    // The user opens or closes the coding workspace beside the chat.
+    signal workspaceRequested(bool open)
+
     // The column messages and the field share, centred in the view.
     readonly property real columnWidth: Math.min(width - Kirigami.Units.gridUnit * 3, Kirigami.Units.gridUnit * 46)
 
@@ -116,6 +119,20 @@ Item {
                 currentIndex: view.chat.models.indexOf(view.chat.model)
                 onActivated: index => view.chat.pickModel(view.chat.models[index])
                 Accessible.name: qsTr("Model")
+            }
+            // The coding workspace: files, an editor and a console beside the
+            // chat. Code and Agent mode; kept open or closed per conversation.
+            ToolbarButton {
+                visible: view.chat.mode === "code" || view.chat.mode === "agent"
+                symbol: Symbols.Code
+                text: qsTr("Workspace")
+                checkable: true
+                checked: view.chat.workspaceOpen
+                focusable: true
+                // Its folder is made with the conversation (or chosen).
+                enabled: view.chat.conversationId.length > 0 || view.chat.workspace.length > 0
+                toolTipText: enabled ? qsTr("Workspace") : qsTr("Workspace (send a message first)")
+                onClicked: view.workspaceRequested(!view.chat.workspaceOpen)
             }
             // Save the conversation as a file: Markdown to read, or JSON.
             ToolbarButton {

@@ -57,6 +57,14 @@ ColumnLayout {
                     text: panel.chat.approvalTitle
                 }
             }
+            // The edit is for a file the user has changes of their own in,
+            // not saved: they choose whose version stays.
+            InfoBanner {
+                Layout.fillWidth: true
+                type: "warning"
+                shown: panel.chat.approvalConflict
+                text: qsTr("You have unsaved changes in this file. Keep Mine leaves the file and your changes as they are. Take the AI's replaces your changes with its version.")
+            }
             // What the model wrote: plain text, never run or shown as HTML.
             TelamonCodeView {
                 Layout.fillWidth: true
@@ -66,22 +74,25 @@ ColumnLayout {
                 wrap: true
                 Accessible.name: panel.chat.approvalKind === "run" ? qsTr("Command") : qsTr("Change")
             }
-            RowLayout {
-                Layout.alignment: Qt.AlignRight
+            // Right-aligned, and onto a second line when the chat is narrow
+            // (beside the coding workspace); the order is reversed for that.
+            Flow {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
                 spacing: TelamonStyle.spacing
 
-                SecondaryButton {
-                    text: qsTr("Deny")
-                    onClicked: panel.chat.answerApproval(0)
+                PrimaryButton {
+                    text: panel.chat.approvalConflict ? qsTr("Take the AI's") : panel.chat.approvalKind === "run" ? qsTr("Run") : qsTr("Allow")
+                    onClicked: panel.chat.answerApproval(1)
                 }
                 SecondaryButton {
-                    visible: panel.chat.approvalKind === "write"
+                    visible: panel.chat.approvalKind === "write" && !panel.chat.approvalConflict
                     text: qsTr("Allow All Edits in This Reply")
                     onClicked: panel.chat.answerApproval(2)
                 }
-                PrimaryButton {
-                    text: panel.chat.approvalKind === "run" ? qsTr("Run") : qsTr("Allow")
-                    onClicked: panel.chat.answerApproval(1)
+                SecondaryButton {
+                    text: panel.chat.approvalConflict ? qsTr("Keep Mine") : qsTr("Deny")
+                    onClicked: panel.chat.answerApproval(panel.chat.approvalConflict ? 3 : 0)
                 }
             }
         }
@@ -102,11 +113,12 @@ ColumnLayout {
             textFormat: Text.PlainText
             elide: Text.ElideMiddle
             wrapMode: panel.chat.sandboxed ? Text.Wrap : Text.NoWrap
-            text: panel.chat.sandboxed ? qsTr("Sandbox: the agent works in a folder of its own and can't see the rest of your computer.") : panel.chat.workspace
+            // Short when the chat is narrow (beside the coding workspace).
+            text: panel.chat.sandboxed ? (panel.width < Kirigami.Units.gridUnit * 30 ? qsTr("Sandbox: a folder of its own") : qsTr("Sandbox: the agent works in a folder of its own and can't see the rest of your computer.")) : panel.chat.workspace
         }
         SecondaryButton {
             visible: panel.chat.sandboxed
-            text: qsTr("Use a Folder on This Computer…")
+            text: panel.width < Kirigami.Units.gridUnit * 30 ? qsTr("Use a Folder…") : qsTr("Use a Folder on This Computer…")
             enabled: !panel.chat.generating
             onClicked: realFolder.open()
         }

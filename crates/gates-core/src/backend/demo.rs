@@ -58,6 +58,9 @@ impl Demo {
     }
 }
 
+/// What the demo writes in Agent mode (`Demo::code_step`).
+const DEMO_SCRIPT: &str = "def greet(name):\n    print(\"Hello, \" + name)\n\n\ngreet(\"world\")\n";
+
 /// What the demo does next when the web tools are offered.
 enum Step {
     Search(String),
@@ -170,6 +173,86 @@ impl Demo {
         None
     }
 
+    /// The step of a coding session `request` is at, when the workspace
+    /// tools are offered (Agent mode): the demo writes a small Python
+    /// script, rewrites it in two edits and runs it, so the workspace
+    /// panel's live edits and console can be seen. The text to say, and the
+    /// tools to ask for (none when it is done).
+    fn code_step(request: &Request) -> Option<(String, Vec<ToolCall>)> {
+        let offered = |name: &str| {
+            request
+                .tools
+                .iter()
+                .any(|t| t["function"]["name"].as_str() == Some(name))
+        };
+        if !offered("edit_file") || !offered("run_command") {
+            return None;
+        }
+        let user = request
+            .messages
+            .iter()
+            .rposition(|m| m.role == Role::User)?;
+        let results = request.messages[user..]
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .count();
+        let call = |n: usize, name: &str, arguments: serde_json::Value| ToolCall {
+            id: format!("demo-code-{}-{n}", request.messages.len()),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        };
+        // The two edits of the second turn are two results.
+        Some(match results {
+            0 => (
+                "I'll start with a small script. (The demo backend pretends: it writes the \
+                 same file whatever you ask.)"
+                    .to_string(),
+                vec![call(
+                    0,
+                    "write_file",
+                    json!({"path": "hello.py", "content": DEMO_SCRIPT}),
+                )],
+            ),
+            1 => (
+                "Now it greets several times, and says when it is done.".to_string(),
+                vec![
+                    call(
+                        0,
+                        "edit_file",
+                        json!({
+                            "path": "hello.py",
+                            "old_text": "def greet(name):\n    print(\"Hello, \" + name)\n",
+                            "new_text": "def greet(name, times=1):\n    for i in range(times):\n        print(f\"Hello, {name}! ({i + 1})\")\n",
+                        }),
+                    ),
+                    call(
+                        1,
+                        "edit_file",
+                        json!({
+                            "path": "hello.py",
+                            "old_text": "greet(\"world\")\n",
+                            "new_text": "greet(\"Telamon\", times=3)\n\nprint(\"Done\")\n",
+                        }),
+                    ),
+                ],
+            ),
+            3 => (
+                "Let me run it.".to_string(),
+                vec![call(
+                    0,
+                    "run_command",
+                    json!({"command": "python3 hello.py"}),
+                )],
+            ),
+            _ => (
+                "Done: `hello.py` greets three times. This was the **demo backend**, so none of \
+                 it came from a model."
+                    .to_string(),
+                Vec::new(),
+            ),
+        })
+    }
+
     /// `text`, streamed a word at a time. False when stopped.
     fn stream(&self, text: &str, cancel: &AtomicBool, emit: &mut dyn FnMut(Event<'_>)) -> bool {
         let mut start = 0;
@@ -209,7 +292,12 @@ impl Backend for Demo {
         cancel: &AtomicBool,
         emit: &mut dyn FnMut(Event<'_>),
     ) -> Result<(), BackendError> {
-        let step = Demo::web_step(request);
+        let code = Demo::code_step(request);
+        let step = if code.is_some() {
+            None
+        } else {
+            Demo::web_step(request)
+        };
         let reply = match &step {
             Some(Step::Search(query)) => {
                 format!("I'll search the web for that. (The demo backend pretends: \"{query}\".)")
@@ -227,7 +315,11 @@ impl Backend for Demo {
                      Sources:\n\n{links}"
                 )
             }
-            None => Demo::research_reply(request).unwrap_or_else(|| Demo::reply(request)),
+            None => code
+                .as_ref()
+                .map(|(text, _)| text.clone())
+                .or_else(|| Demo::research_reply(request))
+                .unwrap_or_else(|| Demo::reply(request)),
         };
         // Thinking, in short steps so Stop is quick.
         let mut waited = Duration::ZERO;
@@ -256,6 +348,11 @@ impl Backend for Demo {
                 arguments: arguments.to_string(),
             };
             emit(Event::ToolCalls(&[call]));
+        }
+        if let Some((_, calls)) = code
+            && !calls.is_empty()
+        {
+            emit(Event::ToolCalls(&calls));
         }
         Ok(())
     }
@@ -355,6 +452,65 @@ mod tests {
         assert!(rows.0[1].starts_with("Read example.org/demo/what-is-rust/1"));
         // Without the tools, nothing changes.
         assert!(Demo::reply(&request()).contains("demo backend"));
+    }
+
+    #[test]
+    fn plays_a_model_that_edits_and_runs_code() {
+        use crate::agent::{self, Approval, Host};
+        use crate::conversation::{Message, ToolCall};
+        use crate::tools::Workspace;
+        use crate::workbench::Touch;
+
+        #[derive(Default)]
+        struct Panel {
+            touched: Vec<Touch>,
+            results: Vec<String>,
+        }
+        impl Host for Panel {
+            fn text(&mut self, _: &str) {}
+            fn speed(&mut self, _: f64) {}
+            fn calls(&mut self, _: &[ToolCall]) {}
+            fn approve(&mut self, _: &ToolCall, _: &str, _: &str) -> Approval {
+                Approval::Allow
+            }
+            fn result(&mut self, m: Message) {
+                self.results.push(m.summary.unwrap_or_default());
+            }
+            fn next_turn(&mut self) {}
+            fn touched(&mut self, touch: Touch) {
+                self.touched.push(touch);
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("gates-demo-code-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ws = Workspace::open(&dir).unwrap();
+        let demo = Demo {
+            think: Duration::ZERO,
+            delay: Duration::ZERO,
+        };
+        let mut panel = Panel::default();
+        agent::run(&demo, request(), &ws, &AtomicBool::new(false), &mut panel).unwrap();
+        // A file written, two edits of it, a command.
+        let edits: Vec<_> = panel
+            .touched
+            .iter()
+            .filter_map(|t| match t {
+                Touch::Edited(c) => Some(c),
+                Touch::Read(_) => None,
+            })
+            .collect();
+        assert_eq!(edits.len(), 3, "{:?}", panel.results);
+        assert!(edits[0].created);
+        assert!(!edits[1].diff.marks.is_empty() && !edits[2].diff.marks.is_empty());
+        assert_eq!(panel.results.len(), 4, "{:?}", panel.results);
+        let script = std::fs::read_to_string(dir.join("hello.py")).unwrap();
+        assert!(
+            script.contains("times=3") && script.contains("Done"),
+            "{script}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

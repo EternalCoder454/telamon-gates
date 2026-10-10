@@ -499,6 +499,40 @@ The limits:
 - **Cost:** llama-server's prompt cache keeps the conversation's prefix, so
   each step only reads what is new.
 
+**The workspace panel's hooks.** `agent::Host` has four more methods, all
+with a default that does nothing, so a host that has no panel (the Fleet,
+Deep Research, the examples) is unchanged:
+
+- `unsaved(path)`: the user has unsaved changes in `path` (relative to the
+  workspace). A `write_file` or `edit_file` of it then asks through
+  `approve_over_unsaved` instead of `approve`, also when "Allow All Edits"
+  was given. The answer is `Allow` (the AI's version replaces theirs) or
+  `Approval::KeepMine`, which changes nothing and tells the model: "the user
+  has changes of their own in <file> that are not saved, and chose to keep
+  them … Don't try again unless they ask."
+- `output(command)`: where the output of a `run_command` goes as it prints
+  (a `workbench::Sink`: `write(bytes)` per chunk and `finish(line, ok)` with
+  "Exited with code 0 in 1.2 s"). `tools::run_with` takes the sink;
+  `tools::run` is the same without one. The model's result is unchanged
+  (the bounded head and tail, `[exit status …]`).
+- `touched(Touch)`: `Read(path)` after a `read_file`, `Edited(Change)` after
+  an allowed `write_file`/`edit_file` ran. A `Change` has the path, whether
+  the file is new, the whole new text (None over 1 MiB or when not text),
+  and the lines that changed. Taken from the file before and after the
+  edit (`workbench::snapshot`), not from the arguments, so what is shown is
+  what is on disk.
+
+`tools::target(ws, name, arguments)` gives the file a call names, as a path
+relative to the workspace (the same for `a.rs`, `./src/../a.rs` and the
+absolute path), or None outside it; the conflict check compares those.
+The user's own Run uses `tools::execute`, the same code as `run_command`
+(sandbox, process group, bounded output), without a time limit.
+
+In Agent mode the demo backend plays a model that uses these tools
+(`Demo::code_step`): it writes `hello.py`, edits it in two calls and runs it
+with `python3`, whatever is asked, so the panel's live edits, conflicts and
+console can be seen without a model (`scripts/screens.sh`).
+
 **Which models can:** a model's GGUF chat template has to mention tools
 (`gguf.rs` reads `tokenizer.chat_template`). For others the window says the
 agent can only talk.
@@ -992,6 +1026,26 @@ exchange on a worker at every start.
   window (one instance); the dynamic loader and the Qt and KDE libraries
   (about 35 MB of RSS) are not Gates'. Lazy binding would shorten the loader
   and weaken RELRO, so it stays off.
+
+### Coding workspace (1.4)
+
+Nothing is paid until the panel is opened: `WorkspacePanel.qml` is a `Loader`
+source (no editor, tree or console exists, and `TelamonCodeEditor`'s and
+`TelamonConsoleView`'s types are not loaded), the `Workbench` QObject holds a
+few empty fields, and the folder watch (one inotify descriptor and its
+thread) starts only when a folder is attached. Opened, nothing runs on the
+window's thread that can wait on the disk or a process: listing, reading,
+saving and creating go through the file thread, the user's command and the
+diff run on workers, and a command's output reaches the console in batches
+at most every 33 ms (at most 512 KiB held between two; the oldest bytes of a
+flood are dropped and said so). The tree only lists a folder when it is
+opened (at most 2000 entries), the editor highlights only the lines in view,
+and a file over 1 MiB opens in the read-only viewer. The console keeps 5000
+lines, and the panel 256 KiB of text for when it is opened again. Closing
+the panel drops the QML, the watch and any command still running. Not
+measured against a release build here (the dev container builds debug); the
+start-up figures above are unchanged by design, since the panel's code is not
+reached before it is opened.
 
 ### Recommended models
 

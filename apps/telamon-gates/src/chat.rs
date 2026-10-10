@@ -112,6 +112,13 @@ pub mod qobject {
         #[qproperty(QString, approval_title, cxx_name = "approvalTitle")]
         #[qproperty(QString, approval_detail, cxx_name = "approvalDetail")]
         #[qproperty(QString, approval_kind, cxx_name = "approvalKind")]
+        /// The edit asked about is for a file the user has unsaved changes
+        /// in: the answers are Keep Mine and Take the AI's.
+        #[qproperty(bool, approval_conflict, cxx_name = "approvalConflict")]
+        /// The coding workspace panel is open beside the open conversation
+        /// (kept with it), and the command its Run button runs.
+        #[qproperty(bool, workspace_open, cxx_name = "workspaceOpen")]
+        #[qproperty(QString, run_command, cxx_name = "runCommand")]
         /// Web search (Settings → Web Search): on, the provider's id, a
         /// SearXNG address, whether a key for the provider is in the system
         /// keyring (never the key itself), whether a keyring answers and
@@ -317,10 +324,23 @@ pub mod qobject {
         fn test_web_search(self: Pin<&mut Chat>);
 
         /// The answer to the change the agent waits on: 0 deny, 1 allow,
-        /// 2 allow it and the rest of this reply's edits.
+        /// 2 allow it and the rest of this reply's edits, 3 keep the user's
+        /// unsaved changes (for an edit of a file that has some).
         #[qinvokable]
         #[cxx_name = "answerApproval"]
         fn answer_approval(self: Pin<&mut Chat>, choice: i32);
+
+        /// Opens or closes the coding workspace panel for the open
+        /// conversation.
+        #[qinvokable]
+        #[cxx_name = "showWorkspacePanel"]
+        fn set_workspace_open_option(self: Pin<&mut Chat>, open: bool);
+
+        /// The command the panel's Run button runs, kept with the
+        /// conversation.
+        #[qinvokable]
+        #[cxx_name = "saveRunCommand"]
+        fn save_run_command(self: Pin<&mut Chat>, command: &QString);
 
         #[inherit]
         #[cxx_name = "beginInsertRows"]
@@ -376,6 +396,7 @@ pub mod qobject {
 use crate::io::Io;
 use crate::library;
 use crate::settings;
+use crate::workbench;
 use core::pin::Pin;
 use cxx_qt::{CxxQtThread, CxxQtType, Threading};
 use cxx_qt_lib::{
@@ -392,6 +413,7 @@ use gates_core::systemone::{self, SystemOne};
 use gates_core::tools::Workspace;
 use gates_core::watchdog::Cap;
 use gates_core::web::{self, KeyStore, Provider, Setup};
+use gates_core::workbench::{Batcher, Edits, Sink, Touch};
 use gates_core::{Backend, Conversation, Event, Message, Request, Role};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -503,6 +525,9 @@ pub struct ChatRust {
     approval_title: QString,
     approval_detail: QString,
     approval_kind: QString,
+    approval_conflict: bool,
+    workspace_open: bool,
+    run_command: QString,
     web_search: bool,
     web_provider: QString,
     web_url: QString,
@@ -564,6 +589,10 @@ pub struct ChatRust {
     pub io: Option<Io>,
     // Boxed: a thread handle is not Unpin, and the struct must be.
     pub library: Option<Box<CxxQtThread<library::qobject::Library>>>,
+    /// The coding workspace beside the chat: where the agent's edits and
+    /// commands' output are shown, and which files have unsaved changes.
+    pub workbench: Option<Box<CxxQtThread<workbench::qobject::Workbench>>>,
+    pub edits: Option<Arc<Edits>>,
 }
 
 /// Tokens per second of a reply: the server's own figure once it sends
@@ -608,6 +637,10 @@ struct Stream {
     /// The mode of the reply, for the turns after the first.
     mode: String,
     picked: bool,
+    /// The coding workspace's panel and the files the user has unsaved
+    /// changes in.
+    workbench: Option<CxxQtThread<workbench::qobject::Workbench>>,
+    edits: Option<Arc<Edits>>,
 }
 
 impl Stream {
@@ -619,6 +652,31 @@ impl Stream {
         let _ = self
             .qt
             .queue(move |chat| chat.append_reply(generation, &text, speed));
+    }
+}
+
+impl Stream {
+    /// Asks the user whether `call` may run, and waits for the answer.
+    /// `conflict`: it changes a file they have unsaved changes in.
+    fn ask(&mut self, call: &ToolCall, title: &str, detail: &str, conflict: bool) -> Approval {
+        let (tx, rx) = mpsc::channel();
+        let kind = if call.name == "run_command" {
+            "run"
+        } else {
+            "write"
+        };
+        let (generation, title, detail) = (self.generation, title.to_string(), detail.to_string());
+        let _ = self
+            .qt
+            .queue(move |chat| chat.ask_approval(generation, title, detail, kind, conflict, tx));
+        // Waits for the answer; Stop (or a reply left) is a no.
+        loop {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(answer) => return answer,
+                Err(RecvTimeoutError::Timeout) if !self.cancel.load(Ordering::Relaxed) => {}
+                Err(_) => return Approval::Deny,
+            }
+        }
     }
 }
 
@@ -644,23 +702,29 @@ impl agent::Host for Stream {
     }
 
     fn approve(&mut self, call: &ToolCall, title: &str, detail: &str) -> Approval {
-        let (tx, rx) = mpsc::channel();
-        let kind = if call.name == "run_command" {
-            "run"
-        } else {
-            "write"
-        };
-        let (generation, title, detail) = (self.generation, title.to_string(), detail.to_string());
-        let _ = self
-            .qt
-            .queue(move |chat| chat.ask_approval(generation, title, detail, kind, tx));
-        // Waits for the answer; Stop (or a reply left) is a no.
-        loop {
-            match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(answer) => return answer,
-                Err(RecvTimeoutError::Timeout) if !self.cancel.load(Ordering::Relaxed) => {}
-                Err(_) => return Approval::Deny,
-            }
+        self.ask(call, title, detail, false)
+    }
+
+    fn approve_over_unsaved(&mut self, call: &ToolCall, title: &str, detail: &str) -> Approval {
+        self.ask(call, title, detail, true)
+    }
+
+    fn unsaved(&mut self, path: &str) -> bool {
+        self.edits.as_ref().is_some_and(|e| e.is_unsaved(path))
+    }
+
+    fn output(&mut self, command: &str) -> Option<Arc<dyn Sink>> {
+        let workbench = self.workbench.clone()?;
+        let batcher = Batcher::new(move |text| {
+            let _ = workbench.queue(move |wb| wb.append_console(&text));
+        });
+        batcher.note(&format!("Agent: {command}"));
+        Some(batcher)
+    }
+
+    fn touched(&mut self, touch: Touch) {
+        if let Some(workbench) = &self.workbench {
+            let _ = workbench.queue(move |wb| wb.agent_touched(touch));
         }
     }
 
@@ -929,6 +993,9 @@ impl qobject::Chat {
             c.mode = self.mode().to_string();
             let workspace = self.workspace().to_string();
             c.workspace = (!workspace.is_empty()).then_some(workspace);
+            c.workspace_open = *self.workspace_open();
+            let command = self.run_command().to_string();
+            c.run_command = (!command.is_empty()).then_some(command);
             self.as_mut()
                 .set_conversation_id(QString::from(c.id.as_str()));
             self.as_mut().set_title(QString::from(c.title.as_str()));
@@ -1589,12 +1656,49 @@ impl qobject::Chat {
         let answer = match choice {
             1 => Approval::Allow,
             2 => Approval::AllowEdits,
+            3 => Approval::KeepMine,
             _ => Approval::Deny,
         };
         if let Some(tx) = self.as_mut().rust_mut().approval.take() {
             let _ = tx.send(answer);
         }
+        self.as_mut().set_approval_conflict(false);
         self.set_approving(false);
+    }
+
+    /// Opens or closes the coding workspace panel; kept with the
+    /// conversation (one not yet sent gets it when it is).
+    pub fn set_workspace_open_option(mut self: Pin<&mut Self>, open: bool) {
+        self.as_mut().set_workspace_open(open);
+        let changed = match self.as_mut().rust_mut().conversation.as_mut() {
+            Some(c) => {
+                c.workspace_open = open;
+                true
+            }
+            None => false,
+        };
+        if changed {
+            self.save();
+        }
+    }
+
+    pub fn save_run_command(mut self: Pin<&mut Self>, command: &QString) {
+        let command = command.to_string();
+        if command == self.run_command().to_string() {
+            return;
+        }
+        self.as_mut()
+            .set_run_command(QString::from(command.as_str()));
+        let changed = match self.as_mut().rust_mut().conversation.as_mut() {
+            Some(c) => {
+                c.run_command = (!command.is_empty()).then_some(command);
+                true
+            }
+            None => false,
+        };
+        if changed {
+            self.save();
+        }
     }
 
     /// The agent asks whether a change may happen (`kind`: "write" or
@@ -1605,12 +1709,14 @@ impl qobject::Chat {
         title: String,
         detail: String,
         kind: &str,
+        conflict: bool,
         tx: Sender<Approval>,
     ) {
         if self.rust().generation != generation {
             return;
         }
         self.as_mut().rust_mut().approval = Some(tx);
+        self.as_mut().set_approval_conflict(conflict);
         self.as_mut()
             .set_approval_title(QString::from(title.as_str()));
         self.as_mut()
@@ -2225,6 +2331,13 @@ impl qobject::Chat {
             .set_sandboxed(workspace.is_empty() || is_sandbox(&workspace));
         self.as_mut()
             .set_workspace(QString::from(workspace.as_str()));
+        let (open, command) = conversation
+            .as_ref()
+            .map(|c| (c.workspace_open, c.run_command.clone().unwrap_or_default()))
+            .unwrap_or_default();
+        self.as_mut().set_workspace_open(open);
+        self.as_mut()
+            .set_run_command(QString::from(command.as_str()));
         let mode = conversation
             .as_ref()
             .map(|c| c.mode.clone())
@@ -2410,6 +2523,8 @@ impl qobject::Chat {
             network: *self.agent_network(),
             home: *self.agent_home(),
         };
+        let panel = self.rust().workbench.as_deref().cloned();
+        let edits = self.rust().edits.clone();
         // Deep Research needs the web, and a model that can call tools.
         if pinned
             .as_ref()
@@ -2513,6 +2628,8 @@ impl qobject::Chat {
                 cancel: cancel.clone(),
                 mode: mode.id.clone(),
                 picked,
+                workbench: panel,
+                edits: edits.clone(),
             };
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 // What the web may open in this reply: what it is shown.
@@ -2548,6 +2665,14 @@ impl qobject::Chat {
                         request
                             .system_prompt
                             .push_str(&format!("\n\nThe workspace is {}.", ws.root().display()));
+                        // Files the user saved from the editor since the last
+                        // turn (never what they have not saved).
+                        if let Some(note) = edits
+                            .as_ref()
+                            .and_then(|e| gates_core::workbench::saved_note(&e.take_saved()))
+                        {
+                            request.system_prompt.push_str(&format!("\n\n{note}"));
+                        }
                         let ws = ws.with_access(access);
                         let tools = agent::Tools {
                             workspace: Some(&ws),
@@ -2677,6 +2802,7 @@ impl qobject::Chat {
         }
         self.as_mut().set_generating(false);
         self.as_mut().set_approving(false);
+        self.as_mut().set_approval_conflict(false);
         self.as_mut().set_status(QString::default());
         if let Some(c) = self.as_mut().rust_mut().conversation.as_mut() {
             c.touch();

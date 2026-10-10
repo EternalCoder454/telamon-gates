@@ -303,11 +303,94 @@ beside it.
     thread. A failed Web Search test unfolds Web Search, so the result isn't
     hidden.
 
+## Coding workspace
+
+In Code and Agent mode a **Workspace** button in the chat header (a checkable
+button, enabled once the conversation has its folder: after the first
+message, or when a folder was chosen) opens a panel beside the chat, like
+Telamon Notepad's editor with the chat as its assistant. Whether it is open is
+kept per conversation (`Conversation.workspace_open`, `Chat.workspaceOpen`,
+`showWorkspacePanel(open)`); so is the command the Run button runs
+(`Conversation.run_command`, `Chat.runCommand`, `saveRunCommand`).
+
+- **Where.** `Main.qml` puts the panel on the right of the chat, half the
+  width to begin with, with a line between them to drag (20 grid units at
+  least; the chat keeps 16). Narrower than 36 grid units the panel takes the
+  whole view, and its own Close button brings the chat back. The panel is a
+  `Loader` made when first opened and dropped when closed (like `pageLoader`
+  and `LazyBanner`: a session that never opens it pays nothing, and the
+  editor, the tree and the console are not made until then). Closing it with
+  unsaved files, or leaving the conversation, asks first (Discard Unsaved
+  Changes?).
+- **Folder.** The conversation's own: its sandbox, or the folder the user
+  chose for the agent (`Chat.workspace`); the same `Workspace` the agent's
+  tools use, with the same confinement. `Workbench.attach(conversation,
+  workspace, network, home)` opens it on a worker.
+- **Files** (left): a lazy tree. A folder is listed when opened
+  (`Workbench.list`), through the file thread; `.git`, `target`,
+  `node_modules`, `build`, `dist`, `.venv`, `__pycache__` and `.cache`
+  folders are left out, as are links that end outside the workspace, and at
+  most 2000 entries of a folder show ("… and N more"). The open folders are
+  watched with inotify (`workbench::Watcher`, at most 256) and listed again
+  a moment after something is made, removed or moved in them; Refresh does
+  the same by hand. `read_file` by the agent selects that file in the tree.
+- **Editor** (right): a `TelamonCodeEditor` per tab, in a `TabBar` (a dot on
+  a tab with unsaved changes; the "+" makes a new empty file). The editor
+  fills its space and takes the highlighting from the file name. Files over
+  1 MiB open read-only in the framework's viewer; over 8 MiB, or not UTF-8
+  text, they don't open (a banner says why). A file whose lines end in CRLF
+  is saved with CRLF; one whose endings are mixed is read-only (the editor
+  would change them). A file with bidirectional control characters opens
+  under a warning (they can make code read in another order than it runs).
+  Ctrl+S (or Save) writes the file through the file thread
+  (`workbench::save`: the path is resolved inside the workspace, links
+  followed and refused when they leave it, and the file is replaced by a new
+  name and a rename, as `write_file` does). Run saves the changed files first.
+- **Live AI edits.** When the agent's `write_file` or `edit_file` has been
+  allowed and has run, `agent.rs` tells the host (`Host::touched`) the file,
+  its new text and the changed lines (a line diff, `workbench::changed_lines`:
+  new lines are marked Added, rewritten ones Changed, for six seconds). The
+  panel opens the file in a tab (or updates it with `setTextPreserving`,
+  which keeps the caret and the view), marks the lines and scrolls to the
+  first change. A file over 1 MiB, or not text, is read from disk instead.
+- **Conflicts.** The editor tells `Workbench` which files have unsaved
+  changes (`markUnsaved`). An edit of one of those always asks, also after
+  Allow All Edits in This Reply, and its card says so: *You have unsaved
+  changes in this file*, with **Keep Mine** (the file isn't changed and the
+  model is told why) and **Take the AI's** (its version replaces theirs, in
+  the editor and on disk). The model always reads from disk, so it hears of
+  the user's changes only once they are saved: at its next turn, the system
+  prompt lists the files the user saved since the last one
+  (`workbench::saved_note`).
+- **Run** (below the editor): a command field and Run / Stop. The command is
+  the user's own, so nothing asks; it runs through the agent's sandbox
+  (`sandbox::command`, bubblewrap) in the workspace with the agent's network
+  and home settings, and the panel says so ("Runs in the sandbox, in this
+  folder. Network: … Your home folder: …"; without bubblewrap, that commands
+  are off). stdout and stderr stream into a `TelamonConsoleView` (ANSI
+  colours, 5000 lines), batched every 33 ms, followed by a line on how it
+  ended ("Exited with code 0 in 1.2 s", red when it failed, "Stopped after
+  …"). Stop ends the whole process group (SIGTERM, then SIGKILL after a
+  second). The agent's own `run_command` output goes to the same console as
+  it runs, after a line "Agent: <command>". The panel closing, or another
+  conversation opening, stops a command still running. Console text kept
+  while the panel is closed: the last 256 KiB.
+- **Safety.** File names and contents are untrusted: the editor and the
+  console are plain text (nothing in them is markup, run or opened), file
+  names are `PlainText` labels, and every path goes through
+  `Workspace::resolve` (no `..`, no links out). The panel never opens a file
+  outside the workspace.
+- **Not done:** reloading an open tab when something other than the agent
+  (a command, another program) changes its file; renaming and deleting files
+  from the tree; asking about unsaved files when the window itself closes.
+
 ## Code
 
 - `crates/gates-core` (no Qt): `Conversation`/`Message`, the `Store` (one
   JSON file per conversation), Markdown to safe rich text (`markdown.rs`),
-  and the `Backend` trait with the `Demo` backend. All unit-tested.
+  the workspace's files, diff, unsaved-file tracking, console batching and
+  folder watch (`workbench.rs`), and the `Backend` trait with the `Demo`
+  backend. All unit-tested.
 - `apps/telamon-gates/src` (CXX-Qt):
   - `Chat` (a `QAbstractListModel` of the open conversation's messages, roles
     `role`, `text`, `kinds`, `contents`, `langs`, `streaming`, `failed`):
@@ -336,6 +419,14 @@ beside it.
   - `Library` (the sidebar's list as lists `ids`, `titles`, `sections`,
     `updates`): `reload`, `setDayStart`, `remove`, `dismissNotice`; `loaded`,
     `folder`, `logFolder`, and `notice` / `noticeFolder` (the banner above).
+  - `Workbench` (`workbench.rs`): the coding workspace's files and commands.
+    Properties `root`, `ready`, `running`, `commands`, `problem`; `attach`,
+    `detach`, `setAccess`, `list`, `open`, `save`, `create`, `markUnsaved`,
+    `watch`, `unwatch`, `run`, `stop`, `backlog`, `clearConsole`; signals
+    `listed`, `listFailed`, `opened`, `openFailed`, `saved`, `created`,
+    `saveFailed`, `changed`, `liveEdit`, `touched`, `consoleText`,
+    `consoleCleared`. `Chat` holds its thread handle, to show the agent's
+    edits and output, and the shared `Edits` (which files are unsaved).
   - `Vram`: `available`, `used`, `total` (bytes), `refresh`.
   - `lib.rs` tells the window when the graphics memory limit is reached
     (`tell_window_on_limit`): `Chat.memoryLimitReached` and

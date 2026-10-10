@@ -52,6 +52,7 @@ qt_add_qml_module(telamon-gates-app
         qml/AboutPage.qml
         qml/ModelsPage.qml
         qml/AgentPanel.qml
+        qml/WorkspacePanel.qml
         qml/FleetPage.qml
         qml/ExportDialog.qml
         qml/AttachDialog.qml
