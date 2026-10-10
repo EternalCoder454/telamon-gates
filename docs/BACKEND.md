@@ -611,12 +611,20 @@ the user; each call shows as a tool row.
   key and is often plain http on the user's own network, may. HTTP (`ureq`,
   native-tls) ignores proxies.
 - **The key** is kept by `web::keys::KeyStore`: the system keyring through
-  `oo7` (Secret Service; KWallet answers it on Plasma) for the app, `Memory`
-  for tests, `Missing` for "no keyring". Without a keyring Settings says so and
-  nothing is saved. Starting the app only checks that the service answers (no
-  wallet is opened or unlocked); the key is read on the first reply that needs
-  it, which may ask the user to unlock the wallet, and then kept in memory.
-  Keys are kept per provider.
+  libsecret's `secret-tool` (`/usr/bin/secret-tool`, by its full path, so a
+  program on `$PATH` is never handed the key; the Secret Service, which KWallet
+  answers on Plasma) for the app, `Memory` for tests, `Missing` for "no
+  keyring". The items have the attributes `application` =
+  `net.eterneon.telamon.gates` and `name` = `web-search-key-<provider>`.
+  `secret-tool store` takes the secret on standard input, never in its
+  arguments; each call runs on a worker with a 90 s limit (a locked wallet may
+  ask the user for a password), after which the process is killed. A missing
+  `secret-tool` or a service that doesn't answer is "no keyring": Settings
+  says so and nothing is saved, in a file or anywhere else. (The package
+  requires `libsecret`.) Starting the app only checks that the service answers
+  (a search that finds nothing: no wallet is opened or unlocked); the key is
+  read on the first reply that needs it, which may ask the user to unlock the
+  wallet, and then kept in memory. Keys are kept per provider.
 - **`fetch_page`** (`web/fetch.rs`, `web/html.rs`): https only, no sign-in in
   the address; redirects followed here, 5 at most, each checked again; a
   resolver that drops non-public addresses (`public_ip`: loopback, private,
@@ -660,10 +668,11 @@ the user; each call shows as a tool row.
   first page, an answer with its sources) over `web::Canned`, made-up results
   at example.org, .net and .com, so the rows and progress can be seen without a
   model or a key.
-- **Cost:** the keyring (`oo7`, with `zbus` and a one-thread `tokio`) and
-  `url` took the lockfile from 119 to 225 packages and the minimum Rust to
-  1.92 (oo7's). A lighter way to reach the Secret Service is a Performant-phase
-  question.
+- **Cost:** the first version kept the key through `oo7` (with `zbus` and a
+  one-thread `tokio`), which with `url` took the lockfile from 119 to 225
+  packages and the stripped binary from 7.30 to 16.18 MB. The keyring is now
+  `secret-tool`, and `url` uses the unicode-rs IDNA tables: 128 packages and
+  6.90 MB at 1.3 (see Performance, Start-up, memory and size).
 - **Checked live** (2026-10-09, `examples/web-check`): `fetch` of
   https://example.com and of a Wikipedia article (whose 90-language list is
   cut to a few lines and a count, so the article fits the 20 KB), and the
@@ -879,6 +888,94 @@ Qwen3-4B-Instruct-2507 Q4_K_M unless said; temperature 0; scripts in
 - **The binary.** HTTPS through the system's OpenSSL instead of a bundled
   rustls/ring: 8.48 → 7.14 MB stripped for the same release build
   (−1.34 MB, −16%).
+
+### Start-up, memory and size (1.3, measured 2026-10-10)
+
+Release builds in the dev container (`CMAKE_BUILD_TYPE=Release`), Xvfb at 1.5x,
+the demo backend, fresh XDG folders, `main` (412cb68) against this branch,
+interleaved, 3 sessions of 5 pairs each (n = 15 per side), with the machine's
+1-minute load under 1.5. Sizes in MiB.
+
+| | 1.2 (main) | 1.3 | |
+|---|---|---|---|
+| Window mapped (10 ms poll) | 152 ms | 113 ms | −39 ms (−26%) |
+| CPU until it is mapped | 0.13 s | 0.10 s | −0.03 s |
+| Idle RSS, 5 s after | 123.2 MB | 109.6 MB | −13.6 MB (−11%) |
+| Peak RSS after one reply | 134.9 MB | 121.8 MB | −13.1 MB (−10%) |
+| CPU over 10 idle seconds | 0.03 s | 0.03 s | no change |
+| Binary, stripped | 16.38 MB | 6.90 MB | −9.48 MB (−58%) |
+
+What each change did (one binary per step, median of 3 interleaved runs, so
+the first row is a little quicker than the table above):
+
+| Step | Mapped | Idle RSS | Peak | Stripped |
+|---|---|---|---|---|
+| main | 142 ms | 124.6 MB | 136.5 MB | 16.38 MB |
+| made when first used (QML) | 111 ms | 114.7 MB | 127.4 MB | 16.41 MB |
+| + `secret-tool` for the key | 112 ms | 110.8 MB | 123.3 MB | 8.91 MB |
+| + unicode-rs IDNA | 110 ms | 110.4 MB | 123.5 MB | 8.56 MB |
+| + fat LTO, 1 codegen unit, opt-level s | 111 ms | 110.8 MB | 122.7 MB | 6.90 MB |
+
+**Where start-up went** (1.2, ms since the process began, median of 11, from a
+timestamp at each stage): `main` 17 (the dynamic loader: 27% of the CPU in
+the first 200 ms), `QApplication` 21, `KDBusService` 37 (one synchronous bus
+round trip, 16 ms), the Rust objects 0.3 (the file reads, the conversation
+scan, the model list, the first-run check with `vulkaninfo`, and the keyring
+check all run on workers), the QML engine 38, **the window's QML loaded 142
+(104 ms)**, first frame 156. The Rust side is not where the time was; the QML
+load was, and most of it was objects the window doesn't show. Taking each out
+of a copy and timing it: the four lazy pages (and everything they import,
+such as QtQuick.Dialogs through Fleet) 15 ms, the Agent panel 8, the six
+hidden banners 8 and the three menus 6. Each is now made on first use
+(`docs/DESIGN.md`, Startup). The four pages were already in Loaders, but a
+Loader with a typed `sourceComponent` still loads the type with the window.
+
+**Memory** (`/proc/<pid>/smaps_rollup`, 1.2 idle): RSS 125.3 MB, of which
+anonymous 30.0 MB (the heap 13.4, other arenas 9.3, the QML JS heap 1.4) and
+file-backed 74.0 MB (the Qt libraries about 35, the Telamon.Ui plugin 6.2,
+the symbols font 6.7 (mapped twice), the binary itself 8.9). A binary's pages
+count while they are resident, so the 7.9 MB the keyring and IDNA took out of
+it took about 4 MB of RSS. The QML made on first use was 10 MB of the 13.6.
+
+**Idle CPU.** Nothing runs but the composer's blinking cursor, which draws a
+frame every 0.5 s (`perf`: the scene graph's render bursts in the idle window
+are 0.5 s apart, and the Qt raster fill is the cost); the 3 s graphics
+memory read and the minute timers draw nothing. 0.03 s per 10 s at 1.2 and
+at 1.3.
+
+**Size, by crate** (symbol bytes of the 1.2 binary: the `cargo bloat` figure,
+by `nm`, since `cargo bloat` can't read a static library): `zvariant` 1.37 MB,
+`syn` 0.87 (through `zvariant_utils`), `zbus` 0.71, `tokio` 0.40, `oo7` 0.28,
+`proc_macro` 0.15, `num_bigint_dig` 0.14, `zvariant_utils` 0.13, ICU and IDNA
+0.26: about 5 MB of symbols, 7.5 MB of the binary once what they pulled in
+(unwinding tables, generics) went. `oo7` also did a Diffie-Hellman key
+exchange on a worker at every start.
+
+- **The key through `secret-tool`.** Same attributes, so a key saved by 1.2
+  is found. 7.5 MB of binary and 4 MB of RSS.
+- **`url` with the unicode-rs IDNA back end** (`idna_adapter = "=1.1.0"`; ICU4X
+  is the default): 0.35 MB and 18 fewer packages, the same answers. Version
+  1.0.0 of the adapter is smaller still but refuses every non-ASCII name; not
+  used. The SSRF guard is unchanged and its tests now also cover other
+  spellings (`0x7f.1`, `2130706433`, full-width and circled digits, the
+  ideographic full stop) and that other scripts become their Punycode name.
+- **Release profile** `lto = "fat"`, `codegen-units = 1`, `opt-level = "s"`:
+  8.56 → 6.90 MB (−19%). Start-up and the CPU of a reply are the same (a
+  demo reply is 25–27 ticks of Qt drawing either way). `opt-level = "z"` gave
+  6.60 MB for slower code; fat LTO alone at opt-level 3, 7.93 MB. Not
+  `panic = "abort"`: the web fetch and the chat catch panics. The RPM's
+  `RUSTFLAGS` (`%{build_rustflags}` says `-Copt-level=3`, which beats the
+  profile) now end in `-Copt-level=s`. The RPM keeps its symbols
+  (`debug_package` is off): its binary is 12.1 MB installed.
+- **Tried and dropped:** `malloc_trim(0)` 1.5 s after the window (−0.1 to
+  −1.1 MB between runs, inside the noise), `M_ARENA_MAX=2` (−0.3 MB) and
+  limiting Qt's thread pool to 2 threads (0): none measured better. Slowing
+  the graphics-memory poll would save nothing measurable (a thread start
+  every 3 s).
+- **Left:** `KDBusService` is 16 ms of the start and has to come before any
+  window (one instance); the dynamic loader and the Qt and KDE libraries
+  (about 35 MB of RSS) are not Gates'. Lazy binding would shorten the loader
+  and weaken RELRO, so it stays off.
 
 ### Recommended models
 

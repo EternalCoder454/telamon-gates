@@ -15,7 +15,7 @@ rust-version = "1.92"
 telamon-framework-ui = { git = "https://github.com/EternalCoder454/atlas-framework", tag = "v2.0.10" }
 
 # Size over speed: fat LTO with one codegen unit and opt-level "s" made the
-# stripped binary 8.98 MB -> 7.24 MB (-19%) with no change in start-up or in
+# stripped binary 8.56 MB -> 6.90 MB (-19%) with no change in start-up or in
 # the CPU a reply takes (docs/BACKEND.md, Performance). Not panic = "abort":
 # the web fetch and the chat catch panics (catch_unwind).
 [profile.release]

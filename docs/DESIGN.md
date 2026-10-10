@@ -364,6 +364,22 @@ beside it.
   Its result is `Chat.serverMissing` and `Chat.noGpu`, which the banners
   follow; with a server address set in Settings, neither is looked for. The
   demo backend stays the fallback.
+- **Made when first used.** Building a QML object costs about a millisecond
+  (the Telamon.Ui and Kirigami types are not cheap), and a type named in a
+  file is loaded with that file, wherever it is used in it, with everything
+  it imports. So what the window doesn't show at the start isn't made at the
+  start:
+  - the Settings, Fleet, Models and About pages are loaded by file name
+    (`Main.qml`'s `pageLoader`, from `lazyPages`), one at a time, and dropped
+    when left (a Loader with a typed `sourceComponent` would still load the
+    type, and QtQuick.Dialogs through Fleet, with the window);
+  - the file dialogs (`ExportDialog`, `AttachDialog`, `AgentFolderDialog`,
+    each in a file of its own, so that QtQuick.Dialogs loads only when one is
+    first opened), the Agent panel, the three context menus and the six
+    banners (`LazyBanner`, which slides in like an `InfoBanner`) are made the
+    first time they are needed, and kept.
+  A new hidden part of the window should be made the same way. Measured:
+  window mapped 142 → 111 ms, idle RSS 124.6 → 114.7 MB.
 - **The log.** `gates-core/src/applog.rs` writes
   `$XDG_STATE_HOME/telamon-gates/telamon-gates.log` (`~/.local/state/…`):
   one line per entry, UTC time, level and text, from the first-run worker
@@ -539,11 +555,16 @@ only when it is `https://huggingface.co/...`.
   a wrong checksum are errors in the same banner (a wrong checksum deletes
   the part).
 
-## Performance budget (Performant phase; not measured against yet)
+## Performance budget (Performant phase)
 
 Startup to first frame under 300 ms; idle CPU 0 (nothing runs while no reply
 comes in); RSS under 120 MB with a long conversation open; a keystroke in the
 composer under 16 ms.
+
+Measured for 1.3 (docs/BACKEND.md, Performance): window mapped in 113 ms,
+idle RSS 109.6 MB, 121.8 MB after a reply, 0.1 s of CPU to the window and
+0.03 s over 10 idle seconds (the composer's cursor blinking twice a second is
+the only thing drawing).
 
 Model files are trusted as much as any file the user puts in the folder: they
 are parsed by llama.cpp (in its own process, not Gates'). The server's API is
