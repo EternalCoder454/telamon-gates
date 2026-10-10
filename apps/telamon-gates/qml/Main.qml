@@ -17,6 +17,7 @@ TelamonWindow {
     required property var vram
     required property var models
     required property var fleet
+    required property var workbench
 
     // "chat", "fleet", "models", "settings" or "about".
     property string page: "chat"
@@ -32,16 +33,51 @@ TelamonWindow {
     LayoutMirroring.enabled: Application.layoutDirection === Qt.RightToLeft
     LayoutMirroring.childrenInherit: true
 
+    // The workspace panel, when it is open (made when first opened).
+    readonly property var workspacePanel: workspaceLoader.item
+
+    // Runs `proceed` unless the workspace has files with unsaved changes:
+    // then the user is asked first, as leaving would lose them.
+    function unlessUnsaved(proceed) {
+        if (root.workspacePanel === null || !root.workspacePanel.hasUnsaved) {
+            proceed();
+            return;
+        }
+        root.confirm({
+            title: qsTr("Discard Unsaved Changes?"),
+            text: qsTr("Files in the workspace have changes that are not saved. They will be lost."),
+            acceptText: qsTr("Discard"),
+            destructive: true
+        }, ok => {
+            if (ok) {
+                proceed();
+            }
+        });
+    }
+
     function newChat() {
-        root.page = "chat";
-        root.chat.newChat();
-        chatView.focusComposer();
+        root.unlessUnsaved(() => {
+            root.page = "chat";
+            root.chat.newChat();
+            chatView.focusComposer();
+        });
     }
 
     function openChat(id) {
-        root.page = "chat";
-        root.chat.open(id);
-        chatView.focusComposer();
+        root.unlessUnsaved(() => {
+            root.page = "chat";
+            root.chat.open(id);
+            chatView.focusComposer();
+        });
+    }
+
+    // Opens or closes the workspace panel of the open conversation.
+    function showWorkspace(open) {
+        if (open) {
+            root.chat.showWorkspacePanel(true);
+        } else {
+            root.unlessUnsaved(() => root.chat.showWorkspacePanel(false));
+        }
     }
 
     function confirmDelete(id, title) {
@@ -345,15 +381,94 @@ TelamonWindow {
         }
 
         Item {
+            id: content
             Layout.fillWidth: true
             Layout.fillHeight: true
 
+            // The coding workspace beside the chat (Code and Agent mode).
+            // Both fit side by side from this width; narrower, the panel
+            // takes the whole view and its Close button brings the chat back.
+            readonly property bool workspaceShown: root.page === "chat" && root.chat.workspaceOpen && (root.chat.mode === "code" || root.chat.mode === "agent")
+            readonly property bool sideBySide: content.width >= Kirigami.Units.gridUnit * 36
+            readonly property real workspaceMinimum: Kirigami.Units.gridUnit * 20
+            readonly property real workspaceMaximum: Math.max(content.workspaceMinimum, content.width - Kirigami.Units.gridUnit * 16)
+            // How wide the user has dragged it (half the view to begin with).
+            property real workspaceWidth: 0
+            readonly property real workspaceShownWidth: content.sideBySide ? Math.max(content.workspaceMinimum, Math.min(content.workspaceMaximum, content.workspaceWidth > 0 ? content.workspaceWidth : content.width * 0.5)) : content.width
+
             ChatView {
                 id: chatView
-                anchors.fill: parent
-                visible: root.page === "chat"
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                anchors.left: parent.left
+                anchors.right: content.workspaceShown && content.sideBySide ? workspaceLoader.left : parent.right
+                visible: root.page === "chat" && !(content.workspaceShown && !content.sideBySide)
                 chat: root.chat
                 library: root.library
+                onWorkspaceRequested: open => root.showWorkspace(open)
+            }
+
+            // The panel is made when first opened, and let go when closed.
+            Loader {
+                id: workspaceLoader
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                anchors.right: parent.right
+                width: content.workspaceShownWidth
+                active: false
+                visible: active
+
+                function sync() {
+                    if (content.workspaceShown) {
+                        workspaceLoader.setSource("WorkspacePanel.qml", {
+                            chat: root.chat,
+                            workbench: root.workbench
+                        });
+                        workspaceLoader.active = true;
+                    } else {
+                        workspaceLoader.active = false;
+                    }
+                }
+                Connections {
+                    target: content
+                    function onWorkspaceShownChanged() {
+                        workspaceLoader.sync();
+                    }
+                }
+                Component.onCompleted: workspaceLoader.sync()
+
+                Connections {
+                    target: workspaceLoader.item
+                    ignoreUnknownSignals: true
+                    function onCloseRequested() {
+                        root.showWorkspace(false);
+                    }
+                }
+
+                // The line between the chat and the panel, to drag.
+                Rectangle {
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    anchors.left: parent.left
+                    width: 1
+                    visible: content.sideBySide
+                    color: Qt.alpha(Kirigami.Theme.textColor, 0.12)
+                }
+                MouseArea {
+                    z: 10
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    anchors.horizontalCenter: parent.left
+                    width: Kirigami.Units.largeSpacing
+                    visible: content.sideBySide
+                    cursorShape: Qt.SplitHCursor
+                    onPositionChanged: mouse => {
+                        if (pressed) {
+                            const x = mapToItem(content, mouse.x, 0).x;
+                            content.workspaceWidth = Math.max(content.workspaceMinimum, Math.min(content.workspaceMaximum, content.width - x));
+                        }
+                    }
+                }
             }
 
             // The other pages, one at a time, made when shown and dropped

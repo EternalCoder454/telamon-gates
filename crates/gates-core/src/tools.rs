@@ -15,8 +15,11 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+use crate::workbench::Sink;
 
 /// The most a result gives the model, in bytes.
 const MAX_OUTPUT: usize = 32 * 1024;
@@ -27,7 +30,7 @@ const MAX_ENTRIES: usize = 400;
 /// Files `search` and `find_files` walk through at most.
 const MAX_WALK: usize = 50_000;
 /// Folders a walk skips: build output, dependencies, version control.
-const SKIP: &[&str] = &[
+pub(crate) const SKIP: &[&str] = &[
     ".git",
     "target",
     "node_modules",
@@ -495,7 +498,7 @@ impl Workspace {
     }
 
     /// `real` as the model sees it: relative to the workspace.
-    fn show(&self, real: &Path) -> String {
+    pub(crate) fn show(&self, real: &Path) -> String {
         match real.strip_prefix(&self.root) {
             Ok(rel) if rel.as_os_str().is_empty() => ".".into(),
             Ok(rel) => rel.to_string_lossy().into_owned(),
@@ -507,6 +510,18 @@ impl Workspace {
 /// Runs tool `name` with `arguments` (the model's JSON). `cancel` stops a
 /// command or a long walk.
 pub fn run(ws: &Workspace, name: &str, arguments: &str, cancel: &AtomicBool) -> Outcome {
+    run_with(ws, name, arguments, cancel, None)
+}
+
+/// `run`, with what `run_command`'s command prints sent to `sink` as it
+/// prints it (the coding workspace's console).
+pub fn run_with(
+    ws: &Workspace,
+    name: &str,
+    arguments: &str,
+    cancel: &AtomicBool,
+    sink: Option<&Arc<dyn Sink>>,
+) -> Outcome {
     let args: Value = match serde_json::from_str(if arguments.trim().is_empty() {
         "{}"
     } else {
@@ -555,7 +570,7 @@ pub fn run(ws: &Workspace, name: &str, arguments: &str, cancel: &AtomicBool) -> 
                     .map(Duration::from_secs)
                     .unwrap_or(RUN_DEFAULT)
                     .min(RUN_MAX);
-                run_command(ws, c, limit, cancel)
+                run_command(ws, c, limit, cancel, sink)
             }
             None => Outcome::err("run_command needs a command."),
         },
@@ -762,6 +777,18 @@ pub fn sensitive(ws: &Workspace, name: &str, arguments: &str) -> bool {
     hidden_part || BUILD.contains(&file.as_str()) || script || executable
 }
 
+/// The file a call of `read_file`, `write_file` or `edit_file` names, as a
+/// path relative to the workspace (the same spelling for any way of writing
+/// it); None for any other call, and for a path outside the workspace.
+pub fn target(ws: &Workspace, name: &str, arguments: &str) -> Option<String> {
+    if !matches!(name, "read_file" | "write_file" | "edit_file") {
+        return None;
+    }
+    let args: Value = serde_json::from_str(arguments).ok()?;
+    let real = ws.resolve(args.get("path")?.as_str()?).ok()?;
+    Some(ws.show(&real))
+}
+
 fn list_dir(ws: &Workspace, path: &str) -> Outcome {
     let dir = match ws.resolve(path) {
         Ok(d) => d,
@@ -801,7 +828,7 @@ fn list_dir(ws: &Workspace, path: &str) -> Outcome {
 }
 
 /// The text of a file, or why not: too big, or not text.
-fn text_of(path: &Path) -> Result<String, String> {
+pub(crate) fn text_of(path: &Path) -> Result<String, String> {
     let meta = fs::metadata(path).map_err(|e| format!("{e}"))?;
     if !meta.is_file() {
         return Err("not a file".into());
@@ -999,7 +1026,7 @@ fn find_files(ws: &Workspace, pattern: &str, cancel: &AtomicBool) -> Outcome {
 /// Writes `text` to `path` whole: a new temporary file beside it, then a
 /// rename. The temporary name is random and made fresh (never a link a
 /// repository could have planted there).
-fn replace(path: &Path, text: &str) -> io::Result<()> {
+pub(crate) fn replace(path: &Path, text: &str) -> io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let name = path
@@ -1264,22 +1291,34 @@ impl Printed {
     }
 }
 
-/// Runs `command` in its own process group, so a timeout or Stop ends
-/// everything it started; what it prints comes through a pipe, kept
-/// bounded in memory (nothing on disk).
-fn run_command(ws: &Workspace, command: &str, limit: Duration, cancel: &AtomicBool) -> Outcome {
-    use std::os::unix::process::CommandExt;
-    use std::sync::{Arc, Mutex};
-    let (mut reader, writer) = match io::pipe() {
-        Ok(p) => p,
-        Err(e) => return Outcome::err(format!("Can't run the command: {e}.")),
-    };
+/// How a command ended.
+pub(crate) struct Executed {
+    pub success: bool,
+    /// What it printed, bounded (its start and its end).
+    pub output: String,
+    /// The exit code, or "a signal"; None when it was stopped.
+    pub code: Option<String>,
+    pub took: f64,
+}
+
+/// Runs `command` in the workspace's sandbox, in its own process group, so
+/// a timeout or Stop (`cancel`) ends everything it started; what it prints
+/// comes through a pipe, kept bounded in memory (nothing on disk), and goes
+/// to `sink` as it comes, with a line on how it ended. Err: it could not be
+/// started.
+pub(crate) fn execute(
+    ws: &Workspace,
+    command: &str,
+    limit: Duration,
+    cancel: &AtomicBool,
+    sink: Option<&Arc<dyn Sink>>,
+) -> Result<Executed, String> {
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    use std::sync::Mutex;
+    let (mut reader, writer) = io::pipe().map_err(|e| format!("Can't run the command: {e}."))?;
     // In its sandbox, always: the workspace, the system's programs, and
     // only what the user allowed beyond.
-    let mut sandboxed = match crate::sandbox::command(&ws.root, ws.access, command) {
-        Ok(c) => c,
-        Err(e) => return Outcome::err(e),
-    };
+    let mut sandboxed = crate::sandbox::command(&ws.root, ws.access, command)?;
     let child = writer.try_clone().and_then(|err| {
         let cmd = &mut sandboxed;
         cmd.current_dir(&ws.root)
@@ -1291,15 +1330,13 @@ fn run_command(ws: &Workspace, command: &str, limit: Duration, cancel: &AtomicBo
         // the read ends when the command's own do.
         cmd.spawn()
     });
-    let mut child = match child {
-        Ok(c) => c,
-        Err(e) => return Outcome::err(format!("Can't run the command: {e}.")),
-    };
+    let mut child = child.map_err(|e| format!("Can't run the command: {e}."))?;
     let group = child.id() as libc::pid_t;
     let printed = Arc::new(Mutex::new(Printed::default()));
     let (done, finished) = std::sync::mpsc::channel::<()>();
     {
         let printed = printed.clone();
+        let sink = sink.cloned();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             while let Ok(n) = reader.read(&mut buf) {
@@ -1310,6 +1347,9 @@ fn run_command(ws: &Workspace, command: &str, limit: Duration, cancel: &AtomicBo
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .add(&buf[..n]);
+                if let Some(sink) = &sink {
+                    sink.write(&buf[..n]);
+                }
             }
             let _ = done.send(());
         });
@@ -1351,18 +1391,62 @@ fn run_command(ws: &Workspace, command: &str, limit: Duration, cancel: &AtomicBo
     let _ = finished.recv_timeout(Duration::from_secs(2));
     let output = printed.lock().unwrap_or_else(|e| e.into_inner()).text();
     let took = started.elapsed().as_secs_f64();
-    match status {
+    let (success, code, line) = match status {
         Some(s) => {
             let code = s
                 .code()
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "a signal".into());
-            Outcome {
-                ok: s.success(),
-                output: clip(format!("{output}\n[exit status {code}, {took:.1} s]")),
-                summary: format!("Ran a command (exit {code}, {took:.1} s)"),
-            }
+            let line = match s.code() {
+                Some(c) => format!("Exited with code {c} in {took:.1} s"),
+                None => format!("Ended by signal {} in {took:.1} s", s.signal().unwrap_or(0)),
+            };
+            (s.success(), Some(code), line)
         }
+        None if cancel.load(Ordering::Relaxed) => {
+            (false, None, format!("Stopped after {took:.1} s"))
+        }
+        None => (
+            false,
+            None,
+            format!("Stopped after {} s (time limit)", limit.as_secs()),
+        ),
+    };
+    if let Some(sink) = sink {
+        sink.finish(&line, success);
+    }
+    Ok(Executed {
+        success,
+        output,
+        code,
+        took,
+    })
+}
+
+/// `execute`, as the tool result the model gets.
+fn run_command(
+    ws: &Workspace,
+    command: &str,
+    limit: Duration,
+    cancel: &AtomicBool,
+    sink: Option<&Arc<dyn Sink>>,
+) -> Outcome {
+    let ran = match execute(ws, command, limit, cancel, sink) {
+        Ok(ran) => ran,
+        Err(e) => return Outcome::err(e),
+    };
+    let Executed {
+        success,
+        output,
+        code,
+        took,
+    } = ran;
+    match code {
+        Some(code) => Outcome {
+            ok: success,
+            output: clip(format!("{output}\n[exit status {code}, {took:.1} s]")),
+            summary: format!("Ran a command (exit {code}, {took:.1} s)"),
+        },
         None if cancel.load(Ordering::Relaxed) => Outcome::err("The command was stopped."),
         None => Outcome {
             ok: false,

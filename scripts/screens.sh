@@ -46,6 +46,20 @@ seed_agent() {
     printf '{"id":"000000000010-0000","title":"Tidy the build scripts","created":%s,"updated":%s,"mode":"agent","messages":[{"role":"user","text":"Tidy the build scripts"},{"role":"assistant","mode":"agent","text":"","tool_calls":[{"id":"a","name":"list_dir","arguments":"{}"}]},{"role":"tool","tool_call_id":"a","summary":"Listed . (3 entries)","text":"src/"},{"role":"assistant","mode":"agent","text":"The folder is empty but for src/. What should the scripts do?"}]}\n' "$when" "$when" >"$1/000000000010-0000.json"
 }
 
+# An Agent mode conversation with its workspace panel open and a command set,
+# and files in its sandbox folder.
+seed_workspace() {
+    local dir=$1 when sandbox
+    when=$(($(date +%s%3N) - 1800000))
+    sandbox=$XDG_DATA_HOME/telamon-gates/workspaces/000000000011-0000
+    mkdir -p "$sandbox/src" "$sandbox/.git"
+    printf 'def greet(name):\n    print("Hello, " + name)\n\n\ngreet("world")\n' >"$sandbox/hello.py"
+    printf '# Greetings\n\nA small script.\n' >"$sandbox/README.md"
+    printf 'def shout(text):\n    return text.upper() + "!"\n' >"$sandbox/src/util.py"
+    printf '[core]\n' >"$sandbox/.git/config"
+    printf '{"id":"000000000011-0000","title":"Write a greeting script","created":%s,"updated":%s,"mode":"agent","workspace_open":true,"run_command":"python3 hello.py","messages":[{"role":"user","text":"Write a greeting script"},{"role":"assistant","mode":"agent","text":"I wrote hello.py. It greets the world."}]}\n' "$when" "$when" >"$dir/000000000011-0000.json"
+}
+
 seed_all() {
     local dir=$1
     seed "$dir" 000000000001-0000 "Show me what a reply can look like" 1 <<'EOF'
@@ -107,6 +121,64 @@ run_theme() {
         sleep 0.4
     }
 
+    # The coding workspace (demo backend: an agent that writes hello.py,
+    # edits it twice and runs it). Coordinates are for 1.5x and a 1512x1080
+    # window.
+    workspace_shots() {
+        local app win
+        "$bin" >"$out/app-workspace.log" 2>&1 &
+        app=$!
+        sleep 4
+        win=$(xdotool search --onlyvisible --name "Telamon Gates" | head -1)
+        xdotool windowsize "$win" 1512 1080
+        sleep 1.5
+        open_chat "greeting"
+        sleep 1.5
+        shot 50-workspace-open
+        # A file from the tree.
+        xdotool mousemove 1070 197 click 1
+        sleep 1.2
+        shot 51-workspace-file
+        # Ask: the demo writes hello.py, and a card asks first.
+        xdotool mousemove 650 978 click 1
+        xdotool type --delay 10 "Make it greet three times"
+        xdotool key Return
+        sleep 4
+        shot 52-workspace-asks-write
+        # Allow All Edits in This Reply: hello.py is rewritten in its tab,
+        # its new lines marked, then edited twice, then the command asks.
+        xdotool mousemove 620 801 click 1
+        sleep 1.8
+        shot 53-workspace-live-write
+        sleep 7
+        shot 54-workspace-live-edits
+        # Run (the agent's command): its output goes to the console.
+        xdotool mousemove 827 855 click 1
+        sleep 5
+        shot 55-workspace-agent-run
+        # Your own edit, not saved, then a second request: the agent's edit of
+        # that file asks which version stays.
+        xdotool mousemove 1330 500 click 1
+        xdotool type --delay 20 "# my note"
+        sleep 0.5
+        xdotool mousemove 650 978 click 1
+        xdotool type --delay 10 "Change it again"
+        xdotool key Return
+        sleep 5
+        shot 56-workspace-conflict
+        # Keep Mine: the file is as the user has it, and the model is told.
+        xdotool mousemove 657 855 click 1
+        sleep 4
+        shot 57-workspace-kept-mine
+        # Run (the user's own command, no question): the changed file is
+        # saved first, then run in the sandbox; the output streams in.
+        xdotool mousemove 1378 731 click 1
+        sleep 3
+        shot 58-workspace-run
+        kill "$app"
+        wait "$app" || true
+    }
+
     # First run: nothing saved yet.
     "$bin" >"$out/app-first.log" 2>&1 &
     app=$!
@@ -148,6 +220,12 @@ run_theme() {
     rm -f "$dir"/0000000000a1-0000.json*
 
     seed_all "$dir"
+    seed_workspace "$dir"
+    if [ "${SCREENS_ONLY:-}" = workspace ]; then
+        workspace_shots
+        rm -rf "$x"
+        return
+    fi
     # One mode of the user's own, beside the built-in ones.
     printf '{"edits":[],"custom":[{"id":"my-1","name":"Pirate","prompt":"Answer like a friendly pirate.","temperature":0.9}]}' >"$XDG_DATA_HOME/telamon-gates/modes.json"
     # SCREENS_MODEL=<file.gguf>: replies from llama.cpp (installed in the
@@ -530,10 +608,13 @@ run_theme() {
     shot 36-settings-web-no-keyring
     kill "$app"
     wait "$app" || true
+    # The coding workspace: its own run, from a fresh start (the files it
+    # works on are seeded above).
+    workspace_shots
     rm -rf "$x"
 }
 
-export -f run_theme seed seed_all seed_agent dark_scheme
+export -f run_theme seed seed_all seed_agent seed_workspace dark_scheme
 export bin root repo
 for theme in light dark; do
     xvfb-run -a -s "-screen 0 1600x1200x24" dbus-run-session -- bash -c "run_theme $theme" >/dev/null 2>&1

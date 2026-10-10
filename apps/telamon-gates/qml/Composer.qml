@@ -109,9 +109,13 @@ ColumnLayout {
             implicitHeight: Math.min(input.implicitHeight, Kirigami.Units.gridUnit * 10)
             height: implicitHeight
             QQC2.ScrollBar.vertical: TelamonScrollBar {}
+            // Wraps at the field's width, however narrow the chat is (beside
+            // the coding workspace).
+            QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff
 
             TelamonTextArea {
                 id: input
+                width: scroll.availableWidth
                 // One line to start with, not TelamonTextArea's six; the
                 // field draws the frame.
                 implicitHeight: contentHeight + topPadding + bottomPadding

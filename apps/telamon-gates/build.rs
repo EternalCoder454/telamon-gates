@@ -9,5 +9,6 @@ fn main() {
         .file("src/vram.rs")
         .file("src/models.rs")
         .file("src/fleet.rs")
+        .file("src/workbench.rs")
         .build();
 }

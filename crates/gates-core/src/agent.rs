@@ -14,6 +14,8 @@ use crate::backend::{Backend, BackendError, Event, Request};
 use crate::conversation::{Message, ToolCall};
 use crate::tools::{self, Effect, Outcome, Workspace};
 use crate::web::Session;
+use crate::workbench::{self, Sink, Touch};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Model turns in one reply at most: past this, it is going round.
@@ -26,6 +28,9 @@ pub enum Approval {
     Allow,
     /// Allow this and every later edit in this reply (commands still ask).
     AllowEdits,
+    /// The user has unsaved changes in the file the edit is for and keeps
+    /// them: nothing is changed, and the model is told why.
+    KeepMine,
 }
 
 /// What the loop tells the window, in order.
@@ -50,6 +55,24 @@ pub trait Host {
     /// The reply's text so far is replaced by `text` (Deep Research links
     /// its citations once the report is written).
     fn replace(&mut self, _text: &str) {}
+    /// Whether the user has unsaved changes of their own in `path` (relative
+    /// to the workspace): an edit of it then asks through
+    /// `approve_over_unsaved`, also after "Allow All Edits".
+    fn unsaved(&mut self, _path: &str) -> bool {
+        false
+    }
+    /// `approve`, for an edit of a file the user has unsaved changes in:
+    /// the answer is Allow (the AI's version replaces theirs) or KeepMine.
+    fn approve_over_unsaved(&mut self, call: &ToolCall, title: &str, detail: &str) -> Approval {
+        self.approve(call, title, detail)
+    }
+    /// Where what `run_command`'s command prints goes as it prints it;
+    /// `command` is what it runs. None for nowhere.
+    fn output(&mut self, _command: &str) -> Option<Arc<dyn Sink>> {
+        None
+    }
+    /// A file of the workspace was read, or changed (the edit made).
+    fn touched(&mut self, _touch: Touch) {}
 }
 
 /// `messages` made safe to send: every tool call answered by a result
@@ -189,7 +212,15 @@ pub fn run_tools(
                 match tools::spec(&call.name) {
                     None => tools::run(workspace, &call.name, &call.arguments, cancel),
                     Some(spec) if spec.effect == Effect::Read => {
-                        tools::run(workspace, &call.name, &call.arguments, cancel)
+                        let outcome = tools::run(workspace, &call.name, &call.arguments, cancel);
+                        if outcome.ok
+                            && call.name == "read_file"
+                            && let Some(path) =
+                                tools::target(workspace, &call.name, &call.arguments)
+                        {
+                            host.touched(Touch::Read(path));
+                        }
+                        outcome
                     }
                     Some(spec) => {
                         // Arguments that can't run are refused without asking.
@@ -212,9 +243,18 @@ pub fn run_tools(
                                     continue;
                                 }
                             };
+                        // The file an edit is for, and whether the user has
+                        // changes of their own in it that are not saved: that
+                        // always asks, whatever was allowed before.
+                        let target = (spec.effect == Effect::Write)
+                            .then(|| tools::target(workspace, &call.name, &call.arguments))
+                            .flatten();
+                        let unsaved = target.as_deref().is_some_and(|path| host.unsaved(path));
                         // "Allow All Edits" covers plain edits; version control,
                         // build scripts, hidden files and programs always ask.
-                        let asked = if spec.effect == Effect::Write
+                        let asked = if unsaved {
+                            host.approve_over_unsaved(call, &title, &detail)
+                        } else if spec.effect == Effect::Write
                             && edits_allowed
                             && !tools::sensitive(workspace, &call.name, &call.arguments)
                         {
@@ -230,7 +270,52 @@ pub fn run_tools(
                         }
                         match asked {
                             Approval::Deny => Outcome::declined(),
-                            _ => tools::run(workspace, &call.name, &call.arguments, cancel),
+                            Approval::KeepMine => Outcome {
+                                ok: false,
+                                summary: "Kept the user's version".into(),
+                                output: format!(
+                                    "Error: the user has changes of their own in {} that are not \
+                                     saved, and chose to keep them, so the file was not changed. \
+                                     Don't try again unless they ask; once they save, the file on \
+                                     disk is theirs.",
+                                    target.as_deref().unwrap_or("this file")
+                                ),
+                            },
+                            _ => {
+                                // What the file was, to show what changed.
+                                let before = target.as_deref().map(|path| {
+                                    let existed =
+                                        workspace.resolve(path).is_ok_and(|real| real.exists());
+                                    (existed, workbench::snapshot(workspace, path))
+                                });
+                                let sink = (call.name == "run_command")
+                                    .then(|| {
+                                        serde_json::from_str::<serde_json::Value>(&call.arguments)
+                                            .ok()
+                                            .and_then(|v| v["command"].as_str().map(str::to_string))
+                                    })
+                                    .flatten()
+                                    .and_then(|command| host.output(&command));
+                                let outcome = tools::run_with(
+                                    workspace,
+                                    &call.name,
+                                    &call.arguments,
+                                    cancel,
+                                    sink.as_ref(),
+                                );
+                                if outcome.ok
+                                    && let (Some(path), Some((existed, before))) =
+                                        (target.as_deref(), before)
+                                {
+                                    host.touched(Touch::Edited(workbench::change(
+                                        path,
+                                        existed,
+                                        before.as_deref(),
+                                        workbench::snapshot(workspace, path),
+                                    )));
+                                }
+                                outcome
+                            }
                         }
                     }
                 }
@@ -447,6 +532,238 @@ mod tests {
             .filter(|e| e.starts_with("ask"))
             .count();
         assert_eq!(asks, 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ---- the coding workspace
+
+    /// A host for the workspace panel: what it was told, and what the user
+    /// has unsaved.
+    #[derive(Default)]
+    struct Panel {
+        touched: Vec<Touch>,
+        unsaved: Vec<String>,
+        /// Questions: (plain, over unsaved changes).
+        asked: (usize, usize),
+        answer: Option<Approval>,
+        printed: Option<Arc<TextSink>>,
+        results: Vec<(bool, String)>,
+    }
+
+    #[derive(Default)]
+    struct TextSink(std::sync::Mutex<String>);
+    impl Sink for TextSink {
+        fn write(&self, bytes: &[u8]) {
+            self.0
+                .lock()
+                .unwrap()
+                .push_str(&String::from_utf8_lossy(bytes));
+        }
+        fn finish(&self, line: &str, _: bool) {
+            self.0.lock().unwrap().push_str(&format!("<{line}>"));
+        }
+    }
+
+    impl Host for Panel {
+        fn text(&mut self, _: &str) {}
+        fn speed(&mut self, _: f64) {}
+        fn calls(&mut self, _: &[ToolCall]) {}
+        fn approve(&mut self, _: &ToolCall, _: &str, _: &str) -> Approval {
+            self.asked.0 += 1;
+            self.answer.unwrap_or(Approval::Deny)
+        }
+        fn approve_over_unsaved(&mut self, _: &ToolCall, _: &str, _: &str) -> Approval {
+            self.asked.1 += 1;
+            self.answer.unwrap_or(Approval::Deny)
+        }
+        fn result(&mut self, m: Message) {
+            self.results.push((m.failed, m.text));
+        }
+        fn next_turn(&mut self) {}
+        fn unsaved(&mut self, path: &str) -> bool {
+            self.unsaved.iter().any(|p| p == path)
+        }
+        fn output(&mut self, _command: &str) -> Option<Arc<dyn Sink>> {
+            let sink = Arc::new(TextSink::default());
+            self.printed = Some(sink.clone());
+            Some(sink)
+        }
+        fn touched(&mut self, touch: Touch) {
+            self.touched.push(touch);
+        }
+    }
+
+    fn scripted(turns: Vec<Vec<ToolCall>>) -> Scripted {
+        Scripted {
+            turns: Mutex::new(turns),
+            seen: Mutex::new(Vec::new()),
+        }
+    }
+
+    #[test]
+    fn an_edit_tells_the_panel_which_lines_changed() {
+        let (dir, ws) = workspace("live");
+        std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        let backend = scripted(vec![
+            vec![call("1", "read_file", r#"{"path":"./a.txt"}"#)],
+            vec![call(
+                "2",
+                "edit_file",
+                r#"{"path":"a.txt","old_text":"two","new_text":"2\nTWO"}"#,
+            )],
+            vec![call(
+                "3",
+                "write_file",
+                r#"{"path":"new.txt","content":"x\ny\n"}"#,
+            )],
+        ]);
+        let mut host = Panel {
+            answer: Some(Approval::Allow),
+            ..Panel::default()
+        };
+        run(&backend, request(), &ws, &AtomicBool::new(false), &mut host).unwrap();
+        assert_eq!(host.touched.len(), 3, "{:?}", host.touched);
+        assert_eq!(host.touched[0], Touch::Read("a.txt".into()));
+        let Touch::Edited(edit) = &host.touched[1] else {
+            panic!("{:?}", host.touched);
+        };
+        assert_eq!(edit.path, "a.txt");
+        assert!(!edit.created);
+        assert_eq!(edit.text.as_deref(), Some("one\n2\nTWO\nthree\n"));
+        // One line rewritten as two: lines 2 and 3 changed; look at line 2.
+        assert_eq!(
+            edit.diff.marks,
+            [workbench::Mark {
+                first: 2,
+                last: 3,
+                added: false
+            }]
+        );
+        assert_eq!(edit.diff.first, Some(2));
+        let Touch::Edited(created) = &host.touched[2] else {
+            panic!("{:?}", host.touched);
+        };
+        assert!(created.created);
+        assert_eq!(
+            created.diff.marks,
+            [workbench::Mark {
+                first: 1,
+                last: 2,
+                added: true
+            }]
+        );
+        // A declined edit is not an edit.
+        let backend = scripted(vec![vec![call(
+            "4",
+            "write_file",
+            r#"{"path":"no.txt","content":"x"}"#,
+        )]]);
+        let mut host = Panel::default();
+        run(&backend, request(), &ws, &AtomicBool::new(false), &mut host).unwrap();
+        assert!(host.touched.is_empty());
+        assert!(!dir.join("no.txt").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_edit_over_unsaved_changes_asks_and_can_keep_them() {
+        let (dir, ws) = workspace("conflict");
+        let edit = |id: &str, new: &str| {
+            call(
+                id,
+                "edit_file",
+                &format!(r#"{{"path":"a.txt","old_text":"alpha","new_text":"{new}"}}"#),
+            )
+        };
+        // Keep Mine: the file stays as it is, and the model is told why.
+        let backend = scripted(vec![vec![edit("1", "ALPHA")]]);
+        let mut host = Panel {
+            unsaved: vec!["a.txt".into()],
+            answer: Some(Approval::KeepMine),
+            ..Panel::default()
+        };
+        run(&backend, request(), &ws, &AtomicBool::new(false), &mut host).unwrap();
+        assert_eq!(host.asked, (0, 1));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "alpha\n"
+        );
+        assert!(host.touched.is_empty());
+        let (failed, text) = &host.results[0];
+        assert!(
+            *failed && text.contains("changes of their own in a.txt"),
+            "{text}"
+        );
+        // Take the AI's: it runs.
+        let backend = scripted(vec![vec![edit("2", "ALPHA")]]);
+        let mut host = Panel {
+            unsaved: vec!["a.txt".into()],
+            answer: Some(Approval::Allow),
+            ..Panel::default()
+        };
+        run(&backend, request(), &ws, &AtomicBool::new(false), &mut host).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "ALPHA\n"
+        );
+        // "Allow All Edits" does not cover a file with unsaved changes (and
+        // a file without them is covered, as it was).
+        std::fs::write(dir.join("b.txt"), "beta\n").unwrap();
+        let backend = scripted(vec![
+            vec![call(
+                "3",
+                "edit_file",
+                r#"{"path":"b.txt","old_text":"beta","new_text":"B"}"#,
+            )],
+            vec![call(
+                "4",
+                "edit_file",
+                r#"{"path":"b.txt","old_text":"B","new_text":"BB"}"#,
+            )],
+            vec![call(
+                "5",
+                "edit_file",
+                r#"{"path":"./a.txt","old_text":"ALPHA","new_text":"again"}"#,
+            )],
+        ]);
+        let mut host = Panel {
+            unsaved: vec!["a.txt".into()],
+            answer: Some(Approval::AllowEdits),
+            ..Panel::default()
+        };
+        run(&backend, request(), &ws, &AtomicBool::new(false), &mut host).unwrap();
+        // One plain question (then allowed for the rest), one over a.txt.
+        assert_eq!(host.asked, (1, 1));
+        assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "BB\n");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_command_prints_to_the_panel_as_it_runs() {
+        if !crate::sandbox::available() {
+            eprintln!("no bubblewrap here: skipped");
+            return;
+        }
+        let (dir, ws) = workspace("console");
+        let backend = scripted(vec![vec![call(
+            "1",
+            "run_command",
+            r#"{"command":"echo first; echo second >&2"}"#,
+        )]]);
+        let mut host = Panel {
+            answer: Some(Approval::Allow),
+            ..Panel::default()
+        };
+        run(&backend, request(), &ws, &AtomicBool::new(false), &mut host).unwrap();
+        let printed = host.printed.unwrap().0.lock().unwrap().clone();
+        assert!(
+            printed.contains("first") && printed.contains("second"),
+            "{printed}"
+        );
+        assert!(printed.ends_with(" s>"), "{printed}");
+        assert!(printed.contains("<Exited with code 0 in "), "{printed}");
+        // The model still gets the result as before.
+        assert!(host.results[0].1.contains("first"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

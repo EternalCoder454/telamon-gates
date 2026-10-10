@@ -24,6 +24,7 @@ pub mod tools;
 pub mod vram;
 pub mod watchdog;
 pub mod web;
+pub mod workbench;
 
 pub use backend::{Backend, BackendError, Event, Options, Request};
 pub use conversation::{Conversation, Message, Role, Summary};

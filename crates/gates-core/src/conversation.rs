@@ -146,6 +146,13 @@ pub struct Conversation {
     /// The folder Agent mode's tools work in; None until one is chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
+    /// The coding workspace panel is open beside the chat (Code and Agent
+    /// mode).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub workspace_open: bool,
+    /// The command the panel's Run button runs ("cargo run").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_command: Option<String>,
 }
 
 fn auto() -> String {
@@ -180,6 +187,8 @@ impl Conversation {
             messages: Vec::new(),
             mode: auto(),
             workspace: None,
+            workspace_open: false,
+            run_command: None,
         }
     }
 
@@ -211,6 +220,8 @@ impl Conversation {
             messages: crate::agent::repair(self.messages[..end].to_vec()),
             mode: self.mode.clone(),
             workspace: self.workspace.clone(),
+            workspace_open: self.workspace_open,
+            run_command: self.run_command.clone(),
         }
     }
 }
@@ -389,5 +400,27 @@ mod tests {
         let c: Conversation = serde_json::from_str(old).unwrap();
         assert_eq!(c.mode, "auto");
         assert_eq!(c.messages[0].mode, None);
+    }
+
+    #[test]
+    fn the_workspace_panel_is_kept_with_the_conversation() {
+        // Older files have neither field: closed, no command.
+        let old = r#"{"id":"1-0","title":"t","created":1,"updated":1,"messages":[]}"#;
+        let c: Conversation = serde_json::from_str(old).unwrap();
+        assert!(!c.workspace_open && c.run_command.is_none());
+        // A closed panel with no command adds nothing to the file.
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("workspace_open") && !json.contains("run_command"));
+        let mut c = Conversation::new("hi");
+        c.workspace_open = true;
+        c.run_command = Some("cargo run".into());
+        let back: Conversation = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert!(back.workspace_open);
+        assert_eq!(back.run_command.as_deref(), Some("cargo run"));
+        // A branch keeps both.
+        c.messages.push(Message::user("hi"));
+        let branch = c.branch(0);
+        assert!(branch.workspace_open);
+        assert_eq!(branch.run_command.as_deref(), Some("cargo run"));
     }
 }
