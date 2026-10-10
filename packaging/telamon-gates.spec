@@ -52,6 +52,8 @@ Requires:       qt6-qtdeclarative
 Requires:       qt6-qtsvg
 # The model server (llama.cpp with Vulkan); without it the demo answers.
 Requires:       bubblewrap
+# Keeps the web search key in the system keyring (/usr/bin/secret-tool).
+Requires:       libsecret
 Recommends:     telamon-llama
 
 %description
@@ -65,7 +67,9 @@ kept as plain files on your computer.
 # NETWORK: cargo (Corrosion runs it with --locked) fetches crates.io and the
 # pinned telamon-framework crates during %%build.
 export CARGO_HOME=${CARGO_HOME:-%{_builddir}/cargo-home}
-export RUSTFLAGS="%{build_rustflags} --remap-path-prefix=$PWD=. --remap-path-prefix=$CARGO_HOME=cargo"
+# opt-level "s" last, so it wins over the macro's 3 (and matches Cargo.toml's
+# release profile, which the flags would otherwise override).
+export RUSTFLAGS="%{build_rustflags} -Copt-level=s --remap-path-prefix=$PWD=. --remap-path-prefix=$CARGO_HOME=cargo"
 export CARGO_PROFILE_RELEASE_STRIP=none
 %global _vpath_srcdir apps/telamon-gates
 %cmake -G Ninja -DCMAKE_BUILD_TYPE=Release

@@ -2,7 +2,6 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls as QQC2
-import QtQuick.Dialogs
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import Telamon.Ui
@@ -97,7 +96,7 @@ ColumnLayout {
             symbol: Symbols.AttachFile
             text: qsTr("Attach Files…")
             focusable: true
-            onClicked: picker.open()
+            onClicked: composer.pick()
         }
 
         QQC2.ScrollView {
@@ -250,81 +249,93 @@ ColumnLayout {
             symbol: modeButton.current[2]
             enabled: !composer.chat.generating
             Accessible.name: qsTr("Mode: %1").arg(modeButton.current[1])
-            onClicked: modeMenu.popup(modeButton, 0, -modeMenu.implicitHeight - TelamonStyle.spacingSmall)
+            onClicked: modeMenu.show()
 
-            ContextMenu {
+            // The menu is made the first time it is opened.
+            Loader {
                 id: modeMenu
+                readonly property var menu: modeMenu.item
+                active: false
 
-                ContextMenuItem {
-                    text: modeButton.builtIn[0][1]
-                    symbol: modeButton.builtIn[0][2]
-                    radio: true
-                    checked: composer.chat.mode === "auto"
-                    onTriggered: composer.chat.chooseMode("auto")
+                function show() {
+                    modeMenu.active = true;
+                    modeMenu.menu.popup(modeButton, 0, -modeMenu.menu.implicitHeight - TelamonStyle.spacingSmall);
                 }
-                ContextMenuItem {
-                    text: modeButton.builtIn[1][1]
-                    symbol: modeButton.builtIn[1][2]
-                    radio: true
-                    checked: composer.chat.mode === "chat"
-                    onTriggered: composer.chat.chooseMode("chat")
-                }
-                ContextMenuItem {
-                    text: modeButton.builtIn[2][1]
-                    symbol: modeButton.builtIn[2][2]
-                    radio: true
-                    checked: composer.chat.mode === "story"
-                    onTriggered: composer.chat.chooseMode("story")
-                }
-                ContextMenuItem {
-                    text: modeButton.builtIn[3][1]
-                    symbol: modeButton.builtIn[3][2]
-                    radio: true
-                    checked: composer.chat.mode === "code"
-                    onTriggered: composer.chat.chooseMode("code")
-                }
-                ContextMenuItem {
-                    text: modeButton.builtIn[4][1]
-                    symbol: modeButton.builtIn[4][2]
-                    radio: true
-                    checked: composer.chat.mode === "agent"
-                    onTriggered: composer.chat.chooseMode("agent")
-                }
-                ContextMenuItem {
-                    text: modeButton.builtIn[5][1]
-                    symbol: modeButton.builtIn[5][2]
-                    radio: true
-                    // Needs Web Search and a model that can call tools.
-                    enabled: composer.chat.researchNote.length === 0
-                    checked: composer.chat.mode === "research"
-                    onTriggered: composer.chat.chooseMode("research")
-                }
-                // What Deep Research is missing, when it is.
-                ContextMenuItem {
-                    visible: composer.chat.researchNote.length > 0
-                    enabled: false
-                    text: composer.chat.researchNote
-                    symbol: Symbols.Info
-                }
-                ContextMenuSeparator {
-                    visible: composer.chat.modeIds.length > 5
-                }
-            }
 
-            // The user's own modes, after the separator.
-            Instantiator {
-                model: composer.chat.modeIds.slice(5)
-                delegate: ContextMenuItem {
-                    required property int index
-                    required property string modelData
-                    text: composer.chat.modeNames[index + 5] ?? ""
-                    symbol: Symbols.EditNote
-                    radio: true
-                    checked: composer.chat.mode === modelData
-                    onTriggered: composer.chat.chooseMode(modelData)
+                sourceComponent: ContextMenu {
+                    id: menu
+
+                    ContextMenuItem {
+                        text: modeButton.builtIn[0][1]
+                        symbol: modeButton.builtIn[0][2]
+                        radio: true
+                        checked: composer.chat.mode === "auto"
+                        onTriggered: composer.chat.chooseMode("auto")
+                    }
+                    ContextMenuItem {
+                        text: modeButton.builtIn[1][1]
+                        symbol: modeButton.builtIn[1][2]
+                        radio: true
+                        checked: composer.chat.mode === "chat"
+                        onTriggered: composer.chat.chooseMode("chat")
+                    }
+                    ContextMenuItem {
+                        text: modeButton.builtIn[2][1]
+                        symbol: modeButton.builtIn[2][2]
+                        radio: true
+                        checked: composer.chat.mode === "story"
+                        onTriggered: composer.chat.chooseMode("story")
+                    }
+                    ContextMenuItem {
+                        text: modeButton.builtIn[3][1]
+                        symbol: modeButton.builtIn[3][2]
+                        radio: true
+                        checked: composer.chat.mode === "code"
+                        onTriggered: composer.chat.chooseMode("code")
+                    }
+                    ContextMenuItem {
+                        text: modeButton.builtIn[4][1]
+                        symbol: modeButton.builtIn[4][2]
+                        radio: true
+                        checked: composer.chat.mode === "agent"
+                        onTriggered: composer.chat.chooseMode("agent")
+                    }
+                    ContextMenuItem {
+                        text: modeButton.builtIn[5][1]
+                        symbol: modeButton.builtIn[5][2]
+                        radio: true
+                        // Needs Web Search and a model that can call tools.
+                        enabled: composer.chat.researchNote.length === 0
+                        checked: composer.chat.mode === "research"
+                        onTriggered: composer.chat.chooseMode("research")
+                    }
+                    // What Deep Research is missing, when it is.
+                    ContextMenuItem {
+                        visible: composer.chat.researchNote.length > 0
+                        enabled: false
+                        text: composer.chat.researchNote
+                        symbol: Symbols.Info
+                    }
+                    ContextMenuSeparator {
+                        visible: composer.chat.modeIds.length > 5
+                    }
+
+                    // The user's own modes, after the separator.
+                    Instantiator {
+                        model: composer.chat.modeIds.slice(5)
+                        delegate: ContextMenuItem {
+                            required property int index
+                            required property string modelData
+                            text: composer.chat.modeNames[index + 5] ?? ""
+                            symbol: Symbols.EditNote
+                            radio: true
+                            checked: composer.chat.mode === modelData
+                            onTriggered: composer.chat.chooseMode(modelData)
+                        }
+                        onObjectAdded: (index, object) => menu.insertItem(8 + index, object)
+                        onObjectRemoved: (index, object) => menu.removeItem(object)
+                    }
                 }
-                onObjectAdded: (index, object) => modeMenu.insertItem(8 + index, object)
-                onObjectRemoved: (index, object) => modeMenu.removeItem(object)
             }
         }
 
@@ -367,12 +378,20 @@ ColumnLayout {
         }
     }
 
-    FileDialog {
-        id: picker
-        title: qsTr("Attach Files")
-        fileMode: FileDialog.OpenFiles
-        nameFilters: [qsTr("Text and pictures (*.txt *.md *.rs *.py *.js *.ts *.qml *.c *.cpp *.h *.json *.toml *.yaml *.yml *.csv *.log *.sh *.html *.css *.png *.jpg *.jpeg *.gif *.webp *.bmp)"), qsTr("All files (*)")]
-        onAccepted: composer.chat.attachFiles(selectedFiles.map(u => decodeURIComponent(u.toString().replace(/^file:\/\//, ""))))
+    // The file dialog is made the first time it is needed (AttachDialog.qml).
+    Loader {
+        id: pickerLoader
+        readonly property var dialog: pickerLoader.item
+        visible: false
+    }
+
+    function pick() {
+        if (!pickerLoader.item) {
+            pickerLoader.setSource("AttachDialog.qml", {
+                chat: composer.chat
+            });
+        }
+        pickerLoader.dialog.open();
     }
 
     Timer {

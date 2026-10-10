@@ -53,6 +53,10 @@ qt_add_qml_module(telamon-gates-app
         qml/ModelsPage.qml
         qml/AgentPanel.qml
         qml/FleetPage.qml
+        qml/ExportDialog.qml
+        qml/AttachDialog.qml
+        qml/AgentFolderDialog.qml
+        qml/LazyBanner.qml
 )
 
 target_link_libraries(telamon-gates-app PRIVATE

@@ -19,9 +19,13 @@ sha2 = "0.10"
 # TLS through the system's OpenSSL and certificate store (smaller than a
 # bundled one, and it trusts what the system trusts).
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
-# Web search for the models: parsing and joining the addresses of pages, and
-# the system keyring (Secret Service: KWallet on Plasma) for the search API
-# key. oo7 is async; a one-thread tokio runtime drives it, one call at a time.
+# Web search for the models: parsing and joining the addresses of pages. The
+# search API key is kept by libsecret's `secret-tool` (web/keys.rs), not by a
+# Secret Service client in the binary.
 url = "2"
-oo7 = { version = "0.6", default-features = false, features = ["tokio", "native_crypto"] }
-tokio = { version = "1", default-features = false, features = ["rt", "time"] }
+# url's host names go through IDNA, whose default back end is ICU4X (about 20
+# crates and their data tables). Version 1.1.0 of the adapter is the
+# unicode-rs one: the same answers from the normalization and bidi crates.
+# (1.0.0 refuses every non-ASCII name; the tests in web/fetch.rs need these
+# names to become Punycode.)
+idna_adapter = "=1.1.0"
