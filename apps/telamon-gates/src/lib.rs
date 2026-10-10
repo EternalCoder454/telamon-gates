@@ -28,7 +28,7 @@ telamon_framework_ui::app! {
     name: "Telamon Gates",
     id: "net.eterneon.telamon.gates",
     repo: "telamon-gates",
-    ui: "2.0.6",
+    ui: "2.1.1",
 }
 
 /// The QObjects QML sees, handed to the engine as `Main.qml`'s initial

@@ -24,9 +24,9 @@ jobs:
   bundle:
     permissions:
       contents: write
-    uses: EternalCoder454/atlas-framework/.github/workflows/bundle.yml@e4c988e7e1cc81198e1979f3f6ae8eb711d962c8 # v2.0.10
+    uses: EternalCoder454/atlas-framework/.github/workflows/bundle.yml@72356aebee3d945c1ba1497c2af32a646497d272 # v2.1.1
     with:
-      framework-ref: e4c988e7e1cc81198e1979f3f6ae8eb711d962c8
+      framework-ref: 72356aebee3d945c1ba1497c2af32a646497d272
       minisign-public-key: RWR7yabRcxtBSnPoKofwv/t9g09aKRnZ32dWSi0kt2wbt4SeDp5QAzcf
     secrets:
       minisign-key: ${{ secrets.MINISIGN_KEY }}
