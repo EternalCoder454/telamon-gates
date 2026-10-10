@@ -951,8 +951,13 @@ by `nm`, since `cargo bloat` can't read a static library): `zvariant` 1.37 MB,
 (unwinding tables, generics) went. `oo7` also did a Diffie-Hellman key
 exchange on a worker at every start.
 
-- **The key through `secret-tool`.** Same attributes, so a key saved by 1.2
-  is found. 7.5 MB of binary and 4 MB of RSS.
+- **The key through `secret-tool`.** The attributes are 1.2's, and
+  `secret-tool` looks items up by attributes alone, so a key saved by 1.2
+  should be found. 7.5 MB of binary and 4 MB of RSS. The calls are tested
+  against a stand-in `secret-tool` (arguments, standard input, exit codes, a
+  failing tool, a hanging one, a missing one). Not run against a real
+  keyring here: gnome-keyring won't start in the container and this PC's
+  KWallet is the user's. `cargo run --example keyring-check` does that.
 - **`url` with the unicode-rs IDNA back end** (`idna_adapter = "=1.1.0"`; ICU4X
   is the default): 0.35 MB and 18 fewer packages, the same answers. Version
   1.0.0 of the adapter is smaller still but refuses every non-ASCII name; not
