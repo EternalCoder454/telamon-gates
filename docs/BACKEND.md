@@ -618,7 +618,18 @@ the user; each call shows as a tool row.
   `net.eterneon.telamon.gates` and `name` = `web-search-key-<provider>`.
   `secret-tool store` takes the secret on standard input, never in its
   arguments; each call runs on a worker with a 90 s limit (a locked wallet may
-  ask the user for a password), after which the process is killed. A missing
+  ask the user for a password), after which the process is killed (the caller
+  keeps the `Child` until it is reaped, so the kill can't reach a reused pid).
+  Saving is clear, then store, and Remove clears and looks again until nothing
+  is found (up to 5 times): `store` replaces only an item with the very same
+  attributes, and `secret-tool` adds `xdg:schema`, which 1.2's items don't
+  have, while `lookup` and `clear` match on `application` and `name` alone.
+  The app's `main` is C++, so SIGPIPE keeps its default action there; it is
+  ignored in `telamon_objects_new` (and before each write to the tool),
+  because a write to a tool that already quit would otherwise end the app.
+  Ignoring it process-wide is safe: every write here checks its result, and
+  std puts the default back in the children it starts. Writing from another
+  thread would not help (the signal ends the whole process). A missing
   `secret-tool` or a service that doesn't answer is "no keyring": Settings
   says so and nothing is saved, in a file or anywhere else. (The package
   requires `libsecret`.) Starting the app only checks that the service answers

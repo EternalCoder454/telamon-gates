@@ -106,6 +106,10 @@ fn tell_window_on_limit(
 /// conversation list. Delete `chat` first: a reply under way posts to it.
 #[unsafe(no_mangle)]
 pub extern "C" fn telamon_objects_new() -> TelamonObjects {
+    // main() is C++, so SIGPIPE still ends the process; a write to a pipe
+    // whose reader is gone (a tool that quit, a model server that died) must
+    // be an error to handle. See `ignore_sigpipe`.
+    gates_core::web::keys::ignore_sigpipe();
     let store = Store::at(Store::default_dir());
     let folder = store.dir().to_string_lossy().into_owned();
     let io = io::Io::start(store);

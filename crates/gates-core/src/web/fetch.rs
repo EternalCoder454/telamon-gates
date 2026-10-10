@@ -589,7 +589,8 @@ mod tests {
     fn other_spellings_of_private_addresses_are_refused() {
         // The address parser (url, with its IDNA tables) folds these to the
         // plain forms before the check: full-width and circled digits and
-        // the ideographic full stop.
+        // the ideographic full stop. The parse itself must give the address
+        // (that is the folding), and the fetch must refuse it as private.
         let strict = Fetcher::new();
         let stop = AtomicBool::new(false);
         for address in [
@@ -598,15 +599,24 @@ mod tests {
             "https://①②⑦.0.0.1/",
             "https://０x7f.1/",
             "https://２１３０７０６４３３/",
-            "https://[０:０:０:０:０:０:０:１]/",
+            "https://0x7f.1/",
+            "https://2130706433/",
         ] {
-            // Refused, or not an address at all: never fetched.
-            let e = strict.get(address, &stop).unwrap_err().to_string();
-            assert!(
-                e.contains("public web pages") || e.contains("web address"),
-                "{address}: {e}"
+            let url = Url::parse(address).unwrap_or_else(|e| panic!("{address}: {e}"));
+            assert_eq!(
+                url.host(),
+                Some(Host::Ipv4(Ipv4Addr::LOCALHOST)),
+                "{address}"
             );
+            let e = strict.get(address, &stop).unwrap_err().to_string();
+            assert!(e.contains("public web pages"), "{address}: {e}");
         }
+        // A full-width IPv6 literal is not one: it doesn't parse, so nothing
+        // is fetched.
+        let address = "https://[０:０:０:０:０:０:０:１]/";
+        assert!(Url::parse(address).is_err(), "{address}");
+        let e = strict.get(address, &stop).unwrap_err().to_string();
+        assert!(e.contains("web address"), "{address}: {e}");
     }
 
     #[test]

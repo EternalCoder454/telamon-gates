@@ -13,11 +13,11 @@
 //! of the app talks to the `KeyStore` trait, so tests use `Memory`.
 
 use std::collections::HashMap;
-use std::io::{ErrorKind, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The name the web search key is kept under.
 pub const SEARCH_KEY: &str = "web-search-key";
@@ -35,6 +35,9 @@ const SECRET_TOOL: &str = "/usr/bin/secret-tool";
 /// A locked keyring may ask the user for a password; that is waited for this
 /// long, then `secret-tool` is stopped.
 const WAIT: Duration = Duration::from_secs(90);
+
+/// How often `clear` and `lookup` are tried when a name has more than one item.
+const FORGET_TRIES: usize = 5;
 
 /// The most a secret may be: API keys are far shorter, and a bound keeps the
 /// write to the tool's pipe from ever blocking.
@@ -80,9 +83,43 @@ fn attributes(name: &str) -> [&str; 4] {
     ["application", APPLICATION, "name", name]
 }
 
+/// Writing to a pipe whose reader has gone raises SIGPIPE, which ends a
+/// process that doesn't ignore it. Rust's own `main` ignores it; this app's
+/// `main` is C++ over a Rust static library, so nothing has. Ignored once and
+/// for all (nothing here wants the default: every write is checked), and std
+/// puts it back to the default in each child it starts. Writing from another
+/// thread would not help: the signal ends the whole process.
+pub fn ignore_sigpipe() {
+    // SAFETY: signal(2) with SIG_IGN installs no handler code.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+}
+
+/// The secret to the tool's standard input, which is then closed (when `pipe`
+/// drops), so the tool sees the end of it. A tool that exits without reading
+/// is told by its status, not by this.
+fn feed(mut pipe: impl Write, text: &str) {
+    ignore_sigpipe();
+    let _ = pipe.write_all(text.as_bytes());
+}
+
+/// Reads a pipe to its end on a thread of its own.
+fn drain(mut pipe: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        let _ = tx.send(bytes);
+    });
+    rx
+}
+
 impl SecretService {
     /// Runs the tool with `args` (and `stdin` on its standard input), for at
-    /// most `self.wait`: after that it is killed.
+    /// most `self.wait`: after that it is killed. This thread keeps the
+    /// `Child` until it has been reaped, so the kill can only ever reach
+    /// this process (a pid kept apart from it could be reused).
     fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<Done, String> {
         let mut child = Command::new(&self.program)
             .args(args)
@@ -98,34 +135,60 @@ impl SecretService {
                     format!("The system keyring can't be reached: {e}.")
                 }
             })?;
-        let pid = child.id() as libc::pid_t;
-        if let Some(mut pipe) = child.stdin.take()
-            && let Some(text) = stdin
-        {
-            // A tool that exits without reading is told by its status.
-            let _ = pipe.write_all(text.as_bytes());
-            // `pipe` drops here, which ends the secret for the tool.
+        let pipe = child.stdin.take();
+        if let (Some(pipe), Some(text)) = (pipe, stdin) {
+            feed(pipe, text);
         }
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(child.wait_with_output());
-        });
-        match rx.recv_timeout(self.wait) {
-            Ok(Ok(out)) => Ok(Done {
-                success: out.status.success(),
-                stdout: out.stdout,
-                stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            }),
-            Ok(Err(e)) => Err(format!("The system keyring can't be used: {e}.")),
-            Err(_) => {
-                // Waiting for a password nobody gives. The thread above
-                // reaps the process once it is gone.
-                // SAFETY: kill(2) on the child's own pid; if it has already
-                // gone, at worst the call fails.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
-                Err("The system keyring didn't answer. Is it waiting to be unlocked?".to_string())
+        let out = child.stdout.take().map(drain);
+        let err = child.stderr.take().map(drain);
+        let deadline = Instant::now() + self.wait;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {}
+                Err(e) => return Err(format!("The system keyring can't be used: {e}.")),
+            }
+            if Instant::now() >= deadline {
+                // Waiting for a password nobody gives.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(
+                    "The system keyring didn't answer. Is it waiting to be unlocked?".to_string(),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        // The pipes end with the process (a child it left behind could hold
+        // them open: not waited for).
+        let grab = |rx: Option<mpsc::Receiver<Vec<u8>>>| {
+            rx.and_then(|rx| rx.recv_timeout(Duration::from_secs(2)).ok())
+                .unwrap_or_default()
+        };
+        Ok(Done {
+            success: status.success(),
+            stdout: grab(out),
+            stderr: String::from_utf8_lossy(&grab(err)).trim().to_string(),
+        })
+    }
+
+    /// Forgets every item of `name`. The tool's `clear` may leave a second
+    /// item (a key saved by 1.2 has no `xdg:schema` attribute, which every
+    /// item `secret-tool store` makes has, so the two are never replacements
+    /// of each other, while `lookup` and `clear` match on `application` and
+    /// `name` alone): clear and look again, until nothing is found.
+    fn forget(&self, name: &str) -> Result<(), String> {
+        for _ in 0..FORGET_TRIES {
+            let mut args = vec!["clear"];
+            args.extend(attributes(name));
+            let done = self.run(&args, None)?;
+            if !done.success {
+                return Err(failure(&done.stderr));
+            }
+            if self.get(name)?.is_none() {
+                return Ok(());
             }
         }
+        Err("The key couldn't be removed from the system keyring.".to_string())
     }
 }
 
@@ -188,6 +251,9 @@ impl KeyStore for SecretService {
         if secret.len() > MAX_SECRET || secret.contains('\0') {
             return Err("That key can't be kept: it is too long or holds odd characters.".into());
         }
+        // Replacing is clear, then store: `store` only replaces an item with
+        // the very same attributes, and a 1.2 item has fewer.
+        self.forget(name)?;
         let label = format!("--label={LABEL}");
         let mut args = vec!["store", label.as_str()];
         args.extend(attributes(name));
@@ -200,14 +266,7 @@ impl KeyStore for SecretService {
     }
 
     fn remove(&self, name: &str) -> Result<(), String> {
-        let mut args = vec!["clear"];
-        args.extend(attributes(name));
-        let done = self.run(&args, None)?;
-        if done.success {
-            Ok(())
-        } else {
-            Err(failure(&done.stderr))
-        }
+        self.forget(name)
     }
 }
 
@@ -309,26 +368,32 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(30));
     }
 
-    /// A stand-in for `secret-tool`, kept in a folder of its own: `store`
-    /// reads the secret from standard input into a file named by the
-    /// attributes, `lookup` prints it (exit 1 and no words when there is
-    /// none), `clear` removes it. Every call's arguments go to `argv.log`.
-    /// The names `broken-*` fail with a message and `hang-*` never answer.
+    /// A stand-in for `secret-tool`, kept in a folder of its own, that keeps
+    /// what libsecret does: an item is a file `<kind>__<attributes>` in
+    /// `state/items`, and `store` makes (replaces) only `schema__...`, as the
+    /// real one adds an `xdg:schema` attribute to what it stores. `lookup`
+    /// finds the first item with the attributes it is given, whatever its
+    /// kind (exit 1 and no words when there is none), and `clear` removes
+    /// just one such item, the worst case. A kind of another name is an
+    /// item made some other way (1.2's, which had no schema). The secret
+    /// comes from standard input, every call's arguments go to `argv.log`,
+    /// the names `broken-*` fail with a message and `hang-*` never answer.
     const FAKE: &str = r#"#!/bin/bash
 dir=$(dirname "$0")/state
-mkdir -p "$dir"
+mkdir -p "$dir/items"
 printf '%s\n' "$*" >> "$dir/argv.log"
 cmd=$1; shift
 [ "$cmd" = store ] && shift
-file="$dir/$(printf '%s' "$*" | tr -c 'A-Za-z0-9.-' '_')"
+key=$(printf '%s' "$*" | tr -c 'A-Za-z0-9.-' '_')
 case "$*" in
 *broken-*) echo "secret-tool: Cannot create an item in a locked collection" >&2; exit 1 ;;
 *hang-*) exec sleep 30 ;;
 esac
+first=$(ls "$dir/items"/*__"$key" 2>/dev/null | head -n1)
 case $cmd in
-store) cat > "$file" ;;
-lookup) [ -f "$file" ] || exit 1; cat "$file" ;;
-clear) rm -f "$file" ;;
+store) cat > "$dir/items/schema__$key" ;;
+lookup) [ -n "$first" ] || exit 1; cat "$first" ;;
+clear) [ -z "$first" ] || rm -f "$first" ;;
 *) echo "bad command" >&2; exit 2 ;;
 esac
 "#;
@@ -375,6 +440,99 @@ esac
 
     fn argv_log() -> String {
         std::fs::read_to_string(fake().join("state/argv.log")).unwrap_or_default()
+    }
+
+    /// The stand-in's file name part for an item of `name`.
+    fn item_key(name: &str) -> String {
+        format!("application {APPLICATION} name {name}")
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
+
+    /// An item of `name` made some other way than by `store` (of `kind`).
+    fn legacy(name: &str, kind: &str, secret: &str) {
+        let dir = fake().join("state/items");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{kind}__{}", item_key(name))), secret).unwrap();
+    }
+
+    /// How many items `name` has.
+    fn items(name: &str) -> usize {
+        let suffix = format!("__{}", item_key(name));
+        std::fs::read_dir(fake().join("state/items"))
+            .map(|d| {
+                d.filter_map(Result::ok)
+                    .filter(|e| e.file_name().to_string_lossy().ends_with(&suffix))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_key_saved_by_1_2_is_replaced_and_fully_removed() {
+        let store = faked(Duration::from_secs(20));
+        // 1.2's item has no schema, so a store beside it would not replace it.
+        let name = "web-search-key-from-1-2";
+        legacy(name, "plain", "old-key-not-real");
+        assert_eq!(store.get(name), Ok(Some("old-key-not-real".into())));
+        store.set(name, "new-key-not-real").unwrap();
+        assert_eq!(store.get(name), Ok(Some("new-key-not-real".into())));
+        assert_eq!(items(name), 1, "the old item is gone, not shadowing");
+        // Saving again replaces, as before.
+        store.set(name, "newer-key-not-real").unwrap();
+        assert_eq!(items(name), 1);
+        assert_eq!(store.get(name), Ok(Some("newer-key-not-real".into())));
+
+        // Remove takes every item, however many `clear` leaves behind.
+        legacy(name, "plain", "old-key-not-real");
+        legacy(name, "other", "older-key-not-real");
+        assert_eq!(items(name), 3);
+        store.remove(name).unwrap();
+        assert_eq!(items(name), 0);
+        assert_eq!(store.get(name), Ok(None));
+    }
+
+    #[test]
+    fn a_key_that_will_not_go_is_an_error() {
+        let store = faked(Duration::from_secs(20));
+        let name = "web-search-key-stubborn";
+        for kind in ["a", "b", "c", "d", "e", "f"] {
+            legacy(name, kind, "old-key-not-real");
+        }
+        // Five tries of one item each: one is left, and it is said.
+        let e = store.remove(name).unwrap_err();
+        assert!(e.contains("couldn't be removed"), "{e}");
+        assert_eq!(items(name), 1);
+        assert!(
+            store.set(name, "new-key-not-real").is_ok(),
+            "the last one goes"
+        );
+    }
+
+    #[test]
+    fn a_closed_pipe_does_not_end_the_process() {
+        use std::os::fd::FromRawFd;
+        // The app's main() is C++: SIGPIPE has its default action there.
+        // SAFETY: a fresh pipe, whose read end is closed, and signal(2).
+        let write_end = unsafe {
+            let mut fds = [0; 2];
+            assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
+            libc::close(fds[0]);
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+            std::fs::File::from_raw_fd(fds[1])
+        };
+        // Writing to it would kill this test process with the default action.
+        feed(write_end, "test-key-not-real");
+        // SAFETY: signal(2); the old action comes back to be looked at.
+        let was = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+        assert_eq!(was, libc::SIG_IGN);
     }
 
     #[test]
