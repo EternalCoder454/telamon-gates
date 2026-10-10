@@ -11,10 +11,11 @@ LABEL org.opencontainers.image.description="Telamon Gates CI build environment"
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 COPY telamon-gates.spec /tmp/telamon-gates.spec
 # The spec's BuildRequires but telamon-ui; telamon-ui's own dependencies
-# (Kirigami, Qt Quick, the fonts) so that installing it needs no dnf; and what
-# the headless smoke run needs (Xvfb, a session bus, xdotool, ImageMagick).
+# (Kirigami, Qt Quick, KSyntaxHighlighting for its code editor, the fonts) so
+# that installing it needs no dnf; and what the headless smoke run needs
+# (Xvfb, a session bus, xdotool, ImageMagick).
 RUN dnf -y install git-core tar zstd gzip rpm-build dnf5-plugins cargo clippy rustfmt \
-        kf6-kirigami kf6-kconfig qt6-qtdeclarative ibm-plex-sans-fonts jetbrains-mono-fonts \
+        kf6-kirigami kf6-kconfig kf6-syntax-highlighting qt6-qtdeclarative ibm-plex-sans-fonts jetbrains-mono-fonts \
         xorg-x11-server-Xvfb dbus-daemon qt6-qtbase-gui kf6-qqc2-desktop-style breeze-icon-theme \
         ImageMagick xdotool \
     && rpmspec -q --buildrequires /tmp/telamon-gates.spec | grep -v '^telamon-ui[[:space:]]' | \
