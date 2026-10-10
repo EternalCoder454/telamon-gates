@@ -15,7 +15,10 @@ fn main() {
     println!("get:     {:?} (nothing yet)", store.get(&name));
     println!("set:     {:?}", store.set(&name, "test-key-not-real"));
     println!("get:     {:?}", store.get(&name));
-    println!("replace: {:?}", store.set(&name, "second test key\nwith a line"));
+    println!(
+        "replace: {:?}",
+        store.set(&name, "second test key\nwith a line")
+    );
     println!("get:     {:?}", store.get(&name));
     println!("remove:  {:?}", store.remove(&name));
     println!("remove:  {:?} (none left: fine)", store.remove(&name));
