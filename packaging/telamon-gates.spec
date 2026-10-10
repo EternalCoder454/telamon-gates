@@ -5,7 +5,7 @@
 %global debug_package %{nil}
 
 Name:           telamon-gates
-Version:        1.2.0
+Version:        1.3.0
 Release:        1%{?dist}
 Summary:        Telamon Gates, the AI chat of Telamon OS
 License:        MIT
@@ -91,6 +91,13 @@ appstream-util validate-relax --nonet \
 %{_datadir}/metainfo/net.eterneon.telamon.gates.metainfo.xml
 
 %changelog
+* Fri Oct 09 2026 EternalHell <77252745+EternalCoder454@users.noreply.github.com> - 1.3.0-1
+- Starts faster (152 to 113 ms), uses less memory (123 to 110 MB idle) and is smaller (16.4 to 6.9 MB)
+- Graphics memory limit: models stop before the card fills (95% by default)
+- Settings: System Prompt first, foldable sections
+- Models: browse open models by the UGI Leaderboard and find their GGUF
+- The web search key is kept through secret-tool (libsecret)
+
 * Fri Oct 09 2026 EternalHell <77252745+EternalCoder454@users.noreply.github.com> - 1.2.0-1
 - Web search (Brave, Tavily or SearXNG) for Chat, Code and Agent, with the key in the keyring
 - Deep Research mode: plans, searches, reads and writes a cited report
