@@ -23,3 +23,9 @@ ureq = { version = "3", default-features = false, features = ["native-tls"] }
 # search API key is kept by libsecret's `secret-tool` (web/keys.rs), not by a
 # Secret Service client in the binary.
 url = "2"
+# url's host names go through IDNA, whose default back end is ICU4X (about 20
+# crates and their data tables). Version 1.1.0 of the adapter is the
+# unicode-rs one: the same answers from the normalization and bidi crates.
+# (1.0.0 refuses every non-ASCII name; the tests in web/fetch.rs need these
+# names to become Punycode.)
+idna_adapter = "=1.1.0"

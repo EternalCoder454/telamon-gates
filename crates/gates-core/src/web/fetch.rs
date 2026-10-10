@@ -585,6 +585,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn other_spellings_of_private_addresses_are_refused() {
+        // The address parser (url, with its IDNA tables) folds these to the
+        // plain forms before the check: full-width and circled digits and
+        // the ideographic full stop.
+        let strict = Fetcher::new();
+        let stop = AtomicBool::new(false);
+        for address in [
+            "https://１２７.０.０.１/",
+            "https://127。0。0。1/",
+            "https://①②⑦.0.0.1/",
+            "https://０x7f.1/",
+            "https://２１３０７０６４３３/",
+            "https://[０:０:０:０:０:０:０:１]/",
+        ] {
+            // Refused, or not an address at all: never fetched.
+            let e = strict.get(address, &stop).unwrap_err().to_string();
+            assert!(
+                e.contains("public web pages") || e.contains("web address"),
+                "{address}: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_ascii_names_become_ascii_names() {
+        // A name in another script is looked up in its ASCII (Punycode)
+        // form, so what the resolver and the public-address check see is
+        // the same name the request is made to.
+        for (written, ascii) in [
+            ("https://münchen.example/", "xn--mnchen-3ya.example"),
+            ("https://MÜNCHEN.example/", "xn--mnchen-3ya.example"),
+            ("https://例え.example/", "xn--r8jz45g.example"),
+            ("https://faß.example/", "xn--fa-hia.example"),
+        ] {
+            let url = Url::parse(written).unwrap_or_else(|e| panic!("{written}: {e}"));
+            assert_eq!(url.host_str(), Some(ascii), "{written}");
+            assert!(url.as_str().is_ascii(), "{written}");
+        }
+        // And what is not a valid name at all does not parse.
+        for bad in [
+            "https://a\u{202e}b.example/",
+            "https://exa mple.com/",
+        ] {
+            assert!(Url::parse(bad).is_err(), "{bad}");
+        }
+    }
+
     // ---- against a server on this computer (plain http, the lax policy)
 
     /// A server that answers each connection with the next response of
